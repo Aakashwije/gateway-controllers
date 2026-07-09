@@ -1,0 +1,53 @@
+---
+title: "Overview"
+---
+# OpenAI to Azure OpenAI
+
+## Overview
+
+The OpenAI to Azure OpenAI policy lets a client use the standard OpenAI Chat Completions API while the request is served by an Azure OpenAI deployment. Azure OpenAI is wire-compatible with the OpenAI Chat Completions body, so this policy only rewrites the request **path** — it inserts the Azure deployment id and the required `api-version` query parameter — and leaves the request and response bodies unchanged.
+
+It is designed to run on an LLM proxy that fans one OpenAI-shaped `/chat/completions` endpoint out to several providers. It supports two modes:
+
+- **Single-provider mode** — attach the policy with no router in front of it. With no provider selected in the request metadata, the policy always runs.
+- **Multi-provider mode** — put a router (for example `openai-header-router`) first. The router writes the chosen provider into `SharedContext.Metadata["selected_provider"]`, and this policy runs only when that selection matches its own `id`.
+
+Use this policy when you need to:
+
+- Expose a single OpenAI-compatible endpoint that is actually backed by an Azure OpenAI deployment.
+- Route a subset of traffic to Azure OpenAI within a multi-provider LLM proxy without changing client code.
+
+## Features
+
+- **Path rewriting**: Rewrites the request path to `/openai/deployments/{deployment}{pathSuffix}?api-version={apiVersion}`.
+- **Deployment resolution**: Uses the `model` parameter as the deployment id, or falls back to the request body's `model` field when `model` is not pinned.
+- **api-version injection**: Adds the required Azure `api-version` query parameter.
+- **Body passthrough**: The request and response bodies are not modified, since Azure OpenAI matches the OpenAI wire format.
+
+## Parameters
+
+| Name | Required | Default | Description |
+|------|----------|---------|-------------|
+| `apiVersion` | Yes | — | Azure OpenAI `api-version` query-string value (for example `2024-02-15-preview`). Required because Azure rejects requests without it. |
+| `model` | No | — | Azure deployment id used in the rewritten path. When omitted, the request body's `model` field is used as the deployment id. |
+| `id` | No | — | Provider this translator targets. Used as the upstream cluster name and, in multi-provider mode, matched case-insensitively against `SharedContext.Metadata["selected_provider"]`. When omitted, routing is left to the route's default upstream. |
+| `pathSuffix` | No | `/chat/completions` | Endpoint suffix appended after the deployment segment in the rewritten path. |
+
+## Example
+
+```yaml
+- name: openai-to-azure-openai
+  version: v1
+  paths:
+    - path: /chat/completions
+      methods: [POST]
+      params:
+        apiVersion: "2024-02-15-preview"
+        model: gpt-4o
+        id: azure-openai-provider
+```
+
+## Notes
+
+- The upstream must be configured with Azure OpenAI authentication (the `api-key` header) and the correct resource URL at the provider level; this policy handles only the path rewrite.
+- Because the body is passed through unchanged, features like tool calling and vision work natively as long as the target deployment supports them.

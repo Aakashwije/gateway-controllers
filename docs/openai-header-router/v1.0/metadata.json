@@ -1,0 +1,10 @@
+{
+  "name": "openai-header-router",
+  "displayName": "OpenAI Header Router",
+  "version": "1.0",
+  "provider": "WSO2",
+  "categories": [
+    "AI"
+  ],
+  "description": "Selects an LLM provider for OpenAI Chat Completions requests based on a configurable request header, then publishes the chosen provider id to shared metadata for downstream translator policies (such as openai-to-anthropic or openai-to-bedrock) to act on. Enables a single OpenAI-shaped endpoint to fan out to multiple providers, chosen per-request by one header."
+}
