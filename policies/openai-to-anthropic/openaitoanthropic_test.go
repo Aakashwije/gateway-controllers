@@ -43,7 +43,10 @@ func TestTranslateBody_MessagesShape(t *testing.T) {
 		},
 		"temperature": 0.5,
 	}
-	mods := translateBody(payload, "claude", PolicyParams{Model: "claude", AnthropicVersion: DefaultAnthropicVersion})
+	mods, err := translateBody(payload, "claude", PolicyParams{Model: "claude", AnthropicVersion: DefaultAnthropicVersion})
+	if err != nil {
+		t.Fatalf("translateBody failed: %v", err)
+	}
 
 	if mods.Path == nil || *mods.Path != AnthropicMessagesPath {
 		t.Fatalf("expected path %q, got %v", AnthropicMessagesPath, mods.Path)
@@ -91,7 +94,10 @@ func TestTranslateBody_ToolsConverted(t *testing.T) {
 			},
 		},
 	}
-	mods := translateBody(payload, "claude", PolicyParams{Model: "claude"})
+	mods, err := translateBody(payload, "claude", PolicyParams{Model: "claude"})
+	if err != nil {
+		t.Fatalf("translateBody failed: %v", err)
+	}
 
 	var body map[string]interface{}
 	if err := json.Unmarshal(mods.Body, &body); err != nil {
@@ -119,7 +125,10 @@ func TestTranslateBody_ToolChoiceNoneDropsTools(t *testing.T) {
 		},
 		"tool_choice": "none",
 	}
-	mods := translateBody(payload, "claude", PolicyParams{Model: "claude"})
+	mods, err := translateBody(payload, "claude", PolicyParams{Model: "claude"})
+	if err != nil {
+		t.Fatalf("translateBody failed: %v", err)
+	}
 
 	var body map[string]interface{}
 	if err := json.Unmarshal(mods.Body, &body); err != nil {
@@ -155,6 +164,30 @@ func TestTranslateResponse_JSONShape(t *testing.T) {
 	}
 	if choice["finish_reason"] != "stop" {
 		t.Errorf("expected finish_reason=stop, got %v", choice["finish_reason"])
+	}
+}
+
+// TestConvertUserContent_MalformedBlocks ensures content blocks with a missing
+// or non-string "type" are skipped rather than panicking — the block list comes
+// straight from an untrusted request body.
+func TestConvertUserContent_MalformedBlocks(t *testing.T) {
+	content := []interface{}{
+		map[string]interface{}{"text": "no type field"},
+		map[string]interface{}{"type": 42, "text": "non-string type"},
+		"not an object",
+		map[string]interface{}{"type": "text", "text": "valid"},
+	}
+	result := convertUserContent(content)
+
+	blocks, ok := result.([]interface{})
+	if !ok {
+		t.Fatalf("expected []interface{}, got %T", result)
+	}
+	if len(blocks) != 1 {
+		t.Fatalf("expected only the 1 valid block to survive, got %d: %v", len(blocks), blocks)
+	}
+	if block := blocks[0].(map[string]interface{}); block["text"] != "valid" {
+		t.Errorf("unexpected surviving block: %v", block)
 	}
 }
 

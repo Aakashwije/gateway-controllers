@@ -51,7 +51,10 @@ func TestTranslateBody_ContentsAndSystem(t *testing.T) {
 			map[string]interface{}{"role": "user", "content": "hi"},
 		},
 	}
-	mods := translateBody(payload, "gemini-2.5-flash", PolicyParams{Model: "gemini-2.5-flash", APIVersion: "v1beta"}, false)
+	mods, err := translateBody(payload, "gemini-2.5-flash", PolicyParams{Model: "gemini-2.5-flash", APIVersion: "v1beta"}, false)
+	if err != nil {
+		t.Fatalf("translateBody failed: %v", err)
+	}
 
 	if mods.Path == nil || *mods.Path != "/v1beta/models/gemini-2.5-flash:generateContent" {
 		t.Fatalf("unexpected path: %v", mods.Path)

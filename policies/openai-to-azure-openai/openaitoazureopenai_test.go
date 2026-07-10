@@ -19,6 +19,8 @@
 package openaitoazureopenai
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
@@ -70,5 +72,85 @@ func TestReadModelFromBody(t *testing.T) {
 	// Empty/absent body yields no deployment.
 	if got := readModelFromBody(&policy.RequestContext{}); got != "" {
 		t.Errorf("expected empty string for missing body, got %q", got)
+	}
+}
+
+// TestBuildAzurePath_EscapesUntrustedDeployment verifies the deployment id —
+// which may come from the request body's "model" field — cannot inject extra
+// path segments or query parameters into the Azure URL.
+func TestBuildAzurePath_EscapesUntrustedDeployment(t *testing.T) {
+	got := buildAzurePath("evil?api-version=hacked&x=", DefaultPathSuffix, "2024-02-15-preview")
+	if strings.Contains(got, "?api-version=hacked") {
+		t.Errorf("query injection via deployment not escaped: %s", got)
+	}
+	got = buildAzurePath("a/../../b", DefaultPathSuffix, "2024-02-15-preview")
+	if strings.Contains(got, "/../") {
+		t.Errorf("path traversal via deployment not escaped: %s", got)
+	}
+}
+
+func newReqCtx(body string, metadata map[string]interface{}) *policy.RequestContext {
+	ctx := &policy.RequestContext{
+		SharedContext: &policy.SharedContext{Metadata: metadata},
+	}
+	if body != "" {
+		ctx.Body = &policy.Body{Present: true, Content: []byte(body)}
+	}
+	return ctx
+}
+
+func TestOnRequestBody_RewritesPathAndSetsUpstream(t *testing.T) {
+	p := &TranslatorPolicy{params: PolicyParams{
+		APIVersion: "2024-02-15-preview",
+		Model:      "gpt-4o",
+		PathSuffix: DefaultPathSuffix,
+		Id:         "azure-openai-provider",
+	}}
+	action := p.OnRequestBody(context.Background(), newReqCtx(`{"messages":[]}`, map[string]interface{}{}), nil)
+
+	mods, ok := action.(policy.UpstreamRequestModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestModifications, got %T", action)
+	}
+	want := "/openai/deployments/gpt-4o/chat/completions?api-version=2024-02-15-preview"
+	if mods.Path == nil || *mods.Path != want {
+		t.Errorf("expected path %q, got %v", want, mods.Path)
+	}
+	if mods.UpstreamName == nil || *mods.UpstreamName != "azure-openai-provider" {
+		t.Errorf("expected UpstreamName azure-openai-provider, got %v", mods.UpstreamName)
+	}
+}
+
+// TestOnRequestBody_MissingDeploymentErrors covers the case where neither the
+// policy param nor the request body supplies a model to use as the deployment.
+func TestOnRequestBody_MissingDeploymentErrors(t *testing.T) {
+	p := &TranslatorPolicy{params: PolicyParams{APIVersion: "2024-02-15-preview", PathSuffix: DefaultPathSuffix}}
+	action := p.OnRequestBody(context.Background(), newReqCtx(`{"messages":[]}`, map[string]interface{}{}), nil)
+
+	resp, ok := action.(policy.ImmediateResponse)
+	if !ok {
+		t.Fatalf("expected ImmediateResponse, got %T", action)
+	}
+	if resp.StatusCode != 400 {
+		t.Errorf("expected 400, got %d", resp.StatusCode)
+	}
+}
+
+// TestShouldRun_RoutingGates covers single-provider mode (no selection -> run)
+// and multi-provider mode (run only on a matching selected_provider).
+func TestShouldRun_RoutingGates(t *testing.T) {
+	p := &TranslatorPolicy{params: PolicyParams{Id: "azure-openai-provider"}}
+
+	if !p.shouldRun(newReqCtx("", map[string]interface{}{})) {
+		t.Error("single-provider mode (no selected_provider): expected to run")
+	}
+	if !p.shouldRun(newReqCtx("", map[string]interface{}{"selected_provider": "azure-openai-provider"})) {
+		t.Error("matching selected_provider: expected to run")
+	}
+	if !p.shouldRun(newReqCtx("", map[string]interface{}{"selected_provider": "AZURE-OPENAI-PROVIDER"})) {
+		t.Error("selected_provider match must be case-insensitive")
+	}
+	if p.shouldRun(newReqCtx("", map[string]interface{}{"selected_provider": "gemini-provider"})) {
+		t.Error("non-matching selected_provider: expected to be skipped")
 	}
 }

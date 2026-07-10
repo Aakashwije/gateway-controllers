@@ -89,7 +89,10 @@ func (p *TranslatorPolicy) OnRequestBody(
 	slog.Debug(PolicyName+": translating request",
 		"id", p.params.Id, "model", model, "path", AnthropicMessagesPath)
 
-	mods := translateBody(payload, model, p.params)
+	mods, err := translateBody(payload, model, p.params)
+	if err != nil {
+		return errResponse(500, "failed to marshal Anthropic body: "+err.Error())
+	}
 	if p.params.Id != "" && mods.UpstreamName == nil {
 		upstream := p.params.Id
 		mods.UpstreamName = &upstream
@@ -203,10 +206,12 @@ func errResponse(statusCode int, message string) policy.ImmediateResponse {
 }
 
 // translateBody converts an OpenAI Chat Completions request payload into an
-// Anthropic Messages request and returns the upstream modifications.
+// Anthropic Messages request and returns the upstream modifications. A marshal
+// failure is returned as an error so the caller can fail the request rather
+// than forward an error document upstream as the request body.
 func translateBody(
 	payload map[string]interface{}, model string, params PolicyParams,
-) policy.UpstreamRequestModifications {
+) (policy.UpstreamRequestModifications, error) {
 	anthropicBody := map[string]interface{}{"model": model}
 
 	if messages, hasMessages := payload["messages"].([]interface{}); hasMessages {
@@ -266,9 +271,7 @@ func translateBody(
 
 	newBody, err := json.Marshal(anthropicBody)
 	if err != nil {
-		return policy.UpstreamRequestModifications{
-			Body: []byte(fmt.Sprintf(`{"error":"failed to marshal Anthropic body: %s"}`, err.Error())),
-		}
+		return policy.UpstreamRequestModifications{}, err
 	}
 
 	newPath := AnthropicMessagesPath
@@ -279,7 +282,7 @@ func translateBody(
 			"content-type":      "application/json",
 			"anthropic-version": params.AnthropicVersion,
 		},
-	}
+	}, nil
 }
 
 // convertMessages extracts system text and rewrites messages into Anthropic
@@ -372,7 +375,11 @@ func convertUserContent(content interface{}) interface{} {
 			if !isObject {
 				continue
 			}
-			switch contentBlock["type"].(string) {
+			blockType, isString := contentBlock["type"].(string)
+			if !isString {
+				continue
+			}
+			switch blockType {
 			case "text":
 				blocks = append(blocks, map[string]interface{}{
 					"type": "text",

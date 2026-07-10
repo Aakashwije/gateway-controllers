@@ -81,6 +81,77 @@ func TestOnRequestBody_PinsModelAndStripsUnsupportedFields(t *testing.T) {
 	}
 }
 
+func newSharedCtx(metadata map[string]interface{}) *policy.SharedContext {
+	return &policy.SharedContext{Metadata: metadata}
+}
+
+// TestShouldRun_RoutingGates covers single-provider mode (no selection -> run)
+// and multi-provider mode (run only on a matching selected_provider).
+func TestShouldRun_RoutingGates(t *testing.T) {
+	p := &TranslatorPolicy{params: PolicyParams{Model: "mistral-large-latest", Id: "mistral-provider"}}
+
+	cases := []struct {
+		name     string
+		metadata map[string]interface{}
+		wantRun  bool
+	}{
+		{"single-provider mode (no selection)", map[string]interface{}{}, true},
+		{"matching provider", map[string]interface{}{"selected_provider": "mistral-provider"}, true},
+		{"matching provider, different case", map[string]interface{}{"selected_provider": "MISTRAL-PROVIDER"}, true},
+		{"non-matching provider", map[string]interface{}{"selected_provider": "gemini-provider"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reqCtx := &policy.RequestContext{SharedContext: newSharedCtx(tc.metadata)}
+			if got := p.shouldRun(reqCtx); got != tc.wantRun {
+				t.Errorf("shouldRun = %v, want %v", got, tc.wantRun)
+			}
+			respCtx := &policy.ResponseContext{SharedContext: newSharedCtx(tc.metadata)}
+			if got := p.shouldRunResponse(respCtx); got != tc.wantRun {
+				t.Errorf("shouldRunResponse = %v, want %v", got, tc.wantRun)
+			}
+		})
+	}
+}
+
+// TestOnResponseBody_SSEPassthrough verifies a streaming SSE body is returned
+// unmodified (translating SSE requires a stateful chunk-level policy), while a
+// JSON body is translated.
+func TestOnResponseBody_SSEPassthrough(t *testing.T) {
+	p := &TranslatorPolicy{params: PolicyParams{Model: "mistral-large-latest"}}
+
+	sse := []byte("data: {\"id\":\"cmpl-1\"}\n\ndata: [DONE]\n\n")
+	action := p.OnResponseBody(context.Background(), &policy.ResponseContext{
+		SharedContext:  newSharedCtx(map[string]interface{}{}),
+		ResponseStatus: 200,
+		ResponseBody:   &policy.Body{Present: true, Content: sse},
+	}, nil)
+
+	mods, ok := action.(policy.DownstreamResponseModifications)
+	if !ok {
+		t.Fatalf("expected DownstreamResponseModifications, got %T", action)
+	}
+	if mods.Body != nil {
+		t.Errorf("SSE body must pass through unmodified, got Body=%s", string(mods.Body))
+	}
+
+	// A JSON body, by contrast, is translated (non-nil Body).
+	jsonBody := []byte(`{"id":"cmpl-1","object":"chat.completion","model":"mistral-large-latest",` +
+		`"choices":[{"index":0,"message":{"role":"assistant","content":"Hi"},"finish_reason":"stop"}]}`)
+	action = p.OnResponseBody(context.Background(), &policy.ResponseContext{
+		SharedContext:  newSharedCtx(map[string]interface{}{}),
+		ResponseStatus: 200,
+		ResponseBody:   &policy.Body{Present: true, Content: jsonBody},
+	}, nil)
+	mods, ok = action.(policy.DownstreamResponseModifications)
+	if !ok {
+		t.Fatalf("expected DownstreamResponseModifications, got %T", action)
+	}
+	if mods.Body == nil {
+		t.Error("expected a JSON response body to be translated, got nil Body")
+	}
+}
+
 func TestTranslateResponse_JSONShape(t *testing.T) {
 	// Mistral already emits OpenAI-shaped success bodies; the translator ensures
 	// the response model is populated and passes the body through in OpenAI shape.

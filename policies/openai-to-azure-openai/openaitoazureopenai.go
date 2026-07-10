@@ -28,6 +28,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
 
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
@@ -146,9 +147,14 @@ func readModelFromBody(reqCtx *policy.RequestContext) string {
 	return strings.TrimSpace(model)
 }
 
+// buildAzurePath escapes the deployment as a single path segment and the
+// apiVersion as a query value. The deployment may originate from the request
+// body's "model" field, so it is untrusted and must not be able to inject
+// additional path segments or query parameters. pathSuffix is operator-supplied
+// configuration and is inserted verbatim.
 func buildAzurePath(deployment, pathSuffix, apiVersion string) string {
 	return fmt.Sprintf("/openai/deployments/%s%s?api-version=%s",
-		deployment, pathSuffix, apiVersion)
+		url.PathEscape(deployment), pathSuffix, url.QueryEscape(apiVersion))
 }
 
 func parseParams(params map[string]interface{}) (PolicyParams, error) {

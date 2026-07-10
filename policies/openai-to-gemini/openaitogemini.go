@@ -97,7 +97,10 @@ func (p *TranslatorPolicy) OnRequestBody(
 		stream = v
 	}
 
-	mods := translateBody(payload, model, p.params, stream)
+	mods, err := translateBody(payload, model, p.params, stream)
+	if err != nil {
+		return errResponse(500, "failed to marshal Gemini body: "+err.Error())
+	}
 	if p.params.Id != "" && mods.UpstreamName == nil {
 		upstream := p.params.Id
 		mods.UpstreamName = &upstream
@@ -218,10 +221,12 @@ func errResponse(statusCode int, message string) policy.ImmediateResponse {
 }
 
 // translateBody converts an OpenAI Chat Completions payload into a Gemini
-// generateContent request and returns the upstream modifications.
+// generateContent request and returns the upstream modifications. A marshal
+// failure is returned as an error so the caller can fail the request rather
+// than forward an error document upstream as the request body.
 func translateBody(
 	payload map[string]interface{}, model string, params PolicyParams, stream bool,
-) policy.UpstreamRequestModifications {
+) (policy.UpstreamRequestModifications, error) {
 	geminiBody := map[string]interface{}{}
 
 	if msgs, ok := payload["messages"].([]interface{}); ok {
@@ -258,9 +263,7 @@ func translateBody(
 
 	newBody, err := json.Marshal(geminiBody)
 	if err != nil {
-		return policy.UpstreamRequestModifications{
-			Body: []byte(fmt.Sprintf(`{"error":"failed to marshal Gemini body: %s"}`, err.Error())),
-		}
+		return policy.UpstreamRequestModifications{}, err
 	}
 
 	newPath := buildGeminiPath(params.APIVersion, model, stream)
@@ -270,7 +273,7 @@ func translateBody(
 		HeadersToSet: map[string]string{
 			"content-type": "application/json",
 		},
-	}
+	}, nil
 }
 
 func buildGeminiPath(apiVersion, model string, stream bool) string {
