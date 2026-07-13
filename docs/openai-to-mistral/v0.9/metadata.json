@@ -1,7 +1,7 @@
 {
   "name": "openai-to-mistral",
   "displayName": "OpenAI to Mistral",
-  "version": "1.0",
+  "version": "0.9",
   "provider": "WSO2",
   "categories": [
     "AI"

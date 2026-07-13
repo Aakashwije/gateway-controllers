@@ -33,15 +33,33 @@ Use this policy when you need to:
 
 ## Example
 
+For a multi-provider LLM proxy, attach this translator as the provider's `transformer` under `additionalProviders`. The provider `id` is the upstream it targets — and the value a router matches on — so it is not passed in `params`:
+
 ```yaml
-- name: openai-to-mistral
-  version: v1
-  paths:
-    - path: /chat/completions
-      methods: [POST]
+additionalProviders:
+  - id: mistral-provider
+    auth:
+      type: api-key
+      header: X-API-Key
+      value: REPLACE_WITH_MISTRAL_PROVIDER_LOOPBACK_KEY
+    transformer:
+      type: openai-to-mistral
+      version: v1
       params:
         model: mistral-large-latest
-        id: mistral-provider
+```
+
+For a single-provider proxy (no router in front), attach it directly under `spec.policies` so it runs on every request:
+
+```yaml
+policies:
+  - name: openai-to-mistral
+    version: v1
+    paths:
+      - path: /chat/completions
+        methods: [POST]
+        params:
+          model: mistral-large-latest
 ```
 
 ## Notes

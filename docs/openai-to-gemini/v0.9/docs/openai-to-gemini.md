@@ -37,16 +37,35 @@ Use this policy when you need to:
 
 ## Example
 
+For a multi-provider LLM proxy, attach this translator as the provider's `transformer` under `additionalProviders`. The provider `id` is the upstream it targets — and the value a router matches on — so it is not passed in `params`:
+
 ```yaml
-- name: openai-to-gemini
-  version: v1
-  paths:
-    - path: /chat/completions
-      methods: [POST]
+additionalProviders:
+  - id: gemini-provider
+    auth:
+      type: api-key
+      header: X-API-Key
+      value: REPLACE_WITH_GEMINI_PROVIDER_LOOPBACK_KEY
+    transformer:
+      type: openai-to-gemini
+      version: v1
       params:
         model: gemini-2.5-flash
-        id: gemini-provider
         apiVersion: v1beta
+```
+
+For a single-provider proxy (no router in front), attach it directly under `spec.policies` so it runs on every request:
+
+```yaml
+policies:
+  - name: openai-to-gemini
+    version: v1
+    paths:
+      - path: /chat/completions
+        methods: [POST]
+        params:
+          model: gemini-2.5-flash
+          apiVersion: v1beta
 ```
 
 ## Notes

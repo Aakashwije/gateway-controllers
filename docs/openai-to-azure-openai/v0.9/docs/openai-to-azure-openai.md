@@ -35,16 +35,35 @@ Use this policy when you need to:
 
 ## Example
 
+For a multi-provider LLM proxy, attach this translator as the provider's `transformer` under `additionalProviders`. The provider `id` is the upstream it targets — and the value a router matches on — so it is not passed in `params`:
+
 ```yaml
-- name: openai-to-azure-openai
-  version: v1
-  paths:
-    - path: /chat/completions
-      methods: [POST]
+additionalProviders:
+  - id: azure-openai-provider
+    auth:
+      type: api-key
+      header: X-API-Key
+      value: REPLACE_WITH_AZURE_OPENAI_PROVIDER_LOOPBACK_KEY
+    transformer:
+      type: openai-to-azure-openai
+      version: v1
       params:
-        apiVersion: "2024-02-15-preview"
         model: gpt-4o
-        id: azure-openai-provider
+        apiVersion: "2024-02-15-preview"
+```
+
+For a single-provider proxy (no router in front), attach it directly under `spec.policies` so it runs on every request:
+
+```yaml
+policies:
+  - name: openai-to-azure-openai
+    version: v1
+    paths:
+      - path: /chat/completions
+        methods: [POST]
+        params:
+          model: gpt-4o
+          apiVersion: "2024-02-15-preview"
 ```
 
 ## Notes

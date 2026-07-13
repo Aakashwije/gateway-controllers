@@ -1,5 +1,5 @@
 name: openai-header-router
-version: v1.0.0
+version: v0.9.0
 description: |
   Selects an LLM provider for OpenAI Chat Completions requests using a request
   header, then publishes the selected provider id to shared metadata for

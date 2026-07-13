@@ -1,5 +1,5 @@
 name: openai-to-mistral
-version: v1.0.0
+version: v0.9.0
 description: |
   Adapts OpenAI Chat Completions requests for Mistral-compatible upstreams by
   pinning the model, stripping unsupported fields, and rewriting the request

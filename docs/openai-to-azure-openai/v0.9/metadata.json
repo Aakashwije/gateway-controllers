@@ -1,7 +1,7 @@
 {
   "name": "openai-to-azure-openai",
   "displayName": "OpenAI to Azure OpenAI",
-  "version": "1.0",
+  "version": "0.9",
   "provider": "WSO2",
   "categories": [
     "AI"
