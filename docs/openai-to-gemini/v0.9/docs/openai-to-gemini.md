@@ -10,7 +10,7 @@ The OpenAI to Gemini policy lets a client speak the OpenAI Chat Completions API 
 It is designed to run on an LLM proxy that fans one OpenAI-shaped `/chat/completions` endpoint out to several providers. It supports two modes:
 
 - **Single-provider mode** — attach the translator with no router in front of it. With no provider selected in the request metadata, the translator always runs.
-- **Multi-provider mode** — put a router (for example `openai-header-router`) first. The router writes the chosen provider into `SharedContext.Metadata["selected_provider"]`, and this translator runs only when that selection matches its own `id`.
+- **Multi-provider mode** — put a router (for example `llm-header-router`) first. The router writes the chosen provider into `SharedContext.Metadata["selected_provider"]`, and this translator runs only when that selection matches its own `id`.
 
 Use this policy when you need to:
 

@@ -47,6 +47,7 @@ All available policies, sorted alphabetically.
 | [JWT Auth](./jwt-auth/v1.0/docs/jwt-authentication.md) | Security, AI, WebSub, WebBroker | Validates JWT access tokens using one or more JWKS providers (key managers). |
 | [LLM Cost](./llm-cost/v1.0/docs/llm-cost.md) | AI | Calculates the monetary cost of LLM API calls at response time and stores the result in SharedContext for use by downstream policies. |
 | [LLM Cost Based Ratelimit](./llm-cost-based-ratelimit/v1.0/docs/llm-cost-based-ratelimit.md) | AI | A specialized rate limiting policy that enforces monetary budget limits on LLM API usage. |
+| [LLM Header Router](./llm-header-router/v0.9/docs/llm-header-router.md) | AI | Selects an LLM provider for OpenAI Chat Completions requests using a configurable request header. |
 | [Log Message](./log-message/v1.0/docs/log-message.md) | Logging, Analytics & Monitoring, MCP, WebSub, WebBroker | This policy provides the capability to log the payload and headers of a request/response. |
 | [MCP Access Control](./mcp-acl-list/v1.0/docs/mcp-acl-list.md) | MCP, AI | MCP ACL List policy controls access to tools, resources, and prompts using mode and exceptions. |
 | [MCP Authentication](./mcp-auth/v1.0/docs/mcp-authentication.md) | MCP, AI, Security | This policy is used to secure traffic to Model Context Protocol server as defined in the specification (https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization). |
@@ -57,7 +58,6 @@ All available policies, sorted alphabetically.
 | [Model Weighted Round Robin](./model-weighted-round-robin/v1.0/docs/model-weighted-round-robin.md) | AI | Implements weighted round-robin load balancing for AI models. |
 | [NeMo Guard Content Safety](./nvidia-nemoguard-content-safety/v0.9/docs/nvidia-nemoguard-content-safety.md) | Guardrails, AI | Validates request and/or response content using NVIDIA NeMo Guard (llama-3.1-nemoguard-8b-content-safety). |
 | [Opaque Token Auth](./opaque-token-auth/v1.0/docs/opaque-token-authentication.md) | Security, AI | Validates opaque OAuth 2.0 access tokens via RFC 7662 token introspection. |
-| [OpenAI Header Router](./openai-header-router/v0.9/docs/openai-header-router.md) | AI | Selects an LLM provider for OpenAI Chat Completions requests using a configurable request header. |
 | [OpenAI to Anthropic](./openai-to-anthropic/v0.9/docs/openai-to-anthropic.md) | AI | Translates OpenAI Chat Completions requests into Anthropic Messages API format and rewrites non-streaming Anthropic responses back into the OpenAI response shape. |
 | [OpenAI to Azure OpenAI](./openai-to-azure-openai/v0.9/docs/openai-to-azure-openai.md) | AI | Routes OpenAI Chat Completions requests to an Azure OpenAI upstream by rewriting the request path with the deployment id and api-version query parameter. |
 | [OpenAI to Gemini](./openai-to-gemini/v0.9/docs/openai-to-gemini.md) | AI | Translates OpenAI Chat Completions requests into the Google Gemini generateContent API format and rewrites non-streaming Gemini responses back into the OpenAI response shape. |

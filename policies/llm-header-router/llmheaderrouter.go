@@ -16,7 +16,7 @@
  * under the License.
  */
 
-package openaiheaderrouter
+package llmheaderrouter
 
 import (
 	"context"
@@ -28,7 +28,7 @@ import (
 )
 
 const (
-	PolicyName = "openai-header-router"
+	PolicyName = "llm-header-router"
 
 	// DefaultHeaderName is the request header consulted when the operator
 	// does not override "headerName" in the policy parameters.

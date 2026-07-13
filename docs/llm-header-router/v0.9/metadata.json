@@ -1,6 +1,6 @@
 {
-  "name": "openai-header-router",
-  "displayName": "OpenAI Header Router",
+  "name": "llm-header-router",
+  "displayName": "LLM Header Router",
   "version": "0.9",
   "provider": "WSO2",
   "categories": [

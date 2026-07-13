@@ -16,7 +16,7 @@
  * under the License.
  */
 
-package openaiheaderrouter
+package llmheaderrouter
 
 import (
 	"testing"

@@ -107,7 +107,7 @@ func (p *TranslatorPolicy) OnRequestBody(
 }
 
 // shouldRun reports whether the request should be rewritten. When no upstream
-// router (e.g. openai-header-router) has published a selected provider into the
+// router (e.g. llm-header-router) has published a selected provider into the
 // metadata, the proxy is in single-provider mode and the translator always
 // runs. When a provider has been selected, the translator runs only if that
 // selection matches its own "id".

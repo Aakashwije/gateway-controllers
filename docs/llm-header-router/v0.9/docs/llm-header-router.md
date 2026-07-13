@@ -1,11 +1,11 @@
 ---
 title: "Overview"
 ---
-# OpenAI Header Router
+# LLM Header Router
 
 ## Overview
 
-The OpenAI Header Router policy is the front door of a multi-provider LLM proxy. It reads a configurable request header (default `x-provider`), matches it against a list of value → provider mappings, and publishes the chosen provider id into `SharedContext.Metadata["selected_provider"]`. Downstream translator policies (for example `openai-to-anthropic`, `openai-to-azure-openai`, `openai-to-gemini`, or `openai-to-mistral`) read that key and run only when the selection matches their own `id`. This lets a single OpenAI-shaped `/chat/completions` endpoint fan out to many providers, chosen per request by one header, with no change to the client's request body.
+The LLM Header Router policy is the front door of a multi-provider LLM proxy. It reads a configurable request header (default `x-provider`), matches it against a list of value → provider mappings, and publishes the chosen provider id into `SharedContext.Metadata["selected_provider"]`. Downstream translator policies (for example `openai-to-anthropic`, `openai-to-azure-openai`, `openai-to-gemini`, or `openai-to-mistral`) read that key and run only when the selection matches their own `id`. This lets a single OpenAI-shaped `/chat/completions` endpoint fan out to many providers, chosen per request by one header, with no change to the client's request body.
 
 The selection is published in both the request-header phase and the request-body phase. The header phase runs first so header-phase consumers — such as the proxy → provider upstream auth injection — observe the selection before they evaluate their `selected_provider` gate. The body phase repeats the publish idempotently: if `selected_provider` is already set, it is left untouched.
 
@@ -39,7 +39,7 @@ Each entry in `mappings` has:
 ## Example
 
 ```yaml
-- name: openai-header-router
+- name: llm-header-router
   version: v1
   paths:
     - path: /chat/completions

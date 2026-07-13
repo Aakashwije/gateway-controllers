@@ -10,7 +10,7 @@ The OpenAI to Azure OpenAI policy lets a client use the standard OpenAI Chat Com
 It is designed to run on an LLM proxy that fans one OpenAI-shaped `/chat/completions` endpoint out to several providers. It supports two modes:
 
 - **Single-provider mode** — attach the policy with no router in front of it. With no provider selected in the request metadata, the policy always runs.
-- **Multi-provider mode** — put a router (for example `openai-header-router`) first. The router writes the chosen provider into `SharedContext.Metadata["selected_provider"]`, and this policy runs only when that selection matches its own `id`.
+- **Multi-provider mode** — put a router (for example `llm-header-router`) first. The router writes the chosen provider into `SharedContext.Metadata["selected_provider"]`, and this policy runs only when that selection matches its own `id`.
 
 Use this policy when you need to:
 
