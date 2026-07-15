@@ -29,7 +29,9 @@ func TestGetPolicy_RequiresModel(t *testing.T) {
 	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{}); err == nil {
 		t.Fatal("expected error when 'model' param is missing")
 	}
-	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{"model": "claude"}); err != nil {
+	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+		"model": "claude", "provider-id": "anthropic-provider",
+	}); err != nil {
 		t.Fatalf("unexpected error for valid params: %v", err)
 	}
 }

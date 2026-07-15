@@ -30,7 +30,9 @@ func TestGetPolicy_RequiresModel(t *testing.T) {
 	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{}); err == nil {
 		t.Fatal("expected error when 'model' param is missing")
 	}
-	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{"model": "mistral-large-latest"}); err != nil {
+	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+		"model": "mistral-large-latest", "provider-id": "mistral-provider",
+	}); err != nil {
 		t.Fatalf("unexpected error for valid params: %v", err)
 	}
 }
@@ -88,7 +90,7 @@ func newSharedCtx(metadata map[string]interface{}) *policy.SharedContext {
 // TestShouldRun_RoutingGates covers single-provider mode (no selection -> run)
 // and multi-provider mode (run only on a matching selected_provider).
 func TestShouldRun_RoutingGates(t *testing.T) {
-	p := &TranslatorPolicy{params: PolicyParams{Model: "mistral-large-latest", Id: "mistral-provider"}}
+	p := &TranslatorPolicy{params: PolicyParams{Model: "mistral-large-latest", ProviderID: "mistral-provider"}}
 
 	cases := []struct {
 		name     string

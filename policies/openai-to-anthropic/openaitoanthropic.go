@@ -39,7 +39,7 @@ const (
 type PolicyParams struct {
 	Model            string
 	AnthropicVersion string
-	Id               string
+	ProviderID       string
 }
 
 type TranslatorPolicy struct {
@@ -87,14 +87,14 @@ func (p *TranslatorPolicy) OnRequestBody(
 	}
 
 	slog.Debug(PolicyName+": translating request",
-		"id", p.params.Id, "model", model, "path", AnthropicMessagesPath)
+		"provider-id", p.params.ProviderID, "model", model, "path", AnthropicMessagesPath)
 
 	mods, err := translateBody(payload, model, p.params)
 	if err != nil {
 		return errResponse(500, "failed to marshal Anthropic body: "+err.Error())
 	}
-	if p.params.Id != "" && mods.UpstreamName == nil {
-		upstream := p.params.Id
+	if p.params.ProviderID != "" && mods.UpstreamName == nil {
+		upstream := p.params.ProviderID
 		mods.UpstreamName = &upstream
 	}
 	return mods
@@ -139,7 +139,7 @@ func (p *TranslatorPolicy) shouldRunForSelected(selected string) bool {
 		// Single-provider mode: no router selected a provider, so run.
 		return true
 	}
-	return strings.EqualFold(selected, p.params.Id)
+	return strings.EqualFold(selected, p.params.ProviderID)
 }
 
 func selectedProviderFromMetadata(shared *policy.SharedContext, metadata map[string]interface{}) string {
@@ -169,10 +169,10 @@ func parseParams(params map[string]interface{}) (PolicyParams, error) {
 	}
 	result.Model = model
 
-	if id, err := optionalString(params, "id"); err != nil {
+	if providerID, err := optionalString(params, "provider-id"); err != nil {
 		return result, err
 	} else {
-		result.Id = id
+		result.ProviderID = providerID
 	}
 
 	if anthropicVersion, err := optionalString(params, "anthropicVersion"); err != nil {

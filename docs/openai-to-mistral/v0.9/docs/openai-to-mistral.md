@@ -10,7 +10,7 @@ The OpenAI to Mistral policy adapts an OpenAI Chat Completions request so it can
 It is designed to run on an LLM proxy that fans one OpenAI-shaped `/chat/completions` endpoint out to several providers. It supports two modes:
 
 - **Single-provider mode** — attach the policy with no router in front of it. With no provider selected in the request metadata, the policy always runs.
-- **Multi-provider mode** — put a router (for example `llm-header-router`) first. The router writes the chosen provider into `SharedContext.Metadata["selected_provider"]`, and this policy runs only when that selection matches its own `id`.
+- **Multi-provider mode** — put a router (for example `llm-header-router`) first. The router writes the chosen provider into `SharedContext.Metadata["selected_provider"]`, and this policy runs only when that selection matches its own `provider-id`.
 
 Use this policy when you need to:
 
@@ -29,11 +29,11 @@ Use this policy when you need to:
 | Name | Required | Default | Description |
 |------|----------|---------|-------------|
 | `model` | Yes | — | Mistral model name used in the translated request (for example `mistral-large-latest`). Overrides the OpenAI `model` field. |
-| `id` | No | — | Provider this translator targets. Used as the upstream cluster name and, in multi-provider mode, matched case-insensitively against `SharedContext.Metadata["selected_provider"]`. When omitted, routing is left to the route's default upstream. |
+| `provider-id` | No | — | Provider this translator targets. Used as the upstream cluster name and, in multi-provider mode, matched case-insensitively against `SharedContext.Metadata["selected_provider"]`. When omitted, routing is left to the route's default upstream. |
 
 ## Example
 
-For a multi-provider LLM proxy, attach this translator as the provider's `transformer` under `additionalProviders`. The provider `id` is the upstream it targets — and the value a router matches on — so it is not passed in `params`:
+For a multi-provider LLM proxy, attach this translator as the provider's `transformer` under `additionalProviders`. The provider `id` (or its `as` alias) is supplied by the gateway as `provider-id`, so it is not repeated in `params`:
 
 ```yaml
 additionalProviders:

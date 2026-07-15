@@ -52,11 +52,11 @@ var unsupportedRequestFields = []string{
 type PolicyParams struct {
 	// Model overrides the OpenAI "model" field in the translated request.
 	Model string
-	// Id is the upstream provider this translator targets. It serves two
+	// ProviderID is the upstream provider this translator targets. It serves two
 	// purposes: it is the upstream cluster the request is routed to, and it
 	// is the key matched (case-insensitive) against
 	// SharedContext.Metadata["selected_provider"] in multi-provider mode.
-	Id string
+	ProviderID string
 }
 
 type TranslatorPolicy struct {
@@ -115,15 +115,15 @@ func (p *TranslatorPolicy) OnRequestBody(
 
 	newPath := MistralChatCompletionsPath
 	slog.Debug(PolicyName+": translating request",
-		"id", p.params.Id, "model", model, "path", newPath)
+		"provider-id", p.params.ProviderID, "model", model, "path", newPath)
 
 	mods := policy.UpstreamRequestModifications{
 		Body:         newBody,
 		Path:         &newPath,
 		HeadersToSet: map[string]string{"content-type": "application/json"},
 	}
-	if p.params.Id != "" {
-		upstream := p.params.Id
+	if p.params.ProviderID != "" {
+		upstream := p.params.ProviderID
 		mods.UpstreamName = &upstream
 	}
 	return mods
@@ -160,7 +160,7 @@ func (p *TranslatorPolicy) OnResponseBody(
 // router (e.g. llm-header-router) has published a selected provider into the
 // metadata, the proxy is in single-provider mode and the translator always
 // runs. When a provider has been selected, the translator runs only if that
-// selection matches its own "id".
+// selection matches its own "provider-id".
 func (p *TranslatorPolicy) shouldRun(reqCtx *policy.RequestContext) bool {
 	return p.shouldRunForSelected(selectedProviderFromMetadata(reqCtx.SharedContext, reqCtx.Metadata))
 }
@@ -174,7 +174,7 @@ func (p *TranslatorPolicy) shouldRunForSelected(selected string) bool {
 		// Single-provider mode: no router selected a provider, so run.
 		return true
 	}
-	return strings.EqualFold(selected, p.params.Id)
+	return strings.EqualFold(selected, p.params.ProviderID)
 }
 
 func selectedProviderFromMetadata(shared *policy.SharedContext, metadata map[string]interface{}) string {
@@ -204,10 +204,10 @@ func parseParams(params map[string]interface{}) (PolicyParams, error) {
 	}
 	result.Model = model
 
-	if v, err := optionalString(params, "id"); err != nil {
+	if v, err := optionalString(params, "provider-id"); err != nil {
 		return result, err
 	} else {
-		result.Id = v
+		result.ProviderID = v
 	}
 
 	return result, nil

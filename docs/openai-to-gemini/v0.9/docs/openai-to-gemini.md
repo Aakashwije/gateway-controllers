@@ -10,7 +10,7 @@ The OpenAI to Gemini policy lets a client speak the OpenAI Chat Completions API 
 It is designed to run on an LLM proxy that fans one OpenAI-shaped `/chat/completions` endpoint out to several providers. It supports two modes:
 
 - **Single-provider mode** — attach the translator with no router in front of it. With no provider selected in the request metadata, the translator always runs.
-- **Multi-provider mode** — put a router (for example `llm-header-router`) first. The router writes the chosen provider into `SharedContext.Metadata["selected_provider"]`, and this translator runs only when that selection matches its own `id`.
+- **Multi-provider mode** — put a router (for example `llm-header-router`) first. The router writes the chosen provider into `SharedContext.Metadata["selected_provider"]`, and this translator runs only when that selection matches its own `provider-id`.
 
 Use this policy when you need to:
 
@@ -32,12 +32,12 @@ Use this policy when you need to:
 | Name | Required | Default | Description |
 |------|----------|---------|-------------|
 | `model` | Yes | — | Gemini model name used in the translated request (for example `gemini-2.5-pro`). Overrides the OpenAI `model` field and is used in the rewritten path. |
-| `id` | No | — | Provider this translator targets. Used as the upstream cluster name and, in multi-provider mode, matched case-insensitively against `SharedContext.Metadata["selected_provider"]`. When omitted, routing is left to the route's default upstream. |
+| `provider-id` | No | — | Provider this translator targets. Used as the upstream cluster name and, in multi-provider mode, matched case-insensitively against `SharedContext.Metadata["selected_provider"]`. When omitted, routing is left to the route's default upstream. |
 | `apiVersion` | No | `v1beta` | Gemini API version segment used in the rewritten path (`/{apiVersion}/models/{model}:generateContent`). |
 
 ## Example
 
-For a multi-provider LLM proxy, attach this translator as the provider's `transformer` under `additionalProviders`. The provider `id` is the upstream it targets — and the value a router matches on — so it is not passed in `params`:
+For a multi-provider LLM proxy, attach this translator as the provider's `transformer` under `additionalProviders`. The provider `id` (or its `as` alias) is supplied by the gateway as `provider-id`, so it is not repeated in `params`:
 
 ```yaml
 additionalProviders:

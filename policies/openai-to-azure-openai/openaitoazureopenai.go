@@ -44,11 +44,11 @@ type PolicyParams struct {
 	APIVersion string
 	Model      string
 	PathSuffix string
-	// Id is the upstream provider this translator targets. It is both the
+	// ProviderID is the upstream provider this translator targets. It is both the
 	// upstream cluster the request is routed to and the key matched
 	// (case-insensitive) against SharedContext.Metadata["selected_provider"]
 	// in multi-provider mode.
-	Id string
+	ProviderID string
 }
 
 type TranslatorPolicy struct {
@@ -96,11 +96,11 @@ func (p *TranslatorPolicy) OnRequestBody(
 
 	newPath := buildAzurePath(deployment, p.params.PathSuffix, p.params.APIVersion)
 	slog.Debug(PolicyName+": rewriting request path",
-		"id", p.params.Id, "deployment", deployment, "path", newPath)
+		"provider-id", p.params.ProviderID, "deployment", deployment, "path", newPath)
 
 	mods := policy.UpstreamRequestModifications{Path: &newPath}
-	if p.params.Id != "" {
-		upstream := p.params.Id
+	if p.params.ProviderID != "" {
+		upstream := p.params.ProviderID
 		mods.UpstreamName = &upstream
 	}
 	return mods
@@ -110,14 +110,14 @@ func (p *TranslatorPolicy) OnRequestBody(
 // router (e.g. llm-header-router) has published a selected provider into the
 // metadata, the proxy is in single-provider mode and the translator always
 // runs. When a provider has been selected, the translator runs only if that
-// selection matches its own "id".
+// selection matches its own "provider-id".
 func (p *TranslatorPolicy) shouldRun(reqCtx *policy.RequestContext) bool {
 	selected := selectedProvider(reqCtx)
 	if selected == "" {
 		// Single-provider mode: no router selected a provider, so run.
 		return true
 	}
-	return strings.EqualFold(selected, p.params.Id)
+	return strings.EqualFold(selected, p.params.ProviderID)
 }
 
 func selectedProvider(reqCtx *policy.RequestContext) string {
@@ -186,10 +186,10 @@ func parseParams(params map[string]interface{}) (PolicyParams, error) {
 		result.PathSuffix = v
 	}
 
-	if v, err := optionalString(params, "id"); err != nil {
+	if v, err := optionalString(params, "provider-id"); err != nil {
 		return result, err
 	} else {
-		result.Id = v
+		result.ProviderID = v
 	}
 
 	return result, nil

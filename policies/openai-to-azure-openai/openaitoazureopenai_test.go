@@ -31,8 +31,9 @@ func TestGetPolicy_RequiresAPIVersion(t *testing.T) {
 		t.Fatal("expected error when 'apiVersion' param is missing")
 	}
 	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
-		"apiVersion": "2024-02-15-preview",
-		"model":      "gpt-4o",
+		"apiVersion":  "2024-02-15-preview",
+		"model":       "gpt-4o",
+		"provider-id": "azure-openai-provider",
 	}); err != nil {
 		t.Fatalf("unexpected error for valid params: %v", err)
 	}
@@ -104,7 +105,7 @@ func TestOnRequestBody_RewritesPathAndSetsUpstream(t *testing.T) {
 		APIVersion: "2024-02-15-preview",
 		Model:      "gpt-4o",
 		PathSuffix: DefaultPathSuffix,
-		Id:         "azure-openai-provider",
+		ProviderID: "azure-openai-provider",
 	}}
 	action := p.OnRequestBody(context.Background(), newReqCtx(`{"messages":[]}`, map[string]interface{}{}), nil)
 
@@ -139,7 +140,7 @@ func TestOnRequestBody_MissingDeploymentErrors(t *testing.T) {
 // TestShouldRun_RoutingGates covers single-provider mode (no selection -> run)
 // and multi-provider mode (run only on a matching selected_provider).
 func TestShouldRun_RoutingGates(t *testing.T) {
-	p := &TranslatorPolicy{params: PolicyParams{Id: "azure-openai-provider"}}
+	p := &TranslatorPolicy{params: PolicyParams{ProviderID: "azure-openai-provider"}}
 
 	if !p.shouldRun(newReqCtx("", map[string]interface{}{})) {
 		t.Error("single-provider mode (no selected_provider): expected to run")
