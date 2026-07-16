@@ -96,7 +96,7 @@ func (p *TranslatorPolicy) OnRequestBody(
 
 	newPath := buildAzurePath(deployment, p.params.PathSuffix, p.params.APIVersion)
 	slog.Debug(PolicyName+": rewriting request path",
-		"provider-id", p.params.ProviderID, "deployment", deployment, "path", newPath)
+		"providerId", p.params.ProviderID, "deployment", deployment, "path", newPath)
 
 	mods := policy.UpstreamRequestModifications{Path: &newPath}
 	if p.params.ProviderID != "" {
@@ -110,7 +110,7 @@ func (p *TranslatorPolicy) OnRequestBody(
 // router (e.g. llm-header-router) has published a selected provider into the
 // metadata, the proxy is in single-provider mode and the translator always
 // runs. When a provider has been selected, the translator runs only if that
-// selection matches its own "provider-id".
+// selection matches its own "providerId".
 func (p *TranslatorPolicy) shouldRun(reqCtx *policy.RequestContext) bool {
 	selected := selectedProvider(reqCtx)
 	if selected == "" {
@@ -186,7 +186,7 @@ func parseParams(params map[string]interface{}) (PolicyParams, error) {
 		result.PathSuffix = v
 	}
 
-	if v, err := optionalString(params, "provider-id"); err != nil {
+	if v, err := optionalString(params, "providerId"); err != nil {
 		return result, err
 	} else {
 		result.ProviderID = v

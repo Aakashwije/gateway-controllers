@@ -115,7 +115,7 @@ func (p *TranslatorPolicy) OnRequestBody(
 
 	newPath := MistralChatCompletionsPath
 	slog.Debug(PolicyName+": translating request",
-		"provider-id", p.params.ProviderID, "model", model, "path", newPath)
+		"providerId", p.params.ProviderID, "model", model, "path", newPath)
 
 	mods := policy.UpstreamRequestModifications{
 		Body:         newBody,
@@ -160,7 +160,7 @@ func (p *TranslatorPolicy) OnResponseBody(
 // router (e.g. llm-header-router) has published a selected provider into the
 // metadata, the proxy is in single-provider mode and the translator always
 // runs. When a provider has been selected, the translator runs only if that
-// selection matches its own "provider-id".
+// selection matches its own "providerId".
 func (p *TranslatorPolicy) shouldRun(reqCtx *policy.RequestContext) bool {
 	return p.shouldRunForSelected(selectedProviderFromMetadata(reqCtx.SharedContext, reqCtx.Metadata))
 }
@@ -204,7 +204,7 @@ func parseParams(params map[string]interface{}) (PolicyParams, error) {
 	}
 	result.Model = model
 
-	if v, err := optionalString(params, "provider-id"); err != nil {
+	if v, err := optionalString(params, "providerId"); err != nil {
 		return result, err
 	} else {
 		result.ProviderID = v

@@ -31,9 +31,9 @@ func TestGetPolicy_RequiresAPIVersion(t *testing.T) {
 		t.Fatal("expected error when 'apiVersion' param is missing")
 	}
 	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
-		"apiVersion":  "2024-02-15-preview",
-		"model":       "gpt-4o",
-		"provider-id": "azure-openai-provider",
+		"apiVersion": "2024-02-15-preview",
+		"model":      "gpt-4o",
+		"providerId": "azure-openai-provider",
 	}); err != nil {
 		t.Fatalf("unexpected error for valid params: %v", err)
 	}

@@ -30,7 +30,7 @@ func TestGetPolicy_RequiresModel(t *testing.T) {
 		t.Fatal("expected error when 'model' param is missing")
 	}
 	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
-		"model": "gemini-2.5-flash", "provider-id": "gemini-provider",
+		"model": "gemini-2.5-flash", "providerId": "gemini-provider",
 	}); err != nil {
 		t.Fatalf("unexpected error for valid params: %v", err)
 	}

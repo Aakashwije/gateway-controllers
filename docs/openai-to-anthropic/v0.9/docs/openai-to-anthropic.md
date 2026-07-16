@@ -10,7 +10,7 @@ The OpenAI to Anthropic policy lets a client speak the OpenAI Chat Completions A
 It is designed to run on an LLM proxy that fans one OpenAI-shaped `/chat/completions` endpoint out to several providers. It supports two modes:
 
 - **Single-provider mode** — attach the translator with no router in front of it. With no provider selected in the request metadata, the translator always runs.
-- **Multi-provider mode** — put a router (for example `llm-header-router`) first. The router writes the chosen provider into `SharedContext.Metadata["selected_provider"]`, and this translator runs only when that selection matches its own `provider-id`.
+- **Multi-provider mode** — put a router (for example `llm-header-router`) first. The router writes the chosen provider into `SharedContext.Metadata["selected_provider"]`, and this translator runs only when that selection matches its own `providerId`.
 
 Use this policy when you need to:
 
@@ -33,12 +33,12 @@ Use this policy when you need to:
 | Name | Required | Default | Description |
 |------|----------|---------|-------------|
 | `model` | Yes | — | Anthropic model name used in the translated request (for example `claude-sonnet-4-20250514`). Overrides the OpenAI `model` field. |
-| `provider-id` | No | — | Provider this translator targets. Used as the upstream cluster name and, in multi-provider mode, matched case-insensitively against `SharedContext.Metadata["selected_provider"]`. When omitted, routing is left to the route's default upstream. |
+| `providerId` | No | — | Provider this translator targets. Used as the upstream cluster name and, in multi-provider mode, matched case-insensitively against `SharedContext.Metadata["selected_provider"]`. When omitted, routing is left to the route's default upstream. |
 | `anthropicVersion` | No | `2023-06-01` | Value of the `anthropic-version` request header sent upstream. |
 
 ## Example
 
-For a multi-provider LLM proxy, attach this translator as the provider's `transformer` under `additionalProviders`. The provider `id` (or its `as` alias) is supplied by the gateway as `provider-id`, so it is not repeated in `params`:
+For a multi-provider LLM proxy, attach this translator as the provider's `transformer` under `additionalProviders`. The provider `id` (or its `as` alias) is supplied by the gateway as `providerId`, so it is not repeated in `params`:
 
 ```yaml
 additionalProviders:

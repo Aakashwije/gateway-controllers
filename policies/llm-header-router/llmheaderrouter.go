@@ -40,7 +40,7 @@ const (
 	MetadataKeySelectedProvider = "selected_provider"
 )
 
-// HeaderMapping is a single header-value → provider-id rule.
+// HeaderMapping is a single header-value → provider ID rule.
 type HeaderMapping struct {
 	// HeaderValue is matched against the incoming header value
 	// case-insensitively after trimming whitespace.

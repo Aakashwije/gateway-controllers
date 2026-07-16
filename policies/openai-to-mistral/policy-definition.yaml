@@ -16,7 +16,7 @@ parameters:
         Mistral model name used in the translated request (for example
         mistral-large-latest). Overrides the OpenAI "model" field.
       minLength: 1
-    provider-id:
+    providerId:
       type: string
       x-wso2-policy-advanced-param: false
       description: |

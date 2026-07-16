@@ -87,7 +87,7 @@ func (p *TranslatorPolicy) OnRequestBody(
 	}
 
 	slog.Debug(PolicyName+": translating request",
-		"provider-id", p.params.ProviderID, "model", model, "path", AnthropicMessagesPath)
+		"providerId", p.params.ProviderID, "model", model, "path", AnthropicMessagesPath)
 
 	mods, err := translateBody(payload, model, p.params)
 	if err != nil {
@@ -169,7 +169,7 @@ func parseParams(params map[string]interface{}) (PolicyParams, error) {
 	}
 	result.Model = model
 
-	if providerID, err := optionalString(params, "provider-id"); err != nil {
+	if providerID, err := optionalString(params, "providerId"); err != nil {
 		return result, err
 	} else {
 		result.ProviderID = providerID

@@ -17,7 +17,7 @@ parameters:
         gemini-2.5-pro). Overrides the OpenAI "model" field and is used
         in the rewritten path.
       minLength: 1
-    provider-id:
+    providerId:
       type: string
       x-wso2-policy-advanced-param: false
       description: |
