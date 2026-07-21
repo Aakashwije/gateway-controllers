@@ -1,0 +1,73 @@
+---
+title: "Overview"
+---
+# OpenAI to Anthropic Transformer
+
+## Overview
+
+The OpenAI to Anthropic policy lets a client speak the OpenAI Chat Completions API while the request is served by Anthropic's Messages API. It rewrites the request body and path on the way upstream, and rewrites the (non-streaming) response back into the OpenAI ChatCompletion shape on the way down, so the client never has to know which provider answered.
+
+It is designed to run on an LLM proxy that fans one OpenAI-shaped `/chat/completions` endpoint out to several providers. It supports two modes:
+
+- **Single-provider mode** — attach the translator with no router in front of it. With no provider selected in the request metadata, the translator always runs.
+- **Multi-provider mode** — put a router (for example `llm-header-router`) first. The router writes the chosen provider into `SharedContext.Metadata["selected_provider"]`, and this translator runs only when that selection matches its own `providerId`.
+
+Use this policy when you need to:
+
+- Expose a single OpenAI-compatible endpoint that is actually backed by Anthropic models.
+- Route a subset of traffic to Anthropic within a multi-provider LLM proxy without changing client code.
+- Migrate an existing OpenAI integration to Anthropic without rewriting request/response handling.
+
+## Features
+
+- **Request translation**: Rewrites the OpenAI request body to the Anthropic Messages format and the path to `/v1/messages`.
+- **System prompt handling**: Extracts `system`/`developer` messages into Anthropic's top-level `system` field.
+- **Tool / function calling**: Maps OpenAI `tools`, `tool_choice`, `tool_calls`, and `tool` result messages to their Anthropic equivalents (`tools` with `input_schema`, `tool_use`, `tool_result`). `tool_choice: "none"` drops tools entirely, since Anthropic has no negative form.
+- **Multi-modal input**: Converts OpenAI `image_url` content blocks (both base64 data URIs and remote URLs) into Anthropic image source blocks.
+- **max_tokens handling**: Anthropic requires `max_tokens`; the policy honours OpenAI's `max_completion_tokens` (preferred) or `max_tokens`, falling back to a default when neither is present.
+- **Response translation**: Rewrites non-streaming Anthropic responses into the OpenAI ChatCompletion shape, including `finish_reason` and tool-call mapping.
+- **Streaming passthrough**: Server-Sent Events responses are passed through untouched (streaming translation requires a stateful chunk-level policy).
+
+## Parameters
+
+| Name | Required | Default | Description |
+|------|----------|---------|-------------|
+| `model` | Yes | — | Anthropic model name used in the translated request (for example `claude-sonnet-4-20250514`). Overrides the OpenAI `model` field. |
+| `providerId` | No | — | Provider this translator targets. Used as the upstream cluster name and, in multi-provider mode, matched case-insensitively against `SharedContext.Metadata["selected_provider"]`. When omitted, routing is left to the route's default upstream. |
+| `anthropicVersion` | No | `2023-06-01` | Value of the `anthropic-version` request header sent upstream. |
+
+## Example
+
+For a multi-provider LLM proxy, attach this translator as the provider's `transformer` under `additionalProviders`. The provider `id` (or its `as` alias) is supplied by the gateway as `providerId`, so it is not repeated in `params`:
+
+```yaml
+additionalProviders:
+  - id: anthropic-provider
+    auth:
+      type: api-key
+      header: X-API-Key
+      value: REPLACE_WITH_ANTHROPIC_PROVIDER_LOOPBACK_KEY
+    transformer:
+      type: openai-to-anthropic-transformer
+      version: v1
+      params:
+        model: claude-sonnet-4-5-20250929
+```
+
+For a single-provider proxy (no router in front), attach it directly under `spec.policies` so it runs on every request:
+
+```yaml
+policies:
+  - name: openai-to-anthropic-transformer
+    version: v1
+    paths:
+      - path: /chat/completions
+        methods: [POST]
+        params:
+          model: claude-sonnet-4-5-20250929
+```
+
+## Notes
+
+- Only non-streaming responses are translated back to OpenAI shape. Streaming (`stream: true`) responses are passed through as-is.
+- The upstream must be configured with Anthropic authentication (the `x-api-key` header) at the provider level; this policy handles only the request/response body and path translation.
