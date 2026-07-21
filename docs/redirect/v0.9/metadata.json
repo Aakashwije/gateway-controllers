@@ -1,0 +1,10 @@
+{
+  "name": "redirect",
+  "displayName": "Redirect",
+  "version": "0.9",
+  "provider": "WSO2",
+  "categories": [
+    "Transformation"
+  ],
+  "description": "Issues an HTTP redirect to the client without forwarding the request to the upstream backend (Gateway-API RequestRedirect semantics).\nOnly the components you set are overridden; every component left unset is preserved from the incoming request (scheme, host, path, query). The port is preserved too, except that overriding the scheme without setting a port switches to the target scheme's default port.\nThe policy builds the Location header from the request plus the overrides and returns the configured redirect status."
+}

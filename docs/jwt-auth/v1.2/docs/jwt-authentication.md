@@ -14,6 +14,7 @@ The JWT Authentication policy validates JWT access tokens using one or more JWKS
 - Configurable issuer, audience, scope, and claim validation
 - Claim-to-header mappings for downstream services
 - Configurable JWKS cache and retry settings
+- Token verification result caching: successfully verified tokens skip re-verification on repeat presentation, and deterministically invalid tokens (expired or malformed) are also cached to absorb repeated bad requests without re-verifying them
 - Fixed signing algorithm set: RS256, PS256, and ES256 (HMAC and `none` are rejected unconditionally)
 - Authorization header scheme enforcement and clock skew tolerance
 - Customizable error responses
@@ -40,6 +41,10 @@ JWT Authentication requires two levels of configuration.
 | `errormessageformat` | string | No | `"json"` | Error format: `"json"`, `"plain"`, or `"minimal"`. |
 | `errormessage` | string | No | `"Authentication failed"` | Error message body for failures. |
 | `validateissuer` | boolean | No | `true` | Validate the token `iss` claim against key managers. |
+| `tokencaching` | boolean | No | `true` | Whether to cache token verification verdicts (see [Token Verification Caching](#token-verification-caching) below). Set to `false` to force full re-verification on every request. |
+| `tokencachettl` | string | No | `"5m"` | Maximum duration a successfully verified token is trusted from cache. The actual cache expiry is the sooner of this value and the token's own `exp` claim (minus leeway). |
+| `negativecachettl` | string | No | `"30s"` | Duration a deterministically invalid verdict (expired or malformed token) is cached before re-verification is attempted again. |
+| `cachemaxsize` | integer | No | `100000` | Maximum total number of cached verdicts (successful and failed, combined) held across all APIs. Least-recently-used entries are evicted once the limit is reached. |
 
 #### KeyManager Configuration
 
@@ -54,6 +59,15 @@ Each entry in `keymanagers` must include a unique `name` and either `jwks.remote
 | `jwks.remote.skipTlsVerify` | boolean | No | Skip TLS verification (use with caution). |
 | `jwks.local.inline` | string | Conditional | Inline PEM certificate or public key. |
 | `jwks.local.certificatePath` | string | Conditional | Path to certificate or public key file. |
+
+#### Token Verification Caching
+
+When `tokencaching` is enabled (the default), the policy caches the outcome of signature verification so that repeat presentations of the same token — under the same key manager and validation configuration — skip re-verification entirely (unverified parsing, key manager/certificate parsing, and signature checking).
+
+- **Successful verifications** are cached for up to `tokencachettl`, but never longer than the token's own `exp` claim (minus `leeway`) — so a live cache entry is always still within the token's validity window. This bounds how long a revoked token may still be accepted after it was last verified.
+- **Deterministically invalid tokens** — expired or structurally malformed only — are also cached, for the shorter `negativecachettl`, so repeated bad tokens are rejected without re-verifying them each time. Transient failures (e.g. a JWKS endpoint outage, an unrecognized `kid` during key rotation) and not-yet-valid (`nbf`) tokens are never cached, since those may resolve on a later attempt.
+- The cache is a single pool shared across all APIs on the gateway, bounded by `cachemaxsize`; entries are keyed by the token together with the key manager configuration, issuer validation settings, the configured `issuers` list, `leeway`, and the API identity, so a configuration change or redeploy is never served a stale verdict.
+- Set `tokencaching` to `false` to force full verification on every request — useful when debugging or when token validity must be checked against live state on every call.
 
 #### Sample System Configuration
 
@@ -70,6 +84,10 @@ onfailurestatuscode = 401
 errormessageformat = "json"
 errormessage = "Authentication failed"
 validateissuer = true
+tokencaching = true
+tokencachettl = "5m"
+negativecachettl = "30s"
+cachemaxsize = 100000
 
 [[policy_configurations.jwtauth_v1.keymanagers]]
 name = "PrimaryIDP"
@@ -343,4 +361,13 @@ spec:
             forwardToken: true
             forwardTokenStripScheme: true
             forwardedTokenHeader: X-JWT-Token
+```
+
+### Example 9: Disable Token Verification Caching
+
+Token verification caching is enabled by default. To force full re-verification on every request — for example while debugging, or when tokens must be checked against live revocation state on every call — disable it at the system level.
+
+```toml
+[policy_configurations.jwtauth_v1]
+tokencaching = false
 ```

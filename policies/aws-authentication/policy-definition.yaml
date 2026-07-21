@@ -1,0 +1,87 @@
+name: aws-authentication
+version: v0.9.0
+description: |
+  Signs outbound requests to AWS-hosted backends using AWS Signature Version 4
+  (SigV4) before they are forwarded upstream. Supports two credential-acquisition
+  modes: assuming an IAM role via AWS STS (sts-assume-role), or using a static
+  IAM user access key/secret pair (iam-user-access-key).
+
+parameters:
+  type: object
+  additionalProperties: false
+  properties:
+    service:
+      type: string
+      x-wso2-policy-advanced-param: false
+      minLength: 1
+      description: |
+        AWS SigV4 signing name of the target backend service (for example
+        "execute-api" for API Gateway, "lambda" for Lambda Function URLs,
+        "es" for OpenSearch, "s3" for S3).
+    region:
+      type: string
+      x-wso2-policy-advanced-param: false
+      minLength: 1
+      description: |
+        AWS region of the target backend (for example "us-east-1").
+    authenticationType:
+      type: string
+      x-wso2-policy-advanced-param: false
+      description: |
+        Selects how AWS credentials used to sign requests are obtained.
+        "sts-assume-role" calls AWS STS AssumeRole to obtain temporary
+        credentials before signing. "iam-user-access-key" signs directly
+        with a static, long-lived IAM user access key/secret pair (optionally
+        paired with a session token if the configured key is already temporary).
+      enum:
+        - sts-assume-role
+        - iam-user-access-key
+    awsAccessKeyID:
+      type: string
+      x-wso2-policy-advanced-param: true
+      minLength: 1
+      description: |
+        AWS access key ID. Required when authenticationType is
+        "iam-user-access-key". Optional base credential for "sts-assume-role"
+        (if omitted, the default AWS SDK credential chain is used to call
+        sts:AssumeRole).
+    awsSecretAccessKey:
+      type: string
+      x-wso2-policy-advanced-param: true
+      minLength: 1
+      description: |
+        AWS secret access key paired with awsAccessKeyID. Required when
+        authenticationType is "iam-user-access-key".
+    awsSessionToken:
+      type: string
+      x-wso2-policy-advanced-param: true
+      minLength: 1
+      description: |
+        Optional AWS session token, only meaningful when awsAccessKeyID /
+        awsSecretAccessKey already represent temporary credentials.
+    awsRoleARN:
+      type: string
+      x-wso2-policy-advanced-param: true
+      minLength: 1
+      description: |
+        ARN of the IAM role to assume. Required when authenticationType is
+        "sts-assume-role".
+    awsRoleExternalID:
+      type: string
+      x-wso2-policy-advanced-param: true
+      minLength: 1
+      description: |
+        Optional External ID passed to sts:AssumeRole for cross-account role
+        assumption hardening. Only applicable for "sts-assume-role".
+    awsRoleSessionName:
+      type: string
+      x-wso2-policy-advanced-param: true
+      minLength: 1
+      default: aws-authentication-session
+      description: |
+        Optional session name used when assuming the role. Defaults to
+        "aws-authentication-session". Only applicable for "sts-assume-role".
+  required:
+    - service
+    - region
+    - authenticationType

@@ -68,6 +68,51 @@ func TestJWTAuthPolicy_HappyPath_AudienceArray_AndScpArray(t *testing.T) {
 	assertAuthSuccess(t, ctx, action)
 }
 
+func TestJWTAuthPolicy_RequiredScopes_OR_MatchesOne(t *testing.T) {
+	resetJWTAuthSingletonCache(t)
+
+	privateKey, publicKey := generateTestKeys(t)
+	jwksServer := createJWKSServer(t, publicKey, "test-kid")
+	defer jwksServer.Close()
+
+	// Token has only "read"; policy requires either "read" or "admin". OR
+	// semantics means one match is enough.
+	token := createTestToken(t, privateKey, map[string]interface{}{
+		"sub":   "user-123",
+		"iss":   "https://issuer.example.com",
+		"scope": "read",
+	})
+
+	params := newRemoteParams(jwksServer.URL + "/jwks.json")
+	params["issuers"] = []interface{}{"km-primary"}
+	params["requiredScopes"] = []interface{}{"read", "admin"}
+
+	ctx, action := executeOnRequestHeaders(t, params, authHeader("Authorization", "Bearer", token))
+	assertAuthSuccess(t, ctx, action)
+}
+
+func TestJWTAuthPolicy_RequiredScopes_OR_MatchesNone(t *testing.T) {
+	resetJWTAuthSingletonCache(t)
+
+	privateKey, publicKey := generateTestKeys(t)
+	jwksServer := createJWKSServer(t, publicKey, "test-kid")
+	defer jwksServer.Close()
+
+	// Token has neither of the required scopes → auth fails.
+	token := createTestToken(t, privateKey, map[string]interface{}{
+		"sub":   "user-123",
+		"iss":   "https://issuer.example.com",
+		"scope": "read",
+	})
+
+	params := newRemoteParams(jwksServer.URL + "/jwks.json")
+	params["issuers"] = []interface{}{"km-primary"}
+	params["requiredScopes"] = []interface{}{"write", "admin"}
+
+	ctx, action := executeOnRequestHeaders(t, params, authHeader("Authorization", "Bearer", token))
+	assertAuthFailure(t, ctx, action, 401)
+}
+
 func TestJWTAuthPolicy_HappyPath_CustomHeaderName_AndPrefix(t *testing.T) {
 	resetJWTAuthSingletonCache(t)
 
@@ -444,6 +489,10 @@ func TestJWTAuthPolicy_Edge_JWKSCacheExpiry_Refetches(t *testing.T) {
 
 	params := newRemoteParams(jwksServer.URL + "/jwks.json")
 	params["jwksCacheTtl"] = "15ms"
+	// Disable the token verdict cache so the second identical request re-verifies the
+	// signature (and therefore re-fetches JWKS) instead of being served from cache — this
+	// test is specifically exercising JWKS-level cache expiry, not token-verdict caching.
+	params["tokenCaching"] = false
 
 	token := createTestToken(t, privateKey, map[string]interface{}{
 		"sub": "user-123",
@@ -863,12 +912,14 @@ func resetJWTAuthSingletonCache(t *testing.T) {
 	ins.cacheStore = make(map[string]*CachedJWKS)
 	ins.cacheTTLs = make(map[string]time.Time)
 	ins.cacheMutex.Unlock()
+	_ = ins.currentTokenCache().Clear(context.Background())
 
 	t.Cleanup(func() {
 		ins.cacheMutex.Lock()
 		ins.cacheStore = make(map[string]*CachedJWKS)
 		ins.cacheTTLs = make(map[string]time.Time)
 		ins.cacheMutex.Unlock()
+		_ = ins.currentTokenCache().Clear(context.Background())
 	})
 }
 
