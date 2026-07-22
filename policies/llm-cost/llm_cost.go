@@ -21,6 +21,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -48,6 +50,14 @@ const (
 	// This disambiguates x-llm-cost: 0 (which could mean zero cost or a failed calculation).
 	MetadataLLMCostStatus = "x-llm-cost-status"
 
+	// Analytics metadata keys consumed by the gateway analytics publisher.
+	// LLM Cost emits these from the same normalized usage used for billing so
+	// transformed streams (for example Bedrock -> OpenAI SSE) retain telemetry.
+	metadataPromptTokenCount     = "aitoken:prompttokencount"
+	metadataCompletionTokenCount = "aitoken:completiontokencount"
+	metadataTotalTokenCount      = "aitoken:totaltokencount"
+	metadataModelID              = "aitoken:modelid"
+
 	costStatusCalculated    = "calculated"
 	costStatusNotCalculated = "not_calculated"
 )
@@ -56,6 +66,13 @@ const (
 // and stores the result in SharedContext.Metadata under "x-llm-cost" (USD float).
 type LLMCostPolicy struct {
 	pricingMap map[string]ModelPricing
+}
+
+type streamingCostResult struct {
+	cost       float64
+	model      string
+	usage      Usage
+	calculated bool
 }
 
 var (
@@ -165,7 +182,7 @@ func (p *LLMCostPolicy) OnResponseBody(ctx context.Context, respCtx *policy.Resp
 	}
 
 	// Look up pricing entry.
-	pricing, found := lookupPricing(p.pricingMap, modelName)
+	pricing, pricingModelName, found := lookupPricingWithKey(p.pricingMap, modelName)
 	if !found {
 		slog.Warn("llm-cost: no pricing entry for model, setting cost to 0", "model", modelName)
 		return setCostMetadata(respCtx, 0.0, costStatusNotCalculated)
@@ -198,7 +215,8 @@ func (p *LLMCostPolicy) OnResponseBody(ctx context.Context, respCtx *policy.Resp
 	finalCost := calc.Adjust(baseCost, usage, pricing)
 
 	slog.Debug("llm-cost: calculated cost",
-		"model", modelName,
+		"model", pricingModelName,
+		"requested_model", modelName,
 		"provider", pricing.Provider,
 		"prompt_tokens", usage.PromptTokens,
 		"completion_tokens", usage.CompletionTokens,
@@ -243,21 +261,28 @@ func (p *LLMCostPolicy) OnResponseBodyChunk(
 		requestBody = respCtx.RequestBody.Content
 	}
 
-	cost := p.computeAndSetStreamingCost(respCtx.SharedContext, accumulated, requestBody, respCtx.RequestPath)
+	result := p.computeAndSetStreamingCost(respCtx.SharedContext, accumulated, requestBody, respCtx.RequestPath)
+	analyticsMetadata := map[string]any{
+		MetadataLLMCost: result.cost,
+	}
+	if result.calculated {
+		analyticsMetadata[metadataModelID] = result.model
+		analyticsMetadata[metadataPromptTokenCount] = strconv.FormatInt(result.usage.PromptTokens, 10)
+		analyticsMetadata[metadataCompletionTokenCount] = strconv.FormatInt(result.usage.CompletionTokens, 10)
+		analyticsMetadata[metadataTotalTokenCount] = strconv.FormatInt(result.usage.TotalTokens, 10)
+	}
 	return policy.ForwardResponseChunk{
-		AnalyticsMetadata: map[string]any{
-			MetadataLLMCost: cost,
-		},
+		AnalyticsMetadata: analyticsMetadata,
 	}
 }
 
 // computeAndSetStreamingCost parses the accumulated response bytes, calculates the
 // LLM cost, writes x-llm-cost / x-llm-cost-status into SharedContext.Metadata, and
-// returns the calculated cost in USD (0.0 on any error).
-func (p *LLMCostPolicy) computeAndSetStreamingCost(sharedCtx *policy.SharedContext, body, requestBody []byte, requestPath string) float64 {
+// returns the normalized billing result (zero-valued on any error).
+func (p *LLMCostPolicy) computeAndSetStreamingCost(sharedCtx *policy.SharedContext, body, requestBody []byte, requestPath string) streamingCostResult {
 	if sharedCtx == nil {
 		slog.Warn("llm-cost: SharedContext is nil in streaming mode, cannot set cost metadata")
-		return 0.0
+		return streamingCostResult{}
 	}
 	if sharedCtx.Metadata == nil {
 		sharedCtx.Metadata = make(map[string]interface{})
@@ -271,7 +296,7 @@ func (p *LLMCostPolicy) computeAndSetStreamingCost(sharedCtx *policy.SharedConte
 	if len(body) == 0 {
 		slog.Warn("llm-cost: empty accumulated stream body, skipping cost calculation")
 		setMeta(0.0, costStatusNotCalculated)
-		return 0.0
+		return streamingCostResult{}
 	}
 
 	responseBody := body
@@ -280,7 +305,7 @@ func (p *LLMCostPolicy) computeAndSetStreamingCost(sharedCtx *policy.SharedConte
 		if err != nil {
 			slog.Warn("llm-cost: failed to merge SSE events in streaming mode", "error", err)
 			setMeta(0.0, costStatusNotCalculated)
-			return 0.0
+			return streamingCostResult{}
 		}
 		responseBody = merged
 	}
@@ -295,7 +320,7 @@ func (p *LLMCostPolicy) computeAndSetStreamingCost(sharedCtx *policy.SharedConte
 	if err := json.Unmarshal(responseBody, &probe); err != nil {
 		slog.Warn("llm-cost: could not parse streaming response body", "error", err)
 		setMeta(0.0, costStatusNotCalculated)
-		return 0.0
+		return streamingCostResult{}
 	}
 	modelName := probe.Model
 	if modelName == "" {
@@ -310,35 +335,36 @@ func (p *LLMCostPolicy) computeAndSetStreamingCost(sharedCtx *policy.SharedConte
 	if modelName == "" {
 		slog.Warn("llm-cost: no model name found in streaming response body or request context")
 		setMeta(0.0, costStatusNotCalculated)
-		return 0.0
+		return streamingCostResult{}
 	}
 
-	pricing, found := lookupPricing(p.pricingMap, modelName)
+	pricing, pricingModelName, found := lookupPricingWithKey(p.pricingMap, modelName)
 	if !found {
 		slog.Warn("llm-cost: no pricing entry for model, setting cost to 0", "model", modelName)
 		setMeta(0.0, costStatusNotCalculated)
-		return 0.0
+		return streamingCostResult{}
 	}
 
 	calc := selectCalculator(pricing.Provider)
 	if calc == nil {
 		slog.Warn("llm-cost: unsupported provider in streaming mode", "provider", pricing.Provider, "model", modelName)
 		setMeta(0.0, costStatusNotCalculated)
-		return 0.0
+		return streamingCostResult{}
 	}
 
 	usage, err := calc.Normalize(responseBody, requestBody)
 	if err != nil {
 		slog.Warn("llm-cost: failed to normalize streaming usage", "model", modelName, "error", err)
 		setMeta(0.0, costStatusNotCalculated)
-		return 0.0
+		return streamingCostResult{}
 	}
 
 	baseCost := genericCalculateCost(usage, pricing)
 	finalCost := calc.Adjust(baseCost, usage, pricing)
 
 	slog.Debug("llm-cost: calculated streaming cost",
-		"model", modelName,
+		"model", pricingModelName,
+		"requested_model", modelName,
 		"provider", pricing.Provider,
 		"prompt_tokens", usage.PromptTokens,
 		"completion_tokens", usage.CompletionTokens,
@@ -346,7 +372,12 @@ func (p *LLMCostPolicy) computeAndSetStreamingCost(sharedCtx *policy.SharedConte
 	)
 
 	setMeta(finalCost, costStatusCalculated)
-	return finalCost
+	return streamingCostResult{
+		cost:       finalCost,
+		model:      pricingModelName,
+		usage:      usage,
+		calculated: true,
+	}
 }
 
 // isSSEContent reports whether the body looks like buffered SSE data (has at
@@ -434,8 +465,9 @@ func setStreamCostMetadata(respCtx *policy.ResponseStreamContext, costUSD float6
 // modelNameFromRequest tries to extract the model name from the request context
 // when the response body does not include one. It checks the request body's
 // "model" JSON field first (OpenAI, Anthropic, Mistral convention), then falls
-// back to parsing a "/models/{name}" path segment from the request path (Gemini,
-// Vertex AI). Returns empty string if no model name can be determined.
+// back to parsing the provider-specific request path. Gemini and Vertex AI use
+// "/models/{name}" while Bedrock uses "/model/{modelId}/{operation}". Returns
+// empty string if no model name can be determined.
 func modelNameFromRequest(requestBody []byte, requestPath string) string {
 	if len(requestBody) > 0 {
 		var req struct {
@@ -443,6 +475,34 @@ func modelNameFromRequest(requestBody []byte, requestPath string) string {
 		}
 		if err := json.Unmarshal(requestBody, &req); err == nil && req.Model != "" {
 			return req.Model
+		}
+	}
+	// Bedrock Runtime: the model ID is a path parameter and is absent from both
+	// the Converse request body and response. Extract the complete segment first
+	// so ':' remains part of IDs such as "...-v1:0". AWS SDKs URL-encode ARN model
+	// IDs because their resource component can itself contain '/'.
+	if i := strings.Index(requestPath, "/model/"); i >= 0 {
+		rest := requestPath[i+len("/model/"):]
+		if end := strings.IndexByte(rest, '?'); end >= 0 {
+			rest = rest[:end]
+		}
+		for _, suffix := range []string{
+			"/invoke-with-bidirectional-stream",
+			"/invoke-with-response-stream",
+			"/converse-stream",
+			"/converse",
+			"/invoke",
+		} {
+			if strings.HasSuffix(rest, suffix) {
+				rest = strings.TrimSuffix(rest, suffix)
+				break
+			}
+		}
+		if rest != "" {
+			if decoded, err := url.PathUnescape(rest); err == nil {
+				return decoded
+			}
+			return rest
 		}
 	}
 	// Gemini/Vertex AI: model name is embedded in the path, e.g.

@@ -58,9 +58,11 @@ type converseContentBlock struct {
 }
 
 type converseUsage struct {
-	InputTokens  int `json:"inputTokens"`
-	OutputTokens int `json:"outputTokens"`
-	TotalTokens  int `json:"totalTokens"`
+	InputTokens           int `json:"inputTokens"`
+	OutputTokens          int `json:"outputTokens"`
+	TotalTokens           int `json:"totalTokens"`
+	CacheReadInputTokens  int `json:"cacheReadInputTokens"`
+	CacheWriteInputTokens int `json:"cacheWriteInputTokens"`
 }
 
 func translateConverseResponse(body []byte, status int, model, id string) policy.ResponseAction {
@@ -111,11 +113,7 @@ func translateConverseResponse(body []byte, status int, model, id string) policy
 			"message":       message,
 			"finish_reason": stopReasonToFinish(resp.StopReason, len(toolCalls) > 0),
 		}},
-		"usage": map[string]interface{}{
-			"prompt_tokens":     resp.Usage.InputTokens,
-			"completion_tokens": resp.Usage.OutputTokens,
-			"total_tokens":      totalTokens(resp.Usage),
-		},
+		"usage": openAIUsage(resp.Usage),
 	}
 
 	newBody, err := json.Marshal(openAIResp)
@@ -254,11 +252,13 @@ func streamFrameToSSE(frame *eventStreamFrame, id, model string, created int64) 
 		}
 		chunk := streamChunk(id, model, created, nil, nil)
 		chunk["choices"] = []interface{}{}
-		chunk["usage"] = map[string]interface{}{
-			"prompt_tokens":     numberField(usage, "inputTokens"),
-			"completion_tokens": numberField(usage, "outputTokens"),
-			"total_tokens":      numberField(usage, "totalTokens"),
-		}
+		chunk["usage"] = openAIUsage(converseUsage{
+			InputTokens:           numberField(usage, "inputTokens"),
+			OutputTokens:          numberField(usage, "outputTokens"),
+			TotalTokens:           numberField(usage, "totalTokens"),
+			CacheReadInputTokens:  numberField(usage, "cacheReadInputTokens"),
+			CacheWriteInputTokens: numberField(usage, "cacheWriteInputTokens"),
+		})
 		return sseData(chunk)
 	}
 	return nil
@@ -304,10 +304,29 @@ func rawInputToArguments(input json.RawMessage) string {
 }
 
 func totalTokens(usage converseUsage) int {
-	if usage.TotalTokens > 0 {
+	inclusiveTotal := usage.InputTokens + usage.CacheReadInputTokens +
+		usage.CacheWriteInputTokens + usage.OutputTokens
+	if usage.TotalTokens > inclusiveTotal {
 		return usage.TotalTokens
 	}
-	return usage.InputTokens + usage.OutputTokens
+	return inclusiveTotal
+}
+
+// openAIUsage preserves Converse cache usage while translating to the OpenAI
+// shape. prompt_tokens is inclusive, cached_tokens identifies the discounted
+// cache reads, and cache_write_tokens is retained for llm-cost's Bedrock
+// calculator even though it is not part of the standard OpenAI schema.
+func openAIUsage(usage converseUsage) map[string]interface{} {
+	return map[string]interface{}{
+		"prompt_tokens": usage.InputTokens + usage.CacheReadInputTokens +
+			usage.CacheWriteInputTokens,
+		"completion_tokens": usage.OutputTokens,
+		"total_tokens":      totalTokens(usage),
+		"prompt_tokens_details": map[string]interface{}{
+			"cached_tokens":      usage.CacheReadInputTokens,
+			"cache_write_tokens": usage.CacheWriteInputTokens,
+		},
+	}
 }
 
 func blockIndex(event map[string]interface{}) int {

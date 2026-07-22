@@ -225,6 +225,325 @@ func TestOpenAICalculator_Adjust_PassThrough(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// AWS Bedrock calculator
+// ---------------------------------------------------------------------------
+
+func TestSelectCalculator_Bedrock(t *testing.T) {
+	if _, ok := selectCalculator("bedrock").(*BedrockCalculator); !ok {
+		t.Error("provider bedrock did not select BedrockCalculator")
+	}
+}
+
+func TestPricingFixture_BedrockModels(t *testing.T) {
+	const expectedBedrockEntries = 138
+	bedrockEntries := 0
+	for _, pricing := range testPricingMap {
+		if pricing.Provider == "bedrock" {
+			bedrockEntries++
+		}
+	}
+	if bedrockEntries != expectedBedrockEntries {
+		t.Fatalf("Bedrock pricing entries = %d, want %d", bedrockEntries, expectedBedrockEntries)
+	}
+
+	// Cover representative vendors and regional inference profiles from the
+	// pricing snapshot imported from api-platform PR #2771.
+	for _, modelID := range []string{
+		"amazon.nova-micro-v1:0",
+		"apac.amazon.nova-micro-v1:0",
+		"eu.anthropic.claude-sonnet-4-6",
+		"global.anthropic.claude-opus-4-6-v1",
+		"us.meta.llama4-scout-17b-instruct-v1:0",
+		"mistral.mistral-large-3-675b-instruct",
+		"openai.gpt-oss-120b-1:0",
+		"qwen.qwen3-32b-v1:0",
+	} {
+		pricing, ok := lookupPricing(testPricingMap, modelID)
+		if !ok {
+			t.Errorf("missing Bedrock pricing for %q", modelID)
+			continue
+		}
+		if pricing.Provider != "bedrock" {
+			t.Errorf("provider for %q = %q, want bedrock", modelID, pricing.Provider)
+		}
+	}
+}
+
+func TestBedrockCalculator_NormalizeNativeConverseUsage(t *testing.T) {
+	c := &BedrockCalculator{}
+	usage, err := c.Normalize([]byte(`{
+		"usage": {
+			"inputTokens": 10,
+			"outputTokens": 3,
+			"totalTokens": 13,
+			"cacheReadInputTokens": 4,
+			"cacheWriteInputTokens": 2
+		}
+	}`), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if usage.PromptTokens != 16 || usage.CompletionTokens != 3 || usage.TotalTokens != 19 {
+		t.Errorf("unexpected Bedrock usage: %+v", usage)
+	}
+	if usage.CachedReadTokens != 4 || usage.CacheWriteTokens != 2 {
+		t.Errorf("unexpected Bedrock cache usage: %+v", usage)
+	}
+}
+
+func TestBedrockCalculator_NormalizeAnthropicInvokeModel(t *testing.T) {
+	c := &BedrockCalculator{}
+	usage, err := c.Normalize([]byte(`{
+		"usage": {
+			"input_tokens": 10,
+			"output_tokens": 3,
+			"cache_read_input_tokens": 4,
+			"cache_creation_input_tokens": 2
+		}
+	}`), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if usage.PromptTokens != 16 || usage.CompletionTokens != 3 || usage.TotalTokens != 19 {
+		t.Errorf("unexpected Anthropic InvokeModel usage: %+v", usage)
+	}
+	if usage.CachedReadTokens != 4 || usage.CacheWriteTokens != 2 {
+		t.Errorf("unexpected Anthropic InvokeModel cache usage: %+v", usage)
+	}
+}
+
+func TestBedrockCalculator_NormalizeTitanInvokeModel(t *testing.T) {
+	c := &BedrockCalculator{}
+	usage, err := c.Normalize([]byte(`{
+		"inputTextTokenCount": 10,
+		"results": [{"tokenCount": 3}, {"tokenCount": 2}]
+	}`), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if usage.PromptTokens != 10 || usage.CompletionTokens != 5 || usage.TotalTokens != 15 {
+		t.Errorf("unexpected Titan InvokeModel usage: %+v", usage)
+	}
+}
+
+func TestBedrockCalculator_RejectsMissingUsage(t *testing.T) {
+	if _, err := (&BedrockCalculator{}).Normalize([]byte(`{"completion":"hello"}`), nil); err == nil {
+		t.Fatal("expected a Bedrock response without token usage to fail normalization")
+	}
+}
+
+func TestBedrockCalculator_TransformedCacheUsageCost(t *testing.T) {
+	c := &BedrockCalculator{}
+	body := []byte(`{
+		"usage": {
+			"prompt_tokens": 16,
+			"completion_tokens": 3,
+			"total_tokens": 19,
+			"prompt_tokens_details": {
+				"cached_tokens": 4,
+				"cache_write_tokens": 2
+			}
+		}
+	}`)
+	usage, err := c.Normalize(body, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pricing, ok := lookupPricing(testPricingMap, "anthropic.claude-3-7-sonnet-20250219-v1:0")
+	if !ok {
+		t.Fatal("missing Bedrock Claude 3.7 Sonnet pricing")
+	}
+	// Regular input $30e-6 + output $45e-6 + cache read $1.2e-6 +
+	// cache write $7.5e-6 = $83.7e-6.
+	if got, want := genericCalculateCost(usage, pricing), 0.0000837; !almostEqual(got, want) {
+		t.Fatalf("transformed cache usage cost = %.10f, want %.10f", got, want)
+	}
+}
+
+func TestModelNameFromRequest_BedrockPaths(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{
+			name: "converse inference profile",
+			path: "/model/us.anthropic.claude-3-haiku-20240307-v1:0/converse",
+			want: "us.anthropic.claude-3-haiku-20240307-v1:0",
+		},
+		{
+			name: "invoke model",
+			path: "/model/anthropic.claude-3-haiku-20240307-v1:0/invoke?trace=enabled",
+			want: "anthropic.claude-3-haiku-20240307-v1:0",
+		},
+		{
+			name: "URL encoded foundation model ARN",
+			path: "/model/arn%3Aaws%3Abedrock%3Aus-east-1%3A%3Afoundation-model%2Fanthropic.claude-3-haiku-20240307-v1%3A0/converse-stream",
+			want: "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-haiku-20240307-v1:0",
+		},
+		{
+			name: "decoded foundation model ARN",
+			path: "/model/arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-haiku-20240307-v1:0/converse",
+			want: "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-haiku-20240307-v1:0",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := modelNameFromRequest(nil, tt.path); got != tt.want {
+				t.Fatalf("modelNameFromRequest() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLookupPricing_BedrockModelIDAliases(t *testing.T) {
+	for _, modelID := range []string{
+		"anthropic.claude-3-7-sonnet-20250219-v1:0",
+		"us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+		"bedrock/us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+		"arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-7-sonnet-20250219-v1:0",
+		"arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+	} {
+		pricing, ok := lookupPricing(testPricingMap, modelID)
+		if !ok {
+			t.Errorf("expected Bedrock pricing for %q", modelID)
+			continue
+		}
+		if pricing.Provider != "bedrock" {
+			t.Errorf("provider for %q = %q, want bedrock", modelID, pricing.Provider)
+		}
+	}
+}
+
+func TestLookupPricing_BedrockInferenceProfileFallbacks(t *testing.T) {
+	const model = "anthropic.claude-sonnet-4-5-20250929-v1:0"
+	pricingMap := map[string]ModelPricing{
+		model: {Provider: "bedrock", InputCostPerToken: 1},
+	}
+	for _, prefix := range []string{"us-gov.", "au.", "jp."} {
+		pricing, key, ok := lookupPricingWithKey(pricingMap, prefix+model)
+		if !ok {
+			t.Errorf("expected %s inference profile to fall back to foundation-model pricing", prefix)
+			continue
+		}
+		if key != model || pricing.Provider != "bedrock" {
+			t.Errorf("unexpected %s pricing match: key=%q pricing=%+v", prefix, key, pricing)
+		}
+	}
+}
+
+func TestOnResponseBodyChunk_BedrockNative_ModelFromURL(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	ctx := makeStreamResponseContext()
+	ctx.RequestPath = "/model/us.anthropic.claude-3-7-sonnet-20250219-v1:0/converse"
+	body := []byte(`{"usage":{"inputTokens":10,"outputTokens":3,"totalTokens":13}}`)
+	action := p.OnResponseBodyChunk(context.Background(), ctx, &policy.StreamBody{
+		Chunk: body, EndOfStream: true,
+	}, nil)
+	// Claude 3.7 Sonnet on Bedrock: 10 * $3/M + 3 * $15/M = $0.000075.
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000750000")
+}
+
+func TestOnResponseBodyChunk_BedrockNative_CacheCost(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	ctx := makeStreamResponseContext()
+	ctx.RequestPath = "/model/anthropic.claude-3-7-sonnet-20250219-v1:0/converse"
+	body := []byte(`{"usage":{"inputTokens":10,"outputTokens":3,"totalTokens":13,"cacheReadInputTokens":4,"cacheWriteInputTokens":2}}`)
+	action := p.OnResponseBodyChunk(context.Background(), ctx, &policy.StreamBody{
+		Chunk: body, EndOfStream: true,
+	}, nil)
+	// Regular input $30e-6 + output $45e-6 + cache read $1.2e-6 +
+	// cache write $7.5e-6 = $83.7e-6.
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000837000")
+}
+
+func TestOnResponseBodyChunk_BedrockAnthropicInvokeModel(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	ctx := makeStreamResponseContext()
+	ctx.RequestPath = "/model/anthropic.claude-3-7-sonnet-20250219-v1:0/invoke"
+	body := []byte(`{"usage":{"input_tokens":10,"output_tokens":3}}`)
+	action := p.OnResponseBodyChunk(context.Background(), ctx, &policy.StreamBody{
+		Chunk: body, EndOfStream: true,
+	}, nil)
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000750000")
+}
+
+func TestOnResponseBodyChunk_BedrockInvokeModelMissingUsage_NotCalculated(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	ctx := makeStreamResponseContext()
+	ctx.RequestPath = "/model/anthropic.claude-3-7-sonnet-20250219-v1:0/invoke"
+	action := p.OnResponseBodyChunk(context.Background(), ctx, &policy.StreamBody{
+		Chunk: []byte(`{"completion":"hello"}`), EndOfStream: true,
+	}, nil)
+	assertStreamCostMetadata(t, ctx, action, costStatusNotCalculated, "0.0000000000")
+}
+
+func TestOnResponseBodyChunk_BedrockARN_UsesCanonicalAnalyticsModel(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	ctx := makeStreamResponseContext()
+	ctx.RequestPath = "/model/arn%3Aaws%3Abedrock%3Aus-east-1%3A%3Afoundation-model%2Fanthropic.claude-3-7-sonnet-20250219-v1%3A0/converse"
+	action := p.OnResponseBodyChunk(context.Background(), ctx, &policy.StreamBody{
+		Chunk: []byte(`{"usage":{"inputTokens":10,"outputTokens":3,"totalTokens":13}}`), EndOfStream: true,
+	}, nil)
+	forward, ok := action.(policy.ForwardResponseChunk)
+	if !ok {
+		t.Fatalf("expected ForwardResponseChunk, got %T", action)
+	}
+	const wantModel = "anthropic.claude-3-7-sonnet-20250219-v1:0"
+	if got := forward.AnalyticsMetadata[metadataModelID]; got != wantModel {
+		t.Fatalf("analytics model = %v, want %q", got, wantModel)
+	}
+}
+
+func TestOnResponseBodyChunk_BedrockNova_ModelFromURL(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	ctx := makeStreamResponseContext()
+	ctx.RequestPath = "/model/apac.amazon.nova-micro-v1:0/converse"
+	body := []byte(`{"usage":{"inputTokens":10,"outputTokens":3,"totalTokens":13}}`)
+	action := p.OnResponseBodyChunk(context.Background(), ctx, &policy.StreamBody{
+		Chunk: body, EndOfStream: true,
+	}, nil)
+	// Nova Micro APAC: 10 * $0.037/M + 3 * $0.148/M = $0.000000814.
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000008140")
+}
+
+func TestOnResponseBodyChunk_SSE_BedrockTransformed_Calculated(t *testing.T) {
+	const model = "anthropic.claude-3-haiku-20240307-v1:0"
+	pricingMap := map[string]ModelPricing{
+		model: {
+			Provider:           "bedrock",
+			InputCostPerToken:  2.5e-7,
+			OutputCostPerToken: 1.25e-6,
+		},
+	}
+	p := &LLMCostPolicy{pricingMap: pricingMap}
+	body := []byte(
+		"data: {\"id\":\"chatcmpl-bedrock\",\"model\":\"" + model + "\",\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n" +
+			"data: {\"id\":\"chatcmpl-bedrock\",\"model\":\"" + model + "\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":3,\"total_tokens\":13}}\n" +
+			"data: [DONE]\n",
+	)
+	ctx, action := sendChunks(p, [][]byte{body})
+	// 10 * 2.5e-7 + 3 * 1.25e-6 = 6.25e-6.
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000062500")
+	fwd, ok := action.(policy.ForwardResponseChunk)
+	if !ok {
+		t.Fatalf("expected ForwardResponseChunk, got %T", action)
+	}
+	wantAnalytics := map[string]any{
+		MetadataLLMCost:              6.25e-6,
+		metadataModelID:              model,
+		metadataPromptTokenCount:     "10",
+		metadataCompletionTokenCount: "3",
+		metadataTotalTokenCount:      "13",
+	}
+	for key, want := range wantAnalytics {
+		if got := fwd.AnalyticsMetadata[key]; got != want {
+			t.Errorf("analytics metadata %q = %#v, want %#v", key, got, want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Mistral calculator
 // ---------------------------------------------------------------------------
 

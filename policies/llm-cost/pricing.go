@@ -266,6 +266,8 @@ func selectCalculator(provider string) providerCalculator {
 		return &GeminiCalculator{}
 	case "mistral":
 		return &MistralCalculator{}
+	case "bedrock":
+		return &BedrockCalculator{}
 	default:
 		return nil
 	}
@@ -276,40 +278,69 @@ func selectCalculator(provider string) providerCalculator {
 // knownProviderPrefixes are namespaces where the API returns bare model names
 // but the pricing key is namespaced (e.g. "mistral-large-latest" → "mistral/mistral-large-latest").
 var knownProviderPrefixes = []string{
+	"bedrock/",
 	"mistral/",
 	"vertex_ai/",
 }
 
+var bedrockInferenceProfilePrefixes = []string{
+	"us-gov.", "us.", "eu.", "apac.", "global.", "au.", "jp.",
+}
+
 func lookupPricing(pricingMap map[string]ModelPricing, modelName string) (ModelPricing, bool) {
+	pricing, _, found := lookupPricingWithKey(pricingMap, modelName)
+	return pricing, found
+}
+
+// lookupPricingWithKey returns both the pricing record and the canonical key
+// that matched it. The key is used for analytics so URL ARNs and bare model IDs
+// do not create separate model dimensions for the same pricing entry.
+func lookupPricingWithKey(pricingMap map[string]ModelPricing, modelName string) (ModelPricing, string, bool) {
 	// Canonicalize to lowercase once upfront so all comparisons are case-insensitive.
-	modelName = strings.ToLower(modelName)
+	modelName = strings.ToLower(strings.TrimSpace(modelName))
 
 	// tryMatch checks the map and also runs progressive suffix stripping on candidate.
-	tryMatch := func(candidate string) (ModelPricing, bool) {
+	tryMatch := func(candidate string) (ModelPricing, string, bool) {
 		if p, ok := pricingMap[candidate]; ok {
-			return p, true
+			return p, candidate, true
 		}
 		// Progressive suffix stripping: "gpt-4o-2024-11-20" → "gpt-4o-2024-11" → "gpt-4o-2024" → "gpt-4o"
 		parts := strings.Split(candidate, "-")
 		for i := len(parts) - 1; i >= 1; i-- {
-			if p, ok := pricingMap[strings.Join(parts[:i], "-")]; ok {
-				return p, true
+			key := strings.Join(parts[:i], "-")
+			if p, ok := pricingMap[key]; ok {
+				return p, key, true
 			}
 		}
-		return ModelPricing{}, false
+		return ModelPricing{}, "", false
 	}
 
 	// 1. Exact match (with suffix stripping).
-	if p, ok := tryMatch(modelName); ok {
-		return p, true
+	if p, key, ok := tryMatch(modelName); ok {
+		return p, key, true
+	}
+
+	// Bedrock may identify a foundation model through a cross-region inference
+	// profile (for example "us.anthropic.claude-...") or a URL-encoded ARN.
+	// Exact profile-specific pricing wins above; these aliases are fallbacks for
+	// pricing files that contain only the underlying foundation-model ID.
+	for _, alias := range bedrockModelAliases(modelName) {
+		if p, key, ok := tryMatch(alias); ok {
+			return p, key, true
+		}
+		if !strings.Contains(alias, "/") {
+			if p, key, ok := tryMatch("bedrock/" + alias); ok {
+				return p, key, true
+			}
+		}
 	}
 
 	// 2. Strip provider-prefix duplicates: some responses echo "openai/gpt-4o"
 	//    but the JSON key is "gpt-4o".
 	if idx := strings.Index(modelName, "/"); idx != -1 {
 		bare := modelName[idx+1:]
-		if p, ok := tryMatch(bare); ok {
-			return p, true
+		if p, key, ok := tryMatch(bare); ok {
+			return p, key, true
 		}
 	}
 
@@ -319,13 +350,38 @@ func lookupPricing(pricingMap map[string]ModelPricing, modelName string) (ModelP
 	//    (e.g. "mistral/mistral-large-latest").
 	if !strings.Contains(modelName, "/") {
 		for _, prefix := range knownProviderPrefixes {
-			if p, ok := tryMatch(prefix + modelName); ok {
-				return p, true
+			if p, key, ok := tryMatch(prefix + modelName); ok {
+				return p, key, true
 			}
 		}
 	}
 
-	return ModelPricing{}, false
+	return ModelPricing{}, "", false
+}
+
+// bedrockModelAliases returns canonical model IDs for Bedrock foundation-model
+// and system-defined inference-profile identifiers. Application/provisioned
+// profile IDs cannot be resolved locally because they do not encode a model ID.
+func bedrockModelAliases(modelName string) []string {
+	candidate := strings.TrimPrefix(modelName, "bedrock/")
+	for _, marker := range []string{"foundation-model/", "inference-profile/"} {
+		if i := strings.Index(candidate, marker); i >= 0 {
+			candidate = candidate[i+len(marker):]
+			break
+		}
+	}
+
+	aliases := make([]string, 0, 2)
+	if candidate != modelName {
+		aliases = append(aliases, candidate)
+	}
+	for _, prefix := range bedrockInferenceProfilePrefixes {
+		if strings.HasPrefix(candidate, prefix) {
+			aliases = append(aliases, strings.TrimPrefix(candidate, prefix))
+			break
+		}
+	}
+	return aliases
 }
 
 // effectiveRates holds the resolved per-token rates after applying context-window
