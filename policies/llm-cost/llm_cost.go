@@ -131,18 +131,10 @@ func (p *LLMCostPolicy) OnResponseBody(ctx context.Context, respCtx *policy.Resp
 		return setCostMetadata(respCtx, 0.0, costStatusNotCalculated)
 	}
 
-	responseBody := respCtx.ResponseBody.Content
-
-	// If the response body is buffered SSE events rather than a single JSON
-	// object, merge all events into one JSON blob so the downstream calculators
-	// can parse it with a regular json.Unmarshal.
-	if isSSEContent(responseBody) {
-		merged, err := mergeSSEEvents(responseBody)
-		if err != nil {
-			slog.Warn("llm-cost: failed to merge SSE events", "error", err)
-			return setCostMetadata(respCtx, 0.0, costStatusNotCalculated)
-		}
-		responseBody = merged
+	responseBody, err := responseBodyForNormalization(respCtx.ResponseBody.Content, respCtx.RequestPath)
+	if err != nil {
+		slog.Warn("llm-cost: failed to prepare response body", "error", err)
+		return setCostMetadata(respCtx, 0.0, costStatusNotCalculated)
 	}
 
 	// Extract model name from response body.
@@ -299,15 +291,11 @@ func (p *LLMCostPolicy) computeAndSetStreamingCost(sharedCtx *policy.SharedConte
 		return streamingCostResult{}
 	}
 
-	responseBody := body
-	if isSSEContent(body) {
-		merged, err := mergeSSEEvents(body)
-		if err != nil {
-			slog.Warn("llm-cost: failed to merge SSE events in streaming mode", "error", err)
-			setMeta(0.0, costStatusNotCalculated)
-			return streamingCostResult{}
-		}
-		responseBody = merged
+	responseBody, err := responseBodyForNormalization(body, requestPath)
+	if err != nil {
+		slog.Warn("llm-cost: failed to prepare streaming response body", "error", err)
+		setMeta(0.0, costStatusNotCalculated)
+		return streamingCostResult{}
 	}
 
 	var probe struct {
@@ -389,6 +377,26 @@ func isSSEContent(b []byte) bool {
 		}
 	}
 	return false
+}
+
+// responseBodyForNormalization converts streaming wire formats into the JSON
+// object expected by the provider calculators. Transformed Bedrock responses
+// are SSE and take the existing path; native ConverseStream responses are
+// Amazon event-stream frames whose metadata event carries usage.
+func responseBodyForNormalization(body []byte, requestPath string) ([]byte, error) {
+	path := requestPath
+	if end := strings.IndexByte(path, '?'); end >= 0 {
+		path = path[:end]
+	}
+	if strings.HasSuffix(path, "/converse-stream") {
+		if metadata, ok := bedrockConverseStreamMetadata(body); ok {
+			return metadata, nil
+		}
+	}
+	if isSSEContent(body) {
+		return mergeSSEEvents(body)
+	}
+	return body, nil
 }
 
 // mergeSSEEvents parses every SSE data/event line as JSON and shallow-merges all

@@ -175,26 +175,12 @@ func (c *AnthropicCalculator) Adjust(baseCost float64, usage Usage, pricing Mode
 	}
 
 	// Resolve the cache rates that genericCalculateCost used (tier-aware).
-	cacheReadRate := pricing.CacheReadInputTokenCost
-	cacheWrite5mRate := pricing.CacheCreationInputTokenCost
-	cacheWrite1hrRate := pricing.CacheCreationInputTokenCostAbove1hr
-	if cacheWrite1hrRate == 0 {
-		cacheWrite1hrRate = cacheWrite5mRate
-	}
-	if usage.InputTokensForTiering > 200_000 && pricing.InputCostPerTokenAbove200k > 0 {
-		if pricing.CacheReadInputTokenCostAbove200k > 0 {
-			cacheReadRate = pricing.CacheReadInputTokenCostAbove200k
-		}
-		if pricing.CacheCreationInputTokenCostAbove200k > 0 {
-			cacheWrite5mRate = pricing.CacheCreationInputTokenCostAbove200k
-			cacheWrite1hrRate = pricing.CacheCreationInputTokenCostAbove200k
-		}
-	}
+	rates := resolveRates(usage, pricing)
 
 	// Carve out cache costs before applying multiplier.
-	cacheCost := float64(usage.CachedReadTokens)*cacheReadRate +
-		float64(usage.CacheWriteTokens)*cacheWrite5mRate +
-		float64(usage.CacheWrite1hrTokens)*cacheWrite1hrRate
+	cacheCost := float64(usage.CachedReadTokens)*rates.cacheRead +
+		float64(usage.CacheWriteTokens)*rates.cacheWrite5m +
+		float64(usage.CacheWrite1hrTokens)*rates.cacheWrite1h
 
 	// Carve out web search cost — flat fee, not subject to geo/speed multiplier.
 	var webSearchCost float64

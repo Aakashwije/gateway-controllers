@@ -18,6 +18,7 @@ package llmcost
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"math"
 	"os"
@@ -291,6 +292,46 @@ func TestBedrockCalculator_NormalizeNativeConverseUsage(t *testing.T) {
 	}
 }
 
+func TestBedrockCalculator_NormalizeNativeConverseCacheWriteTTLs(t *testing.T) {
+	c := &BedrockCalculator{}
+	usage, err := c.Normalize([]byte(`{
+		"usage": {
+			"inputTokens": 10,
+			"outputTokens": 3,
+			"totalTokens": 13,
+			"cacheReadInputTokens": 4,
+			"cacheWriteInputTokens": 1200,
+			"cacheDetails": [
+				{"ttl": "1h", "inputTokens": 1000},
+				{"ttl": "5m", "inputTokens": 200}
+			]
+		}
+	}`), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if usage.PromptTokens != 1214 || usage.CompletionTokens != 3 || usage.TotalTokens != 1217 {
+		t.Errorf("unexpected Bedrock usage: %+v", usage)
+	}
+	if usage.CachedReadTokens != 4 || usage.CacheWriteTokens != 200 ||
+		usage.CacheWrite1hrTokens != 1000 {
+		t.Errorf("unexpected Bedrock cache TTL usage: %+v", usage)
+	}
+
+	pricing, ok := lookupPricing(testPricingMap, "anthropic.claude-opus-4-6-v1")
+	if !ok {
+		t.Fatal("missing Bedrock Claude Opus 4.6 pricing")
+	}
+	want := float64(10)*pricing.InputCostPerToken +
+		float64(3)*pricing.OutputCostPerToken +
+		float64(4)*pricing.CacheReadInputTokenCost +
+		float64(200)*pricing.CacheCreationInputTokenCost +
+		float64(1000)*pricing.CacheCreationInputTokenCostAbove1hr
+	if got := genericCalculateCost(usage, pricing); !almostEqual(got, want) {
+		t.Fatalf("native cache TTL usage cost = %.10f, want %.10f", got, want)
+	}
+}
+
 func TestBedrockCalculator_NormalizeAnthropicInvokeModel(t *testing.T) {
 	c := &BedrockCalculator{}
 	usage, err := c.Normalize([]byte(`{
@@ -357,6 +398,74 @@ func TestBedrockCalculator_TransformedCacheUsageCost(t *testing.T) {
 	// cache write $7.5e-6 = $83.7e-6.
 	if got, want := genericCalculateCost(usage, pricing), 0.0000837; !almostEqual(got, want) {
 		t.Fatalf("transformed cache usage cost = %.10f, want %.10f", got, want)
+	}
+}
+
+func TestBedrockCalculator_TransformedCacheWriteTTLCost(t *testing.T) {
+	c := &BedrockCalculator{}
+	body := []byte(`{
+		"usage": {
+			"prompt_tokens": 20,
+			"completion_tokens": 3,
+			"total_tokens": 23,
+			"prompt_tokens_details": {
+				"cached_tokens": 4,
+				"cache_write_tokens": 6,
+				"cache_write_5m_tokens": 2,
+				"cache_write_1h_tokens": 4
+			}
+		}
+	}`)
+	usage, err := c.Normalize(body, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if usage.CacheWriteTokens != 2 || usage.CacheWrite1hrTokens != 4 {
+		t.Fatalf("unexpected transformed cache TTL usage: %+v", usage)
+	}
+
+	pricing, ok := lookupPricing(testPricingMap, "anthropic.claude-opus-4-6-v1")
+	if !ok {
+		t.Fatal("missing Bedrock Claude Opus 4.6 pricing")
+	}
+	want := float64(10)*pricing.InputCostPerToken +
+		float64(3)*pricing.OutputCostPerToken +
+		float64(4)*pricing.CacheReadInputTokenCost +
+		float64(2)*pricing.CacheCreationInputTokenCost +
+		float64(4)*pricing.CacheCreationInputTokenCostAbove1hr
+	if got := genericCalculateCost(usage, pricing); !almostEqual(got, want) {
+		t.Fatalf("transformed cache TTL usage cost = %.10f, want %.10f", got, want)
+	}
+}
+
+func TestBedrockCalculator_CacheWrite1hrAbove200kCost(t *testing.T) {
+	pricing, ok := lookupPricing(testPricingMap, "anthropic.claude-sonnet-4-5-20250929-v1:0")
+	if !ok {
+		t.Fatal("missing Bedrock Claude Sonnet 4.5 pricing")
+	}
+	if got, want := pricing.CacheCreationInputTokenCostAbove1hrAbove200k, 0.000012; got != want {
+		t.Fatalf("decoded combined 1hr and >200k cache-write rate = %g, want %g", got, want)
+	}
+
+	usage := Usage{
+		PromptTokens:          200_002,
+		InputTokensForTiering: 200_002,
+		CacheWriteTokens:      1,
+		CacheWrite1hrTokens:   1,
+	}
+	rates := resolveRates(usage, pricing)
+	if got, want := rates.cacheWrite5m, 0.0000075; got != want {
+		t.Errorf(">200k 5-minute cache-write rate = %g, want %g", got, want)
+	}
+	if got, want := rates.cacheWrite1h, 0.000012; got != want {
+		t.Errorf(">200k 1-hour cache-write rate = %g, want %g", got, want)
+	}
+
+	wantCost := float64(200_000)*pricing.InputCostPerTokenAbove200k +
+		pricing.CacheCreationInputTokenCostAbove200k +
+		pricing.CacheCreationInputTokenCostAbove1hrAbove200k
+	if got := genericCalculateCost(usage, pricing); !almostEqual(got, wantCost) {
+		t.Fatalf("combined 1hr and >200k cost = %.10f, want %.10f", got, wantCost)
 	}
 }
 
@@ -455,6 +564,58 @@ func TestOnResponseBodyChunk_BedrockNative_CacheCost(t *testing.T) {
 	// Regular input $30e-6 + output $45e-6 + cache read $1.2e-6 +
 	// cache write $7.5e-6 = $83.7e-6.
 	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000837000")
+}
+
+func TestOnResponseBodyChunk_BedrockConverseStream_NativeEventStream(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	ctx := makeStreamResponseContext()
+	ctx.RequestPath = "/model/anthropic.claude-3-7-sonnet-20250219-v1:0/converse-stream"
+
+	messageStart := encodeBedrockEventStreamFrame("messageStart", `{"role":"assistant"}`)
+	metadata := encodeBedrockEventStreamFrame("metadata",
+		`{"usage":{"inputTokens":10,"outputTokens":3,"totalTokens":13}}`)
+
+	action := p.OnResponseBodyChunk(context.Background(), ctx, &policy.StreamBody{
+		Chunk: messageStart,
+		Index: 0,
+	}, nil)
+	if _, ok := ctx.Metadata[MetadataLLMCostStatus]; ok {
+		t.Fatal("cost status set before the native stream reached end-of-stream")
+	}
+	if forward, ok := action.(policy.ForwardResponseChunk); ok && len(forward.AnalyticsMetadata) != 0 {
+		t.Fatal("analytics metadata set before the native stream reached end-of-stream")
+	}
+
+	action = p.OnResponseBodyChunk(context.Background(), ctx, &policy.StreamBody{
+		Chunk:       metadata,
+		EndOfStream: true,
+		Index:       1,
+	}, nil)
+	// Claude 3.7 Sonnet on Bedrock: 10 * $3/M + 3 * $15/M = $0.000075.
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000750000")
+}
+
+func encodeBedrockEventStreamFrame(eventType, payload string) []byte {
+	headers := encodeBedrockEventStreamStringHeader(":event-type", eventType)
+	headers = append(headers, encodeBedrockEventStreamStringHeader(":message-type", "event")...)
+
+	totalLen := bedrockEventStreamOverhead + len(headers) + len(payload)
+	frame := make([]byte, 0, totalLen)
+	frame = binary.BigEndian.AppendUint32(frame, uint32(totalLen))
+	frame = binary.BigEndian.AppendUint32(frame, uint32(len(headers)))
+	frame = binary.BigEndian.AppendUint32(frame, 0)
+	frame = append(frame, headers...)
+	frame = append(frame, payload...)
+	frame = binary.BigEndian.AppendUint32(frame, 0)
+	return frame
+}
+
+func encodeBedrockEventStreamStringHeader(name, value string) []byte {
+	header := []byte{byte(len(name))}
+	header = append(header, name...)
+	header = append(header, 7)
+	header = binary.BigEndian.AppendUint16(header, uint16(len(value)))
+	return append(header, value...)
 }
 
 func TestOnResponseBodyChunk_BedrockAnthropicInvokeModel(t *testing.T) {

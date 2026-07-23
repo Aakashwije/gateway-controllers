@@ -58,11 +58,17 @@ type converseContentBlock struct {
 }
 
 type converseUsage struct {
-	InputTokens           int `json:"inputTokens"`
-	OutputTokens          int `json:"outputTokens"`
-	TotalTokens           int `json:"totalTokens"`
-	CacheReadInputTokens  int `json:"cacheReadInputTokens"`
-	CacheWriteInputTokens int `json:"cacheWriteInputTokens"`
+	InputTokens           int           `json:"inputTokens"`
+	OutputTokens          int           `json:"outputTokens"`
+	TotalTokens           int           `json:"totalTokens"`
+	CacheReadInputTokens  int           `json:"cacheReadInputTokens"`
+	CacheWriteInputTokens int           `json:"cacheWriteInputTokens"`
+	CacheDetails          []cacheDetail `json:"cacheDetails"`
+}
+
+type cacheDetail struct {
+	TTL         string `json:"ttl"`
+	InputTokens int    `json:"inputTokens"`
 }
 
 func translateConverseResponse(body []byte, status int, model, id string) policy.ResponseAction {
@@ -258,6 +264,7 @@ func streamFrameToSSE(frame *eventStreamFrame, id, model string, created int64) 
 			TotalTokens:           numberField(usage, "totalTokens"),
 			CacheReadInputTokens:  numberField(usage, "cacheReadInputTokens"),
 			CacheWriteInputTokens: numberField(usage, "cacheWriteInputTokens"),
+			CacheDetails:          cacheDetailsField(usage),
 		})
 		return sseData(chunk)
 	}
@@ -304,27 +311,52 @@ func rawInputToArguments(input json.RawMessage) string {
 }
 
 func totalTokens(usage converseUsage) int {
+	cacheWrite5m, cacheWrite1h := cacheWritesByTTL(usage)
 	inclusiveTotal := usage.InputTokens + usage.CacheReadInputTokens +
-		usage.CacheWriteInputTokens + usage.OutputTokens
+		cacheWrite5m + cacheWrite1h + usage.OutputTokens
 	if usage.TotalTokens > inclusiveTotal {
 		return usage.TotalTokens
 	}
 	return inclusiveTotal
 }
 
+func cacheWritesByTTL(usage converseUsage) (int, int) {
+	if len(usage.CacheDetails) == 0 {
+		return usage.CacheWriteInputTokens, 0
+	}
+
+	var cacheWrite5m, cacheWrite1h int
+	for _, detail := range usage.CacheDetails {
+		switch detail.TTL {
+		case "5m":
+			cacheWrite5m += detail.InputTokens
+		case "1h":
+			cacheWrite1h += detail.InputTokens
+		}
+	}
+	if classified := cacheWrite5m + cacheWrite1h; usage.CacheWriteInputTokens > classified {
+		cacheWrite5m += usage.CacheWriteInputTokens - classified
+	}
+	return cacheWrite5m, cacheWrite1h
+}
+
 // openAIUsage preserves Converse cache usage while translating to the OpenAI
 // shape. prompt_tokens is inclusive, cached_tokens identifies the discounted
-// cache reads, and cache_write_tokens is retained for llm-cost's Bedrock
-// calculator even though it is not part of the standard OpenAI schema.
+// cache reads, and cache-write totals plus their TTL breakdown are retained for
+// llm-cost's Bedrock calculator even though they are not standard OpenAI fields.
 func openAIUsage(usage converseUsage) map[string]interface{} {
+	cacheWrite5m, cacheWrite1h := cacheWritesByTTL(usage)
+	cacheWriteTotal := cacheWrite5m + cacheWrite1h
 	return map[string]interface{}{
 		"prompt_tokens": usage.InputTokens + usage.CacheReadInputTokens +
-			usage.CacheWriteInputTokens,
+			cacheWriteTotal,
 		"completion_tokens": usage.OutputTokens,
 		"total_tokens":      totalTokens(usage),
 		"prompt_tokens_details": map[string]interface{}{
-			"cached_tokens":      usage.CacheReadInputTokens,
-			"cache_write_tokens": usage.CacheWriteInputTokens,
+			"cached_tokens":         usage.CacheReadInputTokens,
+			"cache_write_tokens":    cacheWriteTotal,
+			"cache_write_5m_tokens": cacheWrite5m,
+			"cache_write_1h_tokens": cacheWrite1h,
 		},
 	}
 }
@@ -341,6 +373,23 @@ func numberField(m map[string]interface{}, key string) int {
 		return n
 	}
 	return 0
+}
+
+func cacheDetailsField(m map[string]interface{}) []cacheDetail {
+	rawDetails, _ := m["cacheDetails"].([]interface{})
+	details := make([]cacheDetail, 0, len(rawDetails))
+	for _, rawDetail := range rawDetails {
+		detail, _ := rawDetail.(map[string]interface{})
+		ttl, _ := detail["ttl"].(string)
+		if ttl == "" {
+			continue
+		}
+		details = append(details, cacheDetail{
+			TTL:         ttl,
+			InputTokens: numberField(detail, "inputTokens"),
+		})
+	}
+	return details
 }
 
 func exceptionMessage(frame *eventStreamFrame) string {

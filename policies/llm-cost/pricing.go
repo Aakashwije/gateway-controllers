@@ -118,12 +118,13 @@ type ModelPricing struct {
 	CacheReadInputTokenCostFlex float64 `json:"cache_read_input_token_cost_flex"`
 
 	// Prompt caching
-	CacheReadInputTokenCost              float64 `json:"cache_read_input_token_cost"`
-	CacheCreationInputTokenCost          float64 `json:"cache_creation_input_token_cost"`
-	CacheCreationInputTokenCostAbove1hr  float64 `json:"cache_creation_input_token_cost_above_1hr"`
-	CacheReadInputTokenCostAbove200k     float64 `json:"cache_read_input_token_cost_above_200k_tokens"`
-	CacheCreationInputTokenCostAbove200k float64 `json:"cache_creation_input_token_cost_above_200k_tokens"`
-	CacheReadInputTokenCostAbove272k     float64 `json:"cache_read_input_token_cost_above_272k_tokens"`
+	CacheReadInputTokenCost                      float64 `json:"cache_read_input_token_cost"`
+	CacheCreationInputTokenCost                  float64 `json:"cache_creation_input_token_cost"`
+	CacheCreationInputTokenCostAbove1hr          float64 `json:"cache_creation_input_token_cost_above_1hr"`
+	CacheReadInputTokenCostAbove200k             float64 `json:"cache_read_input_token_cost_above_200k_tokens"`
+	CacheCreationInputTokenCostAbove200k         float64 `json:"cache_creation_input_token_cost_above_200k_tokens"`
+	CacheCreationInputTokenCostAbove1hrAbove200k float64 `json:"cache_creation_input_token_cost_above_1hr_above_200k_tokens"`
+	CacheReadInputTokenCostAbove272k             float64 `json:"cache_read_input_token_cost_above_272k_tokens"`
 
 	// Cached audio token read rate (Gemini models with separate audio caching cost).
 	// When set, cached audio input tokens are billed at this rate instead of
@@ -437,9 +438,12 @@ func resolveRates(usage Usage, pricing ModelPricing) effectiveRates {
 		}
 		if pricing.CacheCreationInputTokenCostAbove200k > 0 {
 			r.cacheWrite5m = pricing.CacheCreationInputTokenCostAbove200k
-			// TODO: if Anthropic ever defines cache_creation_input_token_cost_above_1hr_above_200k_tokens,
-			// select it here. For now, the >200k write rate applies to both TTLs.
+			// Preserve the previous fallback for pricing entries that define only
+			// a general >200k cache-write rate.
 			r.cacheWrite1h = pricing.CacheCreationInputTokenCostAbove200k
+		}
+		if pricing.CacheCreationInputTokenCostAbove1hrAbove200k > 0 {
+			r.cacheWrite1h = pricing.CacheCreationInputTokenCostAbove1hrAbove200k
 		}
 	case tierTokens > 128_000 && pricing.InputCostPerTokenAbove128k > 0:
 		r.input = pricing.InputCostPerTokenAbove128k
