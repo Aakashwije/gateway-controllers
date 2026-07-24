@@ -594,6 +594,27 @@ func TestGetPolicy_Mixed_NewScopes_OldClaims(t *testing.T) {
 	assertForbidden(t, run(authz, authenticatedAuthCtx(map[string]bool{"other": true}, "alice", "", nil, nil)))
 }
 
+// Reverse mix: deprecated requiredScopes (OR) + new claims (allOf). Both dimensions are resolved
+// independently, so this direction must work the same as Mixed_NewScopes_OldClaims.
+func TestGetPolicy_Mixed_OldScopes_NewClaims(t *testing.T) {
+	params := toolsParam([]any{map[string]any{
+		"name":           "my-tool",
+		"requiredScopes": []any{"api:read"},
+		"claims":         map[string]any{"allOf": []any{map[string]any{"claim": "sub", "values": []any{"alice"}}}},
+	}})
+	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	if err != nil {
+		t.Fatalf("GetPolicy: %v", err)
+	}
+	authz := p.(*McpAuthzPolicy)
+	// both satisfied → allow
+	assertAllowed(t, run(authz, authenticatedAuthCtx(map[string]bool{"api:read": true}, "alice", "", nil, nil)))
+	// deprecated scope ok but new claim fails → deny
+	assertForbidden(t, run(authz, authenticatedAuthCtx(map[string]bool{"api:read": true}, "bob", "", nil, nil)))
+	// new claim ok but deprecated scope fails → deny
+	assertForbidden(t, run(authz, authenticatedAuthCtx(map[string]bool{"other": true}, "alice", "", nil, nil)))
+}
+
 // mcp-authz evaluates ALL matching rules (specific + wildcard) with AND semantics.
 func TestOnRequest_MultipleMatchingRules_AllMustPass(t *testing.T) {
 	p := &McpAuthzPolicy{Rules: []Rule{
@@ -626,4 +647,133 @@ func TestGetPolicy_NewFormat_ResourceRule(t *testing.T) {
 
 	ctx = createMockContext("POST", "/mcp", body, authenticatedAuthCtx(map[string]bool{"other": true}, "a", "", nil, nil))
 	assertForbidden(t, authz.OnRequestBody(context.Background(), ctx, map[string]any{}))
+}
+
+// ---- TypedProperties (structured claim) matching ----
+
+// A multi-valued (array) custom claim carried in AuthContext.TypedProperties is matched as a set —
+// the fix for the flattened-Properties limitation. The value keeps its native []interface{} type,
+// exactly as jwt-auth stores it from the parsed token.
+func TestOnRequest_Claims_MultiValuedClaimViaTypedProperties(t *testing.T) {
+	p := &McpAuthzPolicy{Rules: []Rule{{
+		Attribute: Attribute{Type: "tool", Name: "my-tool"},
+		Claims:    ClaimConstraints{AllOf: []ClaimMatcher{{Claim: "roles", Values: []string{"admin"}}}},
+	}}}
+
+	// "admin" is one element of the token's roles array → authorized.
+	allowed := &policy.AuthContext{
+		Authenticated:   true,
+		AuthType:        "jwt",
+		TypedProperties: map[string]interface{}{"roles": []interface{}{"developer", "admin"}},
+	}
+	assertAllowed(t, run(p, allowed))
+
+	// roles present but "admin" not among them → denied.
+	denied := &policy.AuthContext{
+		Authenticated:   true,
+		AuthType:        "jwt",
+		TypedProperties: map[string]interface{}{"roles": []interface{}{"developer", "viewer"}},
+	}
+	assertForbidden(t, run(p, denied))
+}
+
+// A scalar custom claim carried in TypedProperties (native string) is matched directly.
+func TestOnRequest_Claims_ScalarClaimViaTypedProperties(t *testing.T) {
+	p := &McpAuthzPolicy{Rules: []Rule{{
+		Attribute: Attribute{Type: "tool", Name: "my-tool"},
+		Claims:    ClaimConstraints{AllOf: []ClaimMatcher{{Claim: "department", Values: []string{"platform"}}}},
+	}}}
+	authCtx := &policy.AuthContext{
+		Authenticated:   true,
+		AuthType:        "jwt",
+		TypedProperties: map[string]interface{}{"department": "platform"},
+	}
+	assertAllowed(t, run(p, authCtx))
+}
+
+// When TypedProperties is absent (e.g., an auth policy that doesn't populate it), matching falls
+// back to the flattened Properties string — preserving the previous behavior.
+func TestOnRequest_Claims_FallsBackToProperties(t *testing.T) {
+	p := &McpAuthzPolicy{Rules: []Rule{{
+		Attribute: Attribute{Type: "tool", Name: "my-tool"},
+		Claims:    ClaimConstraints{AllOf: []ClaimMatcher{{Claim: "department", Values: []string{"platform"}}}},
+	}}}
+	// No TypedProperties; scalar claim in Properties → matches via fallback.
+	authCtx := &policy.AuthContext{
+		Authenticated: true,
+		AuthType:      "jwt",
+		Properties:    map[string]string{"department": "platform"},
+	}
+	assertAllowed(t, run(p, authCtx))
+}
+
+// ---- Rule must define at least one authorization condition ----
+
+// A rule with only a name (no claims/scopes/requiredClaims/requiredScopes) is rejected: an
+// unconditional rule would grant access to anyone and defeat the policy's purpose.
+func TestGetPolicy_RuleWithoutAnyCondition_IsRejected(t *testing.T) {
+	_, err := GetPolicy(policy.PolicyMetadata{}, toolsParam([]any{
+		map[string]any{"name": "my-tool"},
+	}))
+	if err == nil {
+		t.Fatal("expected GetPolicy to reject a rule with no scopes/claims condition, got nil error")
+	}
+}
+
+// ---- Deprecated requiredClaims preserves exact-scalar semantics (no array/set matching) ----
+
+// authCtxWithArrayRole mimics how an auth policy (jwt-auth) populates a multi-valued claim: the
+// flattened string form in Properties and the native array in TypedProperties.
+func authCtxWithArrayRole() *policy.AuthContext {
+	return &policy.AuthContext{
+		Authenticated:   true,
+		AuthType:        "jwt",
+		Properties:      map[string]string{"role": `["admin","editor"]`},
+		TypedProperties: map[string]interface{}{"role": []interface{}{"admin", "editor"}},
+	}
+}
+
+// Regression guard: a scalar requiredClaims entry must NOT match an array-valued claim. This is the
+// behavior mcp-authz had before TypedProperties — the deprecated field keeps exact-scalar matching
+// so upgrading the policy version cannot silently change an authorization decision.
+func TestRequiredClaims_Deprecated_DoesNotMatchArrayClaim(t *testing.T) {
+	p, err := GetPolicy(policy.PolicyMetadata{}, toolsParam([]any{map[string]any{
+		"name":           "my-tool",
+		"requiredClaims": map[string]any{"role": "admin"},
+	}}))
+	if err != nil {
+		t.Fatalf("GetPolicy: %v", err)
+	}
+	assertForbidden(t, run(p.(*McpAuthzPolicy), authCtxWithArrayRole()))
+}
+
+// A scalar requiredClaims entry still matches a scalar claim (old positive behavior preserved).
+func TestRequiredClaims_Deprecated_MatchesScalarClaim(t *testing.T) {
+	p, err := GetPolicy(policy.PolicyMetadata{}, toolsParam([]any{map[string]any{
+		"name":           "my-tool",
+		"requiredClaims": map[string]any{"role": "admin"},
+	}}))
+	if err != nil {
+		t.Fatalf("GetPolicy: %v", err)
+	}
+	authCtx := &policy.AuthContext{
+		Authenticated:   true,
+		AuthType:        "jwt",
+		Properties:      map[string]string{"role": "admin"},
+		TypedProperties: map[string]interface{}{"role": "admin"},
+	}
+	assertAllowed(t, run(p.(*McpAuthzPolicy), authCtx))
+}
+
+// Contrast: the NEW `claims` field DOES match the same array-valued claim, confirming the split —
+// only the deprecated field keeps exact-scalar semantics; the new field gets array-aware matching.
+func TestClaims_NewField_MatchesArrayClaim_WhereRequiredClaimsDoesNot(t *testing.T) {
+	p, err := GetPolicy(policy.PolicyMetadata{}, toolsParam([]any{map[string]any{
+		"name":   "my-tool",
+		"claims": map[string]any{"allOf": []any{map[string]any{"claim": "role", "values": []any{"admin"}}}},
+	}}))
+	if err != nil {
+		t.Fatalf("GetPolicy: %v", err)
+	}
+	assertAllowed(t, run(p.(*McpAuthzPolicy), authCtxWithArrayRole()))
 }
