@@ -513,6 +513,252 @@ func TestOnRequestHeaders_WellKnown_FalsePositivePathDoesNotMatch(t *testing.T) 
 	}
 }
 
+// ─── Transport endpoint authentication (GET /mcp, DELETE /mcp) ───────────────
+//
+// Every MCP API is generated with GET, POST and DELETE operations on /mcp. Only
+// POST carries a JSON-RPC body, so the POST-only body-phase check used to let
+// GET (SSE stream) and DELETE (session termination) reach the upstream MCP
+// server with no token at all. These are the regression tests for that bypass.
+
+// mcpTransportKeyManagerParams returns delegation params pointing at a JWKS test
+// server, matching what the runtime passes to the policy.
+func mcpTransportKeyManagerParams(jwksURL string) map[string]any {
+	return map[string]any{
+		"gatewayHost":         "gateway.com",
+		"headerName":          "Authorization",
+		"authHeaderScheme":    "Bearer",
+		"onFailureStatusCode": 401,
+		"errorMessageFormat":  "json",
+		"keyManagers": []any{
+			map[string]any{
+				"name":   "test-issuer",
+				"issuer": "https://issuer.example.com",
+				"jwks": map[string]any{
+					"remote": map[string]any{
+						"uri": jwksURL + "/jwks.json",
+					},
+				},
+			},
+		},
+	}
+}
+
+// mcpTransportRequest issues an OnRequestHeaders call for the given method on the
+// generated /mcp endpoint with the supplied headers.
+func mcpTransportRequest(t *testing.T, p *McpAuthPolicy, method string, headers map[string][]string, params map[string]any) policy.RequestHeaderAction {
+	t.Helper()
+	ctx := createMockRequestHeaderContext(headers)
+	ctx.Method = method
+	ctx.Path = "/mcp"
+	ctx.OperationPath = "/mcp"
+	return p.OnRequestHeaders(context.Background(), ctx, params)
+}
+
+// TestOnRequestHeaders_TransportEndpoints_RequireAuthentication verifies that the
+// non-POST MCP endpoints are rejected with a 401 challenge when no token is
+// presented, instead of being forwarded upstream unauthenticated.
+func TestOnRequestHeaders_TransportEndpoints_RequireAuthentication(t *testing.T) {
+	_, publicKey := generateRSATestKeys(t)
+	jwksServer := createMcpTestJWKSServer(t, publicKey, "test-kid")
+	defer jwksServer.Close()
+
+	for _, method := range []string{"GET", "DELETE"} {
+		t.Run(method, func(t *testing.T) {
+			action := mcpTransportRequest(t, createTestPolicy(), method, map[string][]string{
+				McpSessionHeader: {"session-123"},
+			}, mcpTransportKeyManagerParams(jwksServer.URL))
+
+			resp, ok := action.(policy.ImmediateResponse)
+			if !ok {
+				t.Fatalf("%s /mcp was forwarded upstream without authentication: got %T, want ImmediateResponse", method, action)
+			}
+			if resp.StatusCode != 401 {
+				t.Errorf("Expected status 401, got %d", resp.StatusCode)
+			}
+			expectedPrefix := `Bearer resource_metadata="http://gateway.com:8080/.well-known/oauth-protected-resource"`
+			if authHeader := resp.Headers[WWWAuthenticateHeader]; !strings.HasPrefix(authHeader, expectedPrefix) {
+				t.Errorf("Unexpected WWW-Authenticate header: %q", authHeader)
+			}
+			if resp.Headers[McpSessionHeader] != "session-123" {
+				t.Errorf("Expected session header 'session-123', got %q", resp.Headers[McpSessionHeader])
+			}
+		})
+	}
+}
+
+// TestOnRequestHeaders_TransportEndpoints_ValidTokenAccepted verifies the fix does
+// not break legitimate clients: a valid token lets GET/DELETE /mcp through and is
+// recorded as an mcp/oauth authentication.
+func TestOnRequestHeaders_TransportEndpoints_ValidTokenAccepted(t *testing.T) {
+	privateKey, publicKey := generateRSATestKeys(t)
+	jwksServer := createMcpTestJWKSServer(t, publicKey, "test-kid")
+	defer jwksServer.Close()
+
+	token := createMcpTestToken(t, privateKey, map[string]interface{}{
+		"sub": "user123",
+		"iss": "https://issuer.example.com",
+	})
+
+	for _, method := range []string{"GET", "DELETE"} {
+		t.Run(method, func(t *testing.T) {
+			ctx := createMockRequestHeaderContext(map[string][]string{
+				"authorization": {fmt.Sprintf("Bearer %s", token)},
+			})
+			ctx.Method = method
+			ctx.Path = "/mcp"
+			ctx.OperationPath = "/mcp"
+
+			action := createTestPolicy().OnRequestHeaders(context.Background(), ctx, mcpTransportKeyManagerParams(jwksServer.URL))
+
+			if _, ok := action.(policy.ImmediateResponse); ok {
+				t.Fatalf("Expected %s /mcp with a valid token to be forwarded, got an auth failure", method)
+			}
+			if ctx.SharedContext.AuthContext == nil || !ctx.SharedContext.AuthContext.Authenticated {
+				t.Fatal("Expected AuthContext to be set and authenticated")
+			}
+			if ctx.SharedContext.AuthContext.AuthType != AuthType {
+				t.Errorf("Expected AuthType %q, got %q", AuthType, ctx.SharedContext.AuthContext.AuthType)
+			}
+		})
+	}
+}
+
+// TestOnRequestHeaders_OptionsMcp_SkipsAuthentication verifies CORS preflights stay
+// unauthenticated — browsers never send credentials on a preflight, so requiring a
+// token there would break browser-based MCP clients.
+func TestOnRequestHeaders_OptionsMcp_SkipsAuthentication(t *testing.T) {
+	action := mcpTransportRequest(t, createTestPolicy(), "OPTIONS", nil, map[string]any{})
+
+	if _, ok := action.(policy.UpstreamRequestHeaderModifications); !ok {
+		t.Fatalf("Expected OPTIONS /mcp to pass through, got %T", action)
+	}
+}
+
+// TestOnRequestHeaders_PostMcp_DefersToBodyPhase verifies POST /mcp is still
+// authenticated in the body phase, where the JSON-RPC method is known and the
+// per-capability exception lists can be applied.
+func TestOnRequestHeaders_PostMcp_DefersToBodyPhase(t *testing.T) {
+	action := mcpTransportRequest(t, createTestPolicy(), "POST", nil, map[string]any{})
+
+	if _, ok := action.(policy.UpstreamRequestHeaderModifications); !ok {
+		t.Fatalf("Expected POST /mcp to defer to the body phase, got %T", action)
+	}
+}
+
+// TestOnRequestHeaders_TransportEndpoints_FullyUnprotectedServer verifies that an
+// MCP server with every capability group disabled — an intentionally public server
+// — keeps its transport endpoints open, so the fix adds no 401 where no request is
+// authenticated anyway.
+func TestOnRequestHeaders_TransportEndpoints_FullyUnprotectedServer(t *testing.T) {
+	p := createTestPolicy()
+	p.AuthConfig = GetMcpAuthConfig(map[string]any{
+		"tools":     map[string]any{"enabled": false},
+		"resources": map[string]any{"enabled": false},
+		"prompts":   map[string]any{"enabled": false},
+		"methods":   map[string]any{"enabled": false},
+	})
+
+	action := mcpTransportRequest(t, p, "GET", nil, map[string]any{})
+
+	if _, ok := action.(policy.UpstreamRequestHeaderModifications); !ok {
+		t.Fatalf("Expected GET /mcp on a fully public MCP server to pass through, got %T", action)
+	}
+}
+
+// TestOnRequestHeaders_TransportEndpoints_PartiallyProtectedServer verifies that
+// disabling one capability group does not open the transport endpoints while any
+// other part of the MCP server is still protected.
+func TestOnRequestHeaders_TransportEndpoints_PartiallyProtectedServer(t *testing.T) {
+	cases := map[string]map[string]any{
+		"methods disabled, tools enabled": {
+			"tools":     map[string]any{"enabled": true},
+			"resources": map[string]any{"enabled": false},
+			"prompts":   map[string]any{"enabled": false},
+			"methods":   map[string]any{"enabled": false},
+		},
+		// An exception under a disabled group inverts to "this one does require
+		// auth", so the server is still partially protected.
+		"all disabled, one exception": {
+			"tools":     map[string]any{"enabled": false},
+			"resources": map[string]any{"enabled": false},
+			"prompts":   map[string]any{"enabled": false},
+			"methods":   map[string]any{"enabled": false, "exceptions": []any{"tools/call"}},
+		},
+	}
+
+	_, publicKey := generateRSATestKeys(t)
+	jwksServer := createMcpTestJWKSServer(t, publicKey, "test-kid")
+	defer jwksServer.Close()
+
+	for name, authConfig := range cases {
+		t.Run(name, func(t *testing.T) {
+			p := createTestPolicy()
+			p.AuthConfig = GetMcpAuthConfig(authConfig)
+
+			action := mcpTransportRequest(t, p, "GET", nil, mcpTransportKeyManagerParams(jwksServer.URL))
+
+			resp, ok := action.(policy.ImmediateResponse)
+			if !ok {
+				t.Fatalf("Expected GET /mcp to be challenged, got %T", action)
+			}
+			if resp.StatusCode != 401 {
+				t.Errorf("Expected status 401, got %d", resp.StatusCode)
+			}
+		})
+	}
+}
+
+// TestRequiresTransportAuth covers the request classification directly, including
+// the paths that must stay public and lower-cased methods.
+func TestRequiresTransportAuth(t *testing.T) {
+	p := createTestPolicy()
+	cases := []struct {
+		name          string
+		method        string
+		operationPath string
+		want          bool
+	}{
+		{"GET on mcp endpoint", "GET", "/mcp", true},
+		{"DELETE on mcp endpoint", "DELETE", "/mcp", true},
+		{"HEAD on mcp endpoint", "HEAD", "/mcp", true},
+		{"lower-cased delete", "delete", "/mcp", true},
+		{"POST is gated in the body phase", "POST", "/mcp", false},
+		{"lower-cased post is gated in the body phase", "post", "/mcp", false},
+		{"OPTIONS preflight", "OPTIONS", "/mcp", false},
+		{"protected resource metadata stays public", "GET", "/.well-known/oauth-protected-resource", false},
+		{"context-prefixed metadata stays public", "GET", "/mcp/v1/.well-known/oauth-protected-resource", false},
+		{"non-mcp operation", "GET", "/api/resource", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := p.requiresTransportAuth(tc.method, tc.operationPath); got != tc.want {
+				t.Errorf("requiresTransportAuth(%q, %q) = %v, want %v", tc.method, tc.operationPath, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestOnRequestBody_TransportEndpoints_NoSecondDelegation verifies the body phase
+// leaves the non-POST endpoints alone: the header phase has already authenticated
+// them, and a bodyless request may never reach the body phase at all.
+func TestOnRequestBody_TransportEndpoints_NoSecondDelegation(t *testing.T) {
+	for _, method := range []string{"GET", "DELETE"} {
+		t.Run(method, func(t *testing.T) {
+			ctx := createMockRequestBodyContext(nil)
+			ctx.Method = method
+			ctx.Path = "/mcp"
+			ctx.OperationPath = "/mcp"
+
+			action := createTestPolicy().OnRequestBody(context.Background(), ctx, map[string]any{})
+
+			if _, ok := action.(policy.UpstreamRequestModifications); !ok {
+				t.Fatalf("Expected %s /mcp body phase to pass through, got %T", method, action)
+			}
+		})
+	}
+}
+
 func TestOnRequestBody_WellKnown_MissingIssuerInKeyManagerConfig(t *testing.T) {
 	p := &McpAuthPolicy{}
 	ctx := createMockRequestBodyContext(nil)
