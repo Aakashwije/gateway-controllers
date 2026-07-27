@@ -1,5 +1,5 @@
 name: model-weighted-round-robin
-version: v1.0.3
+version: v1.1.0
 description: |
   Distribute requests across models using weighted round-robin so higher-weight models receive proportionally more traffic.
 
@@ -25,6 +25,14 @@ parameters:
               Weight is relative to total weight of all models.
             default: 1
             minimum: 1
+          provider:
+            type: string
+            description: |
+              Optionally routes this target to an additional LLM provider.
+              Must match an LlmProxy additionalProviders[].as value, or the
+              provider id when `as` is absent. When omitted, the request uses
+              the LlmProxy primary/default provider.
+            minLength: 1
         required:
           - model
           - weight

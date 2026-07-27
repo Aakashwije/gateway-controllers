@@ -36,9 +36,21 @@ import (
 const (
 	// Metadata keys for context storage
 	MetadataKeySelectedModel    = "model_weighted_roundrobin.selected_model"
+	MetadataKeySelectedProvider = "model_weighted_roundrobin.selected_provider"
 	MetadataKeyOriginalModel    = "model_weighted_roundrobin.original_model"
 	MetadataKeyHeadersProcessed = "model_weighted_roundrobin.headers_processed"
 	DefaultSuspendDuration      = 30
+
+	// MetadataKeyProviderRouting is the engine-level contract key consumed by
+	// conditional provider auth and protocol transformers to identify the
+	// additional provider a request was routed to. It is only set when the
+	// selected target specifies a provider.
+	MetadataKeyProviderRouting = "selected_provider"
+
+	// suspensionKeySeparator separates provider and model in the composite
+	// suspension key so the same model name on different providers is tracked
+	// independently. A NUL byte can never appear in a provider or model name.
+	suspensionKeySeparator = "\x00"
 )
 
 // ModelWeightedRoundRobinPolicyParams holds the parsed policy parameters
@@ -52,6 +64,17 @@ type ModelWeightedRoundRobinPolicyParams struct {
 type WeightedModel struct {
 	Model  string
 	Weight int
+	// Provider optionally names an additional LLM provider to route this target to.
+	// It must match an LlmProxy additionalProviders[].as value (or the provider id
+	// when `as` is absent). Empty means the LlmProxy primary/default provider.
+	Provider string
+}
+
+// suspensionKey builds the composite key used to track failed targets. Keying on
+// provider + model (rather than model alone) keeps the same model name on
+// different providers independently suspendable.
+func suspensionKey(provider, model string) string {
+	return provider + suspensionKeySeparator + model
 }
 
 // RequestModelConfig holds the requestModel configuration
@@ -85,8 +108,9 @@ func GetPolicy(
 	weightedModels := make([]*WeightedModel, len(policyParams.Models))
 	for i, modelConfig := range policyParams.Models {
 		weightedModels[i] = &WeightedModel{
-			Model:  modelConfig.Model,
-			Weight: modelConfig.Weight,
+			Model:    modelConfig.Model,
+			Weight:   modelConfig.Weight,
+			Provider: modelConfig.Provider,
 		}
 	}
 
@@ -172,6 +196,16 @@ func parseParams(params map[string]interface{}) (ModelWeightedRoundRobinPolicyPa
 		}
 
 		modelConfig.Weight = weightInt
+
+		// Parse provider (optional). Omitted or empty means the LlmProxy
+		// primary/default provider is used and no upstream override is applied.
+		if providerRaw, ok := modelMap["provider"]; ok {
+			providerStr, ok := providerRaw.(string)
+			if !ok {
+				return result, fmt.Errorf("'models[%d].provider' must be a string", i)
+			}
+			modelConfig.Provider = providerStr
+		}
 
 		result.Models = append(result.Models, modelConfig)
 	}
@@ -280,15 +314,16 @@ func (p *ModelWeightedRoundRobinPolicy) selectNextAvailableWeightedModel() *Weig
 		selectedModel := sequence[p.currentIndex%len(sequence)]
 		p.currentIndex++
 
-		// Check if model is suspended
-		if suspendedUntil, ok := p.suspendedModels[selectedModel.Model]; ok {
+		// Check if this provider/model pair is suspended
+		key := suspensionKey(selectedModel.Provider, selectedModel.Model)
+		if suspendedUntil, ok := p.suspendedModels[key]; ok {
 			if now.Before(suspendedUntil) {
-				// This model is still suspended, try next
+				// This target is still suspended, try next
 				attemptCount++
 				continue
 			}
 			// Suspension period has expired, remove from suspended list
-			delete(p.suspendedModels, selectedModel.Model)
+			delete(p.suspendedModels, key)
 		}
 
 		return selectedModel
@@ -343,9 +378,27 @@ func (p *ModelWeightedRoundRobinPolicy) OnRequestHeaders(ctx context.Context, re
 		}
 	}
 
+	// Always record the selected model and its provider. The provider is stored
+	// under a policy-internal key so OnResponseHeaders can rebuild the composite
+	// suspension key even for the default (empty) provider.
 	reqCtx.Metadata[MetadataKeySelectedModel] = selectedModel.Model
+	reqCtx.Metadata[MetadataKeySelectedProvider] = selectedModel.Provider
 	reqCtx.Metadata[MetadataKeyHeadersProcessed] = true
-	slog.Debug("ModelWeightedRoundRobin: OnRequestHeaders selected model", "model", selectedModel.Model, "weight", selectedModel.Weight)
+	slog.Debug("ModelWeightedRoundRobin: OnRequestHeaders selected model", "model", selectedModel.Model, "weight", selectedModel.Weight, "provider", selectedModel.Provider)
+
+	mods := policy.UpstreamRequestHeaderModifications{}
+
+	// When the target names an additional provider, route to its named upstream in
+	// the header phase (so Envoy sees the selected cluster before forwarding) and
+	// expose it to conditional provider auth / protocol transformers via the
+	// engine's selected_provider metadata key. When the provider is empty we leave
+	// UpstreamName unset and do not set selected_provider, so the LlmProxy primary
+	// provider fallback, authentication, and default cluster logic keep working.
+	if selectedModel.Provider != "" {
+		providerName := selectedModel.Provider
+		mods.UpstreamName = &providerName
+		reqCtx.Metadata[MetadataKeyProviderRouting] = selectedModel.Provider
+	}
 
 	switch location {
 	case "header":
@@ -355,26 +408,19 @@ func (p *ModelWeightedRoundRobinPolicy) OnRequestHeaders(ctx context.Context, re
 				reqCtx.Metadata[MetadataKeyOriginalModel] = values[0]
 			}
 		}
-		return policy.UpstreamRequestHeaderModifications{
-			HeadersToSet: map[string]string{identifier: selectedModel.Model},
-		}
+		mods.HeadersToSet = map[string]string{identifier: selectedModel.Model}
 	case "queryParam":
 		newPath := p.modifyQueryParamInPath(reqCtx.Path, identifier, selectedModel.Model)
 		if newPath != reqCtx.Path {
-			return policy.UpstreamRequestHeaderModifications{
-				Path: &newPath,
-			}
+			mods.Path = &newPath
 		}
-		return policy.UpstreamRequestHeaderModifications{}
 	case "pathParam":
 		newPath := p.modifyPathParamInPath(reqCtx.Path, identifier, selectedModel.Model)
 		if newPath != reqCtx.Path {
-			return policy.UpstreamRequestHeaderModifications{
-				Path: &newPath,
-			}
+			mods.Path = &newPath
 		}
 	}
-	return policy.UpstreamRequestHeaderModifications{}
+	return mods
 }
 
 // OnResponseHeaders suspends a model in the response header phase when an error is detected.
@@ -386,11 +432,20 @@ func (p *ModelWeightedRoundRobinPolicy) OnResponseHeaders(ctx context.Context, r
 				selectedModel = modelStr
 			}
 		}
+		selectedProvider := ""
+		if provider, ok := respCtx.Metadata[MetadataKeySelectedProvider]; ok {
+			if providerStr, ok := provider.(string); ok {
+				selectedProvider = providerStr
+			}
+		}
 		if p.params.SuspendDuration > 0 && selectedModel != "" {
+			// Suspend only the selected provider/model pair, not the model name on
+			// every provider.
+			key := suspensionKey(selectedProvider, selectedModel)
 			p.mu.Lock()
-			p.suspendedModels[selectedModel] = time.Now().Add(time.Duration(p.params.SuspendDuration) * time.Second)
+			p.suspendedModels[key] = time.Now().Add(time.Duration(p.params.SuspendDuration) * time.Second)
 			p.mu.Unlock()
-			slog.Debug("ModelWeightedRoundRobin: OnResponseHeaders suspended model", "model", selectedModel, "duration", p.params.SuspendDuration)
+			slog.Debug("ModelWeightedRoundRobin: OnResponseHeaders suspended model", "model", selectedModel, "provider", selectedProvider, "duration", p.params.SuspendDuration)
 		}
 	}
 	return policy.DownstreamResponseHeaderModifications{}
