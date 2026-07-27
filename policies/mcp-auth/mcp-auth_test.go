@@ -113,6 +113,38 @@ func TestOnRequestHeaders_WellKnown_Success(t *testing.T) {
 	}
 }
 
+func TestOnRequestHeaders_WellKnown_NoRequiredScopesOmitsScopesSupported(t *testing.T) {
+	p, _ := GetPolicy(policy.PolicyMetadata{}, map[string]any{})
+	ctx := createMockRequestHeaderContext(nil)
+	ctx.Method = "GET"
+	ctx.OperationPath = "/.well-known/oauth-protected-resource"
+
+	params := map[string]any{
+		"keyManagers": []any{
+			map[string]any{
+				"name":   "km1",
+				"issuer": "https://issuer1.com",
+			},
+		},
+	}
+
+	action := p.(*McpAuthPolicy).OnRequestHeaders(context.Background(), ctx, params)
+
+	resp, ok := action.(policy.ImmediateResponse)
+	if !ok {
+		t.Fatalf("Expected ImmediateResponse, got %T", action)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(resp.Body, &raw); err != nil {
+		t.Fatalf("Failed to unmarshal body: %v", err)
+	}
+
+	if _, present := raw["scopes_supported"]; present {
+		t.Errorf("Expected scopes_supported to be omitted, got body: %s", resp.Body)
+	}
+}
+
 func TestOnRequestHeaders_WellKnown_NoKeyManagers(t *testing.T) {
 	p := createTestPolicy()
 	ctx := createMockRequestHeaderContext(nil)

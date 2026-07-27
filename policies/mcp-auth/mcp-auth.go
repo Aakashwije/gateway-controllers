@@ -63,7 +63,7 @@ type McpAuthPolicy struct {
 type ProtectedResourceMetadata struct {
 	Resource             string   `json:"resource"`
 	AuthorizationServers []string `json:"authorization_servers"`
-	ScopesSupported      []string `json:"scopes_supported"`
+	ScopesSupported      []string `json:"scopes_supported,omitempty"`
 }
 
 // SecurityConfig represents the configuration for tools, resources, prompts, or methods

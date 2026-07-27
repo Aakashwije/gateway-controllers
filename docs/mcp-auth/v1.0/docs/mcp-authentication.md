@@ -107,7 +107,7 @@ These parameters are configured per-API/route by the API developer:
 | `prompts` | `SecurityConfig` object | No | `{"enabled": true}` | Security configuration for MCP prompts. |
 | `methods` | `SecurityConfig` object | No | `{"enabled": true}` | Security configuration for MCP (JSON-RPC) methods. |
 | `issuers` | string array | No | `[]` | List of issuer names from `system.keyManagers` to publish in protected resource metadata and use for token validation. If empty, runtime uses all configured key managers. |
-| `requiredScopes` | string array | No | `[]` | List of scopes that should be included in the token generated through MCP auth flow. These are advertised in the protected resource metadata but **not enforced** by this policy. Use the MCP Authorization policy to enforce scopes. |
+| `requiredScopes` | string array | No | `[]` | List of scopes that should be included in the token generated through MCP auth flow. These are advertised in the protected resource metadata but **not enforced** by this policy. Use the MCP Authorization policy to enforce scopes. If empty, `scopes_supported` is omitted from the metadata document (it is OPTIONAL per RFC 9728). |
 | `claimMappings` | object | No | `{}` | Map of claimName → downstream header or context key to expose claims for downstream services. |
 
 #### SecurityConfig Object
