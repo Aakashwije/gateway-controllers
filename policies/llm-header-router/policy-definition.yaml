@@ -22,8 +22,8 @@ parameters:
       x-wso2-policy-advanced-param: false
       description: |
         Optional provider id selected when the header is missing, empty, or
-        does not match any entry in "mappings". When omitted, the request
-        does not select any configured provider.
+        does not match any entry in "mappings". When omitted, the request is
+        routed through the LlmProxy's primary "provider".
       minLength: 1
     mappings:
       type: array

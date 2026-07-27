@@ -38,11 +38,6 @@ const (
 	// router writes after picking a provider. Downstream consumer
 	// policies read this key to decide whether to run.
 	MetadataKeySelectedProvider = "selected_provider"
-
-	// noMatchingProvider is published when no mapping matches and no default
-	// provider is configured. It is deliberately non-empty so downstream
-	// translators do not mistake the request for single-provider mode.
-	noMatchingProvider = "__llm_header_router_no_match__"
 )
 
 // HeaderMapping is a single header-value → provider ID rule.
@@ -62,7 +57,8 @@ type PolicyParams struct {
 	HeaderName string
 
 	// DefaultProvider is selected when the header is missing, empty, or no
-	// mapping matches. When empty, noMatchingProvider is published instead.
+	// mapping matches. When empty, selected_provider is left unset so the
+	// LlmProxy routes through its primary provider.
 	DefaultProvider string
 
 	// Mappings is checked in order; the first match wins. Order is the
@@ -145,10 +141,11 @@ func (p *RouterPolicy) OnRequestBody(
 }
 
 // publishSelection reads the configured header, picks the provider via the
-// mappings (falling back to defaultProvider when configured), and writes the
-// result into metadata. If selected_provider is already set by an upstream
-// policy or an earlier phase, it is left untouched. Shared by the header and
-// body phases.
+// mappings (falling back to defaultProvider when configured), and writes a
+// named provider into metadata. When no default is configured and no mapping
+// matches, selected_provider is left unset so the LlmProxy uses its primary
+// provider. If selected_provider is already set by an upstream policy or an
+// earlier phase, it is left untouched. Shared by the header and body phases.
 func (p *RouterPolicy) publishSelection(metadata map[string]interface{}, headers *policy.Headers) {
 	if existing, ok := metadata[MetadataKeySelectedProvider].(string); ok && existing != "" {
 		return
@@ -156,7 +153,11 @@ func (p *RouterPolicy) publishSelection(metadata map[string]interface{}, headers
 
 	headerValue := readHeader(headers, p.params.HeaderName)
 	provider, source := p.selectProvider(headerValue)
-	metadata[MetadataKeySelectedProvider] = provider
+	if provider != "" {
+		metadata[MetadataKeySelectedProvider] = provider
+	} else {
+		delete(metadata, MetadataKeySelectedProvider)
+	}
 
 	slog.Debug(PolicyName+": provider selected",
 		"headerName", p.params.HeaderName, "headerValue", headerValue,
@@ -167,9 +168,10 @@ func (p *RouterPolicy) publishSelection(metadata map[string]interface{}, headers
 // returns both the chosen provider and a short tag describing why it was
 // chosen (used for telemetry / logging).
 //
-//   - "header"  — a mapping matched the header value.
+//   - "header"   — a mapping matched the header value.
 //   - "default"  — fell back to defaultProvider.
-//   - "no_match" — no mapping matched and no defaultProvider is configured.
+//   - "primary"  — no mapping matched and the LlmProxy primary provider should
+//     handle the request.
 func (p *RouterPolicy) selectProvider(headerValue string) (string, string) {
 	if headerValue != "" {
 		for _, m := range p.params.Mappings {
@@ -181,7 +183,7 @@ func (p *RouterPolicy) selectProvider(headerValue string) (string, string) {
 	if p.params.DefaultProvider != "" {
 		return p.params.DefaultProvider, "default"
 	}
-	return noMatchingProvider, "no_match"
+	return "", "primary"
 }
 
 // readHeader extracts the configured header from the request, trimmed of

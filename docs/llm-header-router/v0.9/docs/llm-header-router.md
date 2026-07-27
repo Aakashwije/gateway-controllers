@@ -5,19 +5,21 @@ title: "Overview"
 
 ## Overview
 
-The LLM Header Router policy is the front door of a multi-provider LLM proxy. It reads a configurable request header (default `x-provider`), matches it against a list of value → provider mappings, and publishes the chosen provider id into `SharedContext.Metadata["selected_provider"]`. Downstream translator policies (for example `openai-to-anthropic-transformer`, `openai-to-azure-openai-transformer`, `openai-to-gemini-transformer`, or `openai-to-mistral-transformer`) read that key and run only when the selection matches their own `providerId`. This lets a single OpenAI-shaped `/chat/completions` endpoint fan out to many providers, chosen per request by one header, with no change to the client's request body.
+The LLM Header Router policy selects an LLM provider from a request header. It reads a configurable header (default `x-provider`), compares its value case-insensitively with the configured mappings, and publishes the selected provider id to `SharedContext.Metadata["selected_provider"]` for downstream policies and routing logic.
 
-The selection is published in both the request-header phase and the request-body phase. The header phase runs first so header-phase consumers — such as the proxy → provider upstream auth injection — observe the selection before they evaluate their `selected_provider` gate. The body phase repeats the publish idempotently: if `selected_provider` is already set, it is left untouched.
+When the header is missing, empty, or does not match a mapping, the policy uses `defaultProvider` if one is configured. Otherwise, it leaves `selected_provider` unset so an `LlmProxy` uses its primary `provider`. The selection is published during request-header processing and repeated idempotently during request-body processing, allowing downstream consumers in either phase to use the same routing decision.
 
 Use this policy when you need to:
 
-- Expose one OpenAI-compatible endpoint that routes to different LLM providers based on a request header.
-- Add per-request provider selection in front of a set of `openai-to-*` translator policies.
+- Select an LLM provider from a configurable request header.
+- Define case-insensitive header-value-to-provider mappings.
+- Use either an explicit default provider or the proxy's primary provider as the fallback.
+- Make the selected provider available to downstream routing, authentication, or transformation policies.
 
 ## Features
 
 - **Header-based selection**: Reads a configurable header (default `x-provider`) and matches it case-insensitively against the configured mappings; the first match wins.
-- **Optional default fallback**: Falls back to `defaultProvider`, when configured, if the header is missing, empty, or matches no mapping. Otherwise no configured provider is selected.
+- **Optional default fallback**: Falls back to `defaultProvider`, when configured, if the header is missing, empty, or matches no mapping. Otherwise `selected_provider` remains unset and the LLM proxy uses its primary `provider`.
 - **Two-phase publish**: Publishes the selection in the request-header phase (so header-phase consumers see it) and republishes idempotently in the body phase.
 - **Duplicate detection**: Rejects duplicate (case-insensitive) header values at configuration time so a mapping cannot be silently shadowed.
 
@@ -25,7 +27,7 @@ Use this policy when you need to:
 
 | Name | Required | Default | Description |
 |------|----------|---------|-------------|
-| `defaultProvider` | No | — | Provider id selected when the header is missing, empty, or does not match any entry in `mappings`. When omitted, no configured provider is selected. |
+| `defaultProvider` | No | — | Provider id selected when the header is missing, empty, or does not match any entry in `mappings`. When omitted, the LLM proxy routes through its primary `provider`. |
 | `mappings` | Yes | — | Array of `{ headerValue, provider }` rules. The first matching entry (case-insensitive, whitespace-trimmed) wins. |
 | `headerName` | No | `x-provider` | Name of the request header read for provider selection. Comparison is case-insensitive. |
 
@@ -59,5 +61,5 @@ Each entry in `mappings` has:
 ## Notes
 
 - This policy only selects and publishes a provider id; the actual request/response translation is performed by the downstream `openai-to-*` translator policies, and the upstream routing is performed by whatever consumes `selected_provider`.
-- When `defaultProvider` is omitted and no mapping matches, the router publishes an internal no-match value so downstream translators skip the request instead of treating it as single-provider mode.
+- When `defaultProvider` is omitted and no mapping matches, the router leaves `selected_provider` unset. In generated `LlmProxy` configuration, an unset selection uses the primary `provider`; named selections route to `additionalProviders`.
 - The `provider` values in `mappings` and a configured `defaultProvider` must match the translator's `providerId` (and an upstream cluster) configured on the same proxy.

@@ -107,9 +107,26 @@ func TestSelectProvider_WithoutDefault(t *testing.T) {
 	p := &RouterPolicy{params: parsed}
 
 	for _, headerValue := range []string{"", "unknown"} {
-		if got, src := p.selectProvider(headerValue); got != noMatchingProvider || src != "no_match" {
-			t.Errorf("header %q: expected %s/no_match, got %s/%s", headerValue, noMatchingProvider, got, src)
+		if got, src := p.selectProvider(headerValue); got != "" || src != "primary" {
+			t.Errorf("header %q: expected empty provider/primary, got %q/%s", headerValue, got, src)
 		}
+	}
+}
+
+func TestPublishSelection_WithoutDefaultLeavesProviderUnset(t *testing.T) {
+	params := validParams()
+	delete(params, "defaultProvider")
+	parsed, err := parseParams(params)
+	if err != nil {
+		t.Fatalf("parseParams failed: %v", err)
+	}
+	p := &RouterPolicy{params: parsed}
+
+	metadata := map[string]interface{}{MetadataKeySelectedProvider: ""}
+	p.publishSelection(metadata, nil)
+
+	if _, ok := metadata[MetadataKeySelectedProvider]; ok {
+		t.Errorf("%s must be unset so the LlmProxy uses its primary provider", MetadataKeySelectedProvider)
 	}
 }
 
