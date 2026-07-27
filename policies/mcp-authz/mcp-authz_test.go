@@ -124,8 +124,16 @@ func TestOnRequest_SkipsNonMCP_Path(t *testing.T) {
 
 // ---- OnRequest: AuthContext checks ----
 
+// A capability that IS targeted by a rule must fail closed when no AuthContext was populated.
+// The policy must be given a rule for "tool1": a rule set that does not target the invocation means
+// the invocation is not governed at all, which is asserted separately by the passthrough tests.
 func TestOnRequest_NoAuthContext(t *testing.T) {
-	p := &McpAuthzPolicy{}
+	p := &McpAuthzPolicy{Rules: []Rule{
+		{
+			Attribute:      Attribute{Type: "tool", Name: "tool1"},
+			RequiredScopes: []string{"api:read"},
+		},
+	}}
 	ctx := createMockContext("POST", "/mcp", toolCallBody("tool1"), nil)
 	action := p.OnRequestBody(context.Background(), ctx, map[string]any{})
 	resp, ok := action.(policy.ImmediateResponse)
@@ -140,8 +148,14 @@ func TestOnRequest_NoAuthContext(t *testing.T) {
 	}
 }
 
+// As above, for an AuthContext left behind by an auth policy that ran but did not authenticate.
 func TestOnRequest_NotAuthenticated(t *testing.T) {
-	p := &McpAuthzPolicy{}
+	p := &McpAuthzPolicy{Rules: []Rule{
+		{
+			Attribute:      Attribute{Type: "tool", Name: "tool1"},
+			RequiredScopes: []string{"api:read"},
+		},
+	}}
 	authCtx := &policy.AuthContext{Authenticated: false, AuthType: "jwt"}
 	ctx := createMockContext("POST", "/mcp", toolCallBody("tool1"), authCtx)
 	action := p.OnRequestBody(context.Background(), ctx, map[string]any{})
@@ -776,4 +790,454 @@ func TestClaims_NewField_MatchesArrayClaim_WhereRequiredClaimsDoesNot(t *testing
 		t.Fatalf("GetPolicy: %v", err)
 	}
 	assertAllowed(t, run(p.(*McpAuthzPolicy), authCtxWithArrayRole()))
+}
+
+// These tests cover the interaction between the MCP authentication policy's exception lists and
+// this policy's rule set. When mcp-auth excludes a capability from authentication it returns early
+// without populating SharedContext.AuthContext, so the invocation reaches this policy with no
+// identity at all. Rule matching, not the presence of an AuthContext, decides whether this policy
+// governs the invocation.
+//
+// The passthrough assertions below are paired deliberately with fail-closed assertions for a
+// governed capability: the failure mode of a careless fix here is silently dropping enforcement.
+
+// ---- helpers ----
+
+// mcpBody builds a JSON-RPC MCP request body for an arbitrary method and params.
+func mcpBody(method string, params map[string]any) []byte {
+	req := map[string]any{"jsonrpc": "2.0", "id": 1, "method": method}
+	if params != nil {
+		req["params"] = params
+	}
+	b, _ := json.Marshal(req)
+	return b
+}
+
+// runBody evaluates the policy against a POST /mcp request carrying the given body and AuthContext.
+func runBody(p *McpAuthzPolicy, body []byte, authCtx *policy.AuthContext) policy.RequestAction {
+	ctx := createMockContext("POST", "/mcp", body, authCtx)
+	return p.OnRequestBody(context.Background(), ctx, map[string]any{})
+}
+
+// toolAOnlyPolicy governs tool "toolA" and nothing else. "toolB" stands for a capability listed in
+// the mcp-auth exceptions and given no authorization rule.
+func toolAOnlyPolicy() *McpAuthzPolicy {
+	return &McpAuthzPolicy{Rules: []Rule{
+		{
+			Attribute:      Attribute{Type: "tool", Name: "toolA"},
+			RequiredScopes: []string{"scope:a"},
+		},
+	}}
+}
+
+func assertPassthrough(t *testing.T, action policy.RequestAction, whatFor string) {
+	t.Helper()
+	if action != nil {
+		if resp, ok := action.(policy.ImmediateResponse); ok {
+			t.Fatalf("%s: expected passthrough (nil), got %d: %s", whatFor, resp.StatusCode, string(resp.Body))
+		}
+		t.Fatalf("%s: expected passthrough (nil), got %T", whatFor, action)
+	}
+}
+
+func assertStatus(t *testing.T, action policy.RequestAction, want int, whatFor string) policy.ImmediateResponse {
+	t.Helper()
+	resp, ok := action.(policy.ImmediateResponse)
+	if !ok {
+		t.Fatalf("%s: expected ImmediateResponse with status %d, got %T (passthrough)", whatFor, want, action)
+	}
+	if resp.StatusCode != want {
+		t.Fatalf("%s: expected %d, got %d: %s", whatFor, want, resp.StatusCode, string(resp.Body))
+	}
+	return resp
+}
+
+func assertWwwAuthContains(t *testing.T, resp policy.ImmediateResponse, want string) {
+	t.Helper()
+	if got := resp.Headers[WWWAuthenticateHeader]; !strings.Contains(got, want) {
+		t.Errorf("expected %q in WWW-Authenticate header, got: %s", want, got)
+	}
+}
+
+// ---- the reported bug: an mcp-auth-excluded capability must pass through ----
+
+// Tool B is excluded from authentication by mcp-auth and targeted by no authorization rule, so it
+// arrives with a nil AuthContext. It must not be rejected.
+func TestAuthExcludedTool_NoBearerToken_PassesThrough(t *testing.T) {
+	action := runBody(toolAOnlyPolicy(), mcpBody("tools/call", map[string]any{"name": "toolB"}), nil)
+	assertPassthrough(t, action, "auth-excluded toolB with no bearer token")
+}
+
+// An unrelated token does not drag an ungoverned capability into the decision path. mcp-auth never
+// validates a token for an excluded capability, so the AuthContext stays nil either way; this pins
+// that the excluded capability does not start caring about token validity.
+func TestAuthExcludedTool_UnrelatedBearerToken_PassesThrough(t *testing.T) {
+	unrelated := authenticatedAuthCtx(map[string]bool{"scope:unrelated": true}, "bob", "https://other.idp", nil, nil)
+	action := runBody(toolAOnlyPolicy(), mcpBody("tools/call", map[string]any{"name": "toolB"}), unrelated)
+	assertPassthrough(t, action, "auth-excluded toolB with an unrelated bearer token")
+}
+
+// An AuthContext left behind by an auth policy that ran and failed must not change the outcome for a
+// capability this policy does not govern.
+func TestAuthExcludedTool_FailedAuthContext_PassesThrough(t *testing.T) {
+	failed := &policy.AuthContext{Authenticated: false, AuthType: "mcp/oauth"}
+	action := runBody(toolAOnlyPolicy(), mcpBody("tools/call", map[string]any{"name": "toolB"}), failed)
+	assertPassthrough(t, action, "auth-excluded toolB with a failed AuthContext")
+}
+
+// ---- the other half: a governed capability still fails closed ----
+
+func TestGovernedTool_NoAuthContext_FailsClosed(t *testing.T) {
+	action := runBody(toolAOnlyPolicy(), mcpBody("tools/call", map[string]any{"name": "toolA"}), nil)
+	resp := assertStatus(t, action, 401, "governed toolA with no AuthContext")
+	assertWwwAuthContains(t, resp, `error="invalid_token"`)
+}
+
+func TestGovernedTool_NotAuthenticated_FailsClosed(t *testing.T) {
+	failed := &policy.AuthContext{Authenticated: false, AuthType: "mcp/oauth"}
+	action := runBody(toolAOnlyPolicy(), mcpBody("tools/call", map[string]any{"name": "toolA"}), failed)
+	assertStatus(t, action, 401, "governed toolA with an unauthenticated AuthContext")
+}
+
+func TestGovernedTool_AuthenticatedMissingScope_Forbidden(t *testing.T) {
+	authCtx := authenticatedAuthCtx(map[string]bool{"scope:other": true}, "alice", "", nil, nil)
+	action := runBody(toolAOnlyPolicy(), mcpBody("tools/call", map[string]any{"name": "toolA"}), authCtx)
+	resp := assertStatus(t, action, 403, "governed toolA missing the required scope")
+	assertWwwAuthContains(t, resp, `error="insufficient_scope"`)
+	assertWwwAuthContains(t, resp, `scope="scope:a"`)
+}
+
+func TestGovernedTool_AuthenticatedWithScope_Allowed(t *testing.T) {
+	authCtx := authenticatedAuthCtx(map[string]bool{"scope:a": true}, "alice", "", nil, nil)
+	action := runBody(toolAOnlyPolicy(), mcpBody("tools/call", map[string]any{"name": "toolA"}), authCtx)
+	assertPassthrough(t, action, "governed toolA with the required scope")
+	if !authCtx.Authorized {
+		t.Error("expected Authorized=true after a successful authorization decision")
+	}
+}
+
+// ---- non-capability methods: the MCP handshake must survive ----
+
+// With methods.enabled=false in mcp-auth, initialize/ping are auth-exempt and arrive with no
+// AuthContext. Rejecting them breaks the handshake before any tool is ever invoked.
+func TestNonCapabilityMethods_NoAuthContext_PassThrough(t *testing.T) {
+	cases := []struct {
+		name   string
+		method string
+		params map[string]any
+	}{
+		{"initialize", "initialize", map[string]any{"protocolVersion": "2025-06-18"}},
+		{"ping", "ping", nil},
+		{"notifications/initialized", "notifications/initialized", nil},
+		{"tools/list", "tools/list", nil},
+		{"resources/list", "resources/list", nil},
+		{"prompts/list", "prompts/list", nil},
+		{"completion/complete", "completion/complete", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			action := runBody(toolAOnlyPolicy(), mcpBody(tc.method, tc.params), nil)
+			assertPassthrough(t, action, tc.method+" with no AuthContext")
+		})
+	}
+}
+
+// tools/list maps to attribute type "tool" with an empty name; the empty name must stop it from
+// matching the toolA rule rather than the rule set happening not to contain it.
+func TestToolsList_WithGoverningToolRule_PassesThrough(t *testing.T) {
+	action := runBody(toolAOnlyPolicy(), mcpBody("tools/list", nil), nil)
+	assertPassthrough(t, action, "tools/list against a tool rule set")
+}
+
+// ---- resources and prompts ----
+
+func TestResourceRead_GovernedAndUngoverned(t *testing.T) {
+	p := &McpAuthzPolicy{Rules: []Rule{{
+		Attribute:      Attribute{Type: "resource", Name: "file://finance/reports"},
+		RequiredScopes: []string{"finance:read"},
+	}}}
+
+	governed := runBody(p, mcpBody("resources/read", map[string]any{"uri": "file://finance/reports"}), nil)
+	assertStatus(t, governed, 401, "governed resource with no AuthContext")
+
+	ungoverned := runBody(p, mcpBody("resources/read", map[string]any{"uri": "file://public/readme"}), nil)
+	assertPassthrough(t, ungoverned, "ungoverned resource with no AuthContext")
+}
+
+func TestPromptGet_GovernedAndUngoverned(t *testing.T) {
+	p := &McpAuthzPolicy{Rules: []Rule{{
+		Attribute:      Attribute{Type: "prompt", Name: "summarize"},
+		RequiredScopes: []string{"prompt:use"},
+	}}}
+
+	governed := runBody(p, mcpBody("prompts/get", map[string]any{"name": "summarize"}), nil)
+	assertStatus(t, governed, 401, "governed prompt with no AuthContext")
+
+	ungoverned := runBody(p, mcpBody("prompts/get", map[string]any{"name": "greet"}), nil)
+	assertPassthrough(t, ungoverned, "ungoverned prompt with no AuthContext")
+}
+
+// A rule of one attribute type must not govern a same-named capability of another type. Before the
+// reordering this mismatch was masked by the unconditional 401.
+func TestCrossTypeRule_DoesNotGovern(t *testing.T) {
+	p := &McpAuthzPolicy{Rules: []Rule{{
+		Attribute:      Attribute{Type: "resource", Name: "toolA"},
+		RequiredScopes: []string{"scope:a"},
+	}}}
+	action := runBody(p, mcpBody("tools/call", map[string]any{"name": "toolA"}), nil)
+	assertPassthrough(t, action, "tools/call toolA against a resource rule named toolA")
+}
+
+// ---- wildcard rules: a recorded decision, not an accident ----
+
+// KNOWN LIMITATION. A wildcard rule governs every capability of its type, including one that
+// mcp-auth excluded from authentication, so such an invocation is rejected for want of an identity.
+// Deciding that an explicit auth exclusion should beat a wildcard rule requires mcp-auth to publish
+// its skip decision into shared context, since a nil AuthContext cannot distinguish "auth was
+// deliberately skipped" from "auth is absent". Tracked separately; do not flip this assertion
+// without making that change.
+func TestWildcardRule_GovernsAuthExcludedTool_KnownLimitation(t *testing.T) {
+	p := &McpAuthzPolicy{Rules: []Rule{{
+		Attribute:      Attribute{Type: "tool", Name: "*"},
+		RequiredScopes: []string{"scope:any"},
+	}}}
+	action := runBody(p, mcpBody("tools/call", map[string]any{"name": "toolB"}), nil)
+	assertStatus(t, action, 401, "auth-excluded toolB against a wildcard tool rule")
+}
+
+func TestWildcardRule_AuthenticatedWithScope_Allowed(t *testing.T) {
+	p := &McpAuthzPolicy{Rules: []Rule{{
+		Attribute:      Attribute{Type: "tool", Name: "*"},
+		RequiredScopes: []string{"scope:any"},
+	}}}
+	authCtx := authenticatedAuthCtx(map[string]bool{"scope:any": true}, "alice", "", nil, nil)
+	action := runBody(p, mcpBody("tools/call", map[string]any{"name": "toolB"}), authCtx)
+	assertPassthrough(t, action, "toolB against a satisfied wildcard tool rule")
+}
+
+// An empty attribute name must not match a wildcard rule either.
+func TestWildcardRule_ToolsList_PassesThrough(t *testing.T) {
+	p := &McpAuthzPolicy{Rules: []Rule{{
+		Attribute:      Attribute{Type: "tool", Name: "*"},
+		RequiredScopes: []string{"scope:any"},
+	}}}
+	action := runBody(p, mcpBody("tools/list", nil), nil)
+	assertPassthrough(t, action, "tools/list against a wildcard tool rule")
+}
+
+// ---- rule matching edge cases ----
+
+// A policy with no rules governs nothing, regardless of authentication state.
+func TestZeroRules_PassThrough(t *testing.T) {
+	assertPassthrough(t, runBody(&McpAuthzPolicy{}, mcpBody("tools/call", map[string]any{"name": "toolA"}), nil),
+		"zero-rule policy with no AuthContext")
+
+	authCtx := authenticatedAuthCtx(map[string]bool{"scope:a": true}, "alice", "", nil, nil)
+	assertPassthrough(t, runBody(&McpAuthzPolicy{}, mcpBody("tools/call", map[string]any{"name": "toolA"}), authCtx),
+		"zero-rule policy with an authenticated AuthContext")
+}
+
+// When an exact rule and a wildcard rule both match, every matching rule must pass and the unmet
+// scopes of all of them are reported.
+func TestExactAndWildcardBothMatch(t *testing.T) {
+	p := &McpAuthzPolicy{Rules: []Rule{
+		{Attribute: Attribute{Type: "tool", Name: "toolA"}, RequiredScopes: []string{"scope:a"}},
+		{Attribute: Attribute{Type: "tool", Name: "*"}, RequiredScopes: []string{"scope:x"}},
+	}}
+
+	partial := authenticatedAuthCtx(map[string]bool{"scope:a": true}, "alice", "", nil, nil)
+	resp := assertStatus(t, runBody(p, mcpBody("tools/call", map[string]any{"name": "toolA"}), partial), 403,
+		"toolA satisfying only the exact rule")
+	assertWwwAuthContains(t, resp, `scope="scope:x"`)
+
+	full := authenticatedAuthCtx(map[string]bool{"scope:a": true, "scope:x": true}, "alice", "", nil, nil)
+	assertPassthrough(t, runBody(p, mcpBody("tools/call", map[string]any{"name": "toolA"}), full),
+		"toolA satisfying both the exact and wildcard rules")
+}
+
+// Rule names are matched exactly or as a standalone "*"; they are not prefixes or patterns.
+func TestRuleNameMatchIsExact_NotPrefix(t *testing.T) {
+	p := &McpAuthzPolicy{Rules: []Rule{{
+		Attribute:      Attribute{Type: "resource", Name: "file://finance/reports"},
+		RequiredScopes: []string{"finance:read"},
+	}}}
+	action := runBody(p, mcpBody("resources/read", map[string]any{"uri": "file://finance/reports/q1"}), nil)
+	assertPassthrough(t, action, "a URI under a governed prefix is not itself governed")
+}
+
+func TestRuleNameMatchIsCaseSensitive(t *testing.T) {
+	action := runBody(toolAOnlyPolicy(), mcpBody("tools/call", map[string]any{"name": "toola"}), nil)
+	assertPassthrough(t, action, "differently-cased tool name")
+}
+
+// A method rule fires for methods of the form <type>/<verb>...
+func TestMethodRule_MatchesSlashMethod(t *testing.T) {
+	p := &McpAuthzPolicy{Rules: []Rule{{
+		Attribute:      Attribute{Type: "method", Name: "tools/list"},
+		RequiredScopes: []string{"scope:list"},
+	}}}
+	assertStatus(t, runBody(p, mcpBody("tools/list", nil), nil), 401, "governed tools/list with no AuthContext")
+}
+
+// ...but not for a bare method like initialize, because the attribute type is derived from the
+// method prefix and a method with no "/" is skipped before rule matching runs. A methods rule naming
+// a bare method is therefore dead config today. Pinned as existing behaviour, tracked separately;
+// this fix deliberately does not change it.
+func TestMethodRule_BareMethodIsDeadConfig(t *testing.T) {
+	p := &McpAuthzPolicy{Rules: []Rule{{
+		Attribute:      Attribute{Type: "method", Name: "initialize"},
+		RequiredScopes: []string{"scope:init"},
+	}}}
+	assertPassthrough(t, runBody(p, mcpBody("initialize", nil), nil), "initialize against a method rule naming it")
+}
+
+func TestMethodWildcardRule_GovernsSlashMethods(t *testing.T) {
+	p := &McpAuthzPolicy{Rules: []Rule{{
+		Attribute:      Attribute{Type: "method", Name: "*"},
+		RequiredScopes: []string{"scope:any"},
+	}}}
+	assertStatus(t, runBody(p, mcpBody("tools/call", map[string]any{"name": "toolB"}), nil), 401,
+		"toolB against a method wildcard rule")
+}
+
+// ---- malformed and hostile input ----
+
+// The policy previously dereferenced reqCtx.Body without a nil check.
+func TestNilBody_NoPanic(t *testing.T) {
+	authCtx := authenticatedAuthCtx(map[string]bool{"scope:a": true}, "alice", "", nil, nil)
+	ctx := createMockContext("POST", "/mcp", nil, authCtx)
+	ctx.Body = nil
+	assertPassthrough(t, toolAOnlyPolicy().OnRequestBody(context.Background(), ctx, map[string]any{}), "nil Body")
+}
+
+func TestBodyNotPresent_NoPanic(t *testing.T) {
+	ctx := createMockContext("POST", "/mcp", nil, nil)
+	ctx.Body.Present = false
+	assertPassthrough(t, toolAOnlyPolicy().OnRequestBody(context.Background(), ctx, map[string]any{}), "absent Body")
+}
+
+// A nil SharedContext must not panic on the fail-closed path.
+func TestNilSharedContext_GovernedTool_FailsClosed(t *testing.T) {
+	ctx := createMockContext("POST", "/mcp", mcpBody("tools/call", map[string]any{"name": "toolA"}), nil)
+	ctx.SharedContext = nil
+	action := toolAOnlyPolicy().OnRequestBody(context.Background(), ctx, map[string]any{})
+	assertStatus(t, action, 401, "governed toolA with a nil SharedContext")
+}
+
+// Parsing now precedes the identity check, so a malformed body is reported as 400 rather than 401.
+// This matches mcp-auth, which rejects an unparseable body before authenticating.
+func TestMalformedBody_NoAuthContext_IsBadRequest(t *testing.T) {
+	resp := assertStatus(t, runBody(toolAOnlyPolicy(), []byte(`{"method":`), nil), 400, "malformed body with no AuthContext")
+	assertWwwAuthContains(t, resp, `error="invalid_request"`)
+}
+
+func TestMalformedInput_Variants(t *testing.T) {
+	cases := []struct {
+		name string
+		body []byte
+		want int // 0 means passthrough
+	}{
+		{"empty body content", []byte(``), 400},
+		{"json null", []byte(`null`), 0},
+		{"empty method", []byte(`{"method":""}`), 0},
+		{"method without slash", []byte(`{"method":"tools"}`), 0},
+		{"method with two slashes", []byte(`{"method":"a/b/c"}`), 0},
+		{"non-string params.name", []byte(`{"method":"tools/call","params":{"name":123}}`), 400},
+		{"tools/call with no params", []byte(`{"method":"tools/call"}`), 0},
+		{"tools/call with empty name", []byte(`{"method":"tools/call","params":{"name":""}}`), 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			action := runBody(toolAOnlyPolicy(), tc.body, nil)
+			if tc.want == 0 {
+				assertPassthrough(t, action, tc.name)
+				return
+			}
+			assertStatus(t, action, tc.want, tc.name)
+		})
+	}
+}
+
+func TestVeryLongToolName_NoMatch(t *testing.T) {
+	action := runBody(toolAOnlyPolicy(), mcpBody("tools/call", map[string]any{"name": strings.Repeat("x", 4096)}), nil)
+	assertPassthrough(t, action, "a 4096-character tool name")
+}
+
+func TestUnicodeToolName_MatchesByteExactly(t *testing.T) {
+	p := &McpAuthzPolicy{Rules: []Rule{{
+		Attribute:      Attribute{Type: "tool", Name: "outil-café-🔧"},
+		RequiredScopes: []string{"scope:a"},
+	}}}
+	assertStatus(t, runBody(p, mcpBody("tools/call", map[string]any{"name": "outil-café-🔧"}), nil), 401,
+		"a governed unicode tool name")
+	assertPassthrough(t, runBody(p, mcpBody("tools/call", map[string]any{"name": "outil-cafe-🔧"}), nil),
+		"a near-miss unicode tool name")
+}
+
+// encoding/json takes the last occurrence of a duplicated key. mcp-auth parses the same body with
+// the same library and struct shape, so both policies resolve the invoked tool identically. If that
+// ever diverged, a caller could authenticate as one tool and be authorized as another.
+func TestDuplicateJSONKeys_LastValueWins(t *testing.T) {
+	body := []byte(`{"method":"tools/call","params":{"name":"toolB","name":"toolA"}}`)
+	assertStatus(t, runBody(toolAOnlyPolicy(), body, nil), 401,
+		"duplicate params.name resolving to the governed toolA")
+}
+
+// ---- request gating ----
+
+func TestGetOnMcpPath_PassesThrough(t *testing.T) {
+	ctx := createMockContext("GET", "/mcp", mcpBody("tools/call", map[string]any{"name": "toolA"}), nil)
+	assertPassthrough(t, toolAOnlyPolicy().OnRequestBody(context.Background(), ctx, map[string]any{}), "GET /mcp")
+}
+
+// ---- context and metadata side effects ----
+
+// MCP metadata is published for every parsed capability request, including ones this policy does not
+// govern, so peer policies reading it are unaffected by the early return.
+func TestUngovernedInvocation_StillPublishesMetadata(t *testing.T) {
+	ctx := createMockContext("POST", "/mcp", mcpBody("tools/call", map[string]any{"name": "toolB"}), nil)
+	assertPassthrough(t, toolAOnlyPolicy().OnRequestBody(context.Background(), ctx, map[string]any{}), "ungoverned toolB")
+
+	if got := ctx.Metadata[MetadataMcpMethod]; got != "tools/call" {
+		t.Errorf("expected %s=tools/call, got %v", MetadataMcpMethod, got)
+	}
+	if got := ctx.Metadata[MetadataMcpCapabilityType]; got != "tool" {
+		t.Errorf("expected %s=tool, got %v", MetadataMcpCapabilityType, got)
+	}
+	if got := ctx.Metadata[MetadataMcpCapabilityName]; got != "toolB" {
+		t.Errorf("expected %s=toolB, got %v", MetadataMcpCapabilityName, got)
+	}
+}
+
+// An ungoverned invocation reaches no authorization decision, so it must not be marked authorized
+// and its AuthType must not be promoted to mcp/oauth+authz.
+func TestUngovernedInvocation_DoesNotMutateAuthContext(t *testing.T) {
+	authCtx := &policy.AuthContext{Authenticated: true, AuthType: McpOAuthAuthType}
+	assertPassthrough(t, runBody(toolAOnlyPolicy(), mcpBody("tools/call", map[string]any{"name": "toolB"}), authCtx),
+		"ungoverned toolB with an authenticated AuthContext")
+
+	if authCtx.Authorized {
+		t.Error("expected Authorized to stay false: no authorization decision was made")
+	}
+	if authCtx.AuthType != McpOAuthAuthType {
+		t.Errorf("expected AuthType to stay %q, got %q", McpOAuthAuthType, authCtx.AuthType)
+	}
+}
+
+// A governed and satisfied invocation still promotes mcp/oauth to mcp/oauth+authz.
+func TestGovernedInvocation_PromotesMcpOAuthAuthType(t *testing.T) {
+	authCtx := &policy.AuthContext{
+		Authenticated: true,
+		AuthType:      McpOAuthAuthType,
+		Scopes:        map[string]bool{"scope:a": true},
+	}
+	assertPassthrough(t, runBody(toolAOnlyPolicy(), mcpBody("tools/call", map[string]any{"name": "toolA"}), authCtx),
+		"governed toolA with the required scope")
+
+	if !authCtx.Authorized {
+		t.Error("expected Authorized=true")
+	}
+	if authCtx.AuthType != McpOAuthzAuthType {
+		t.Errorf("expected AuthType=%q, got %q", McpOAuthzAuthType, authCtx.AuthType)
+	}
 }
