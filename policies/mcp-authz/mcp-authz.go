@@ -66,10 +66,45 @@ type MCPRequestParams struct {
 
 // Rule represents a single authorization rule
 type Rule struct {
-	Attribute      Attribute
+	Attribute Attribute
+	// RequiredClaims and RequiredScopes are the deprecated flat conditions. They remain supported
+	// for backward compatibility but are superseded by Claims / Scopes (which take precedence when
+	// non-empty). RequiredScopes is any-match (OR); RequiredClaims is exact-match on every entry (AND).
 	RequiredClaims map[string]string
 	RequiredScopes []string
+	// Scopes and Claims are the new allOf/anyOf conditions. When non-empty they take precedence over
+	// the deprecated fields for the same dimension.
+	Scopes ScopeConstraints
+	Claims ClaimConstraints
 }
+
+// ScopeConstraints defines required scopes: allOf (all), anyOf (any), or both. 
+// Empty means no requirement. Replaces deprecated requiredScopes (anyOf).
+type ScopeConstraints struct {
+	AllOf []string
+	AnyOf []string
+}
+
+func (s ScopeConstraints) isEmpty() bool { return len(s.AllOf) == 0 && len(s.AnyOf) == 0 }
+
+// ClaimMatcher matches a single claim against the AuthContext: satisfied when the context value for
+// Claim is one of Values.
+type ClaimMatcher struct {
+	Claim  string
+	Values []string
+	// legacyExactString marks a matcher derived from the deprecated requiredClaims field. Such a
+	// matcher preserves the exact string comparison against the flattened Properties value
+	legacyExactString bool
+}
+
+// ClaimConstraints defines required claims: allOf (all match), anyOf (any match), or both. 
+// Empty means no requirement. Replaces deprecated requiredClaims (allOf).
+type ClaimConstraints struct {
+	AllOf []ClaimMatcher
+	AnyOf []ClaimMatcher
+}
+
+func (c ClaimConstraints) isEmpty() bool { return len(c.AllOf) == 0 && len(c.AnyOf) == 0 }
 
 // Attribute represents the MCP resource attribute being authorized
 type Attribute struct {
@@ -79,6 +114,22 @@ type Attribute struct {
 
 type McpAuthzPolicy struct {
 	Rules []Rule
+}
+
+// deprecationUsage tracks whether the deprecated per-rule fields were used (and whether a new
+// counterpart overrode them), for one-time warnings at policy load.
+type deprecationUsage struct {
+	scopesUsed, scopesIgnored bool
+	claimsUsed, claimsIgnored bool
+}
+
+func (d deprecationUsage) or(o deprecationUsage) deprecationUsage {
+	return deprecationUsage{
+		scopesUsed:    d.scopesUsed || o.scopesUsed,
+		scopesIgnored: d.scopesIgnored || o.scopesIgnored,
+		claimsUsed:    d.claimsUsed || o.claimsUsed,
+		claimsIgnored: d.claimsIgnored || o.claimsIgnored,
+	}
 }
 
 // GetPolicy is the v1alpha2 factory entry point (loaded by v1alpha2 kernels).
@@ -91,11 +142,27 @@ func GetPolicy(
 	p := &McpAuthzPolicy{}
 
 	// Parse rules from params
-	rules, err := parseRules(params)
+	rules, dep, err := parseRules(params)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse rules: %w", err)
 	}
 	p.Rules = rules
+
+	// Deprecation notices (only when a deprecated field is actually in use).
+	if dep.scopesUsed {
+		if dep.scopesIgnored {
+			slog.Warn("MCP Authorization Policy: rule 'requiredScopes' is deprecated and ignored where 'scopes' is configured; migrate to 'scopes' (allOf/anyOf).")
+		} else {
+			slog.Warn("MCP Authorization Policy: rule 'requiredScopes' is deprecated; migrate to 'scopes' (allOf/anyOf).")
+		}
+	}
+	if dep.claimsUsed {
+		if dep.claimsIgnored {
+			slog.Warn("MCP Authorization Policy: rule 'requiredClaims' is deprecated and ignored where 'claims' is configured; migrate to 'claims' (allOf/anyOf).")
+		} else {
+			slog.Warn("MCP Authorization Policy: rule 'requiredClaims' is deprecated; migrate to 'claims' (allOf/anyOf).")
+		}
+	}
 
 	slog.Debug("MCP Authorization Policy: Parsed policy configuration",
 		"rulesCount", len(p.Rules))
@@ -104,8 +171,9 @@ func GetPolicy(
 }
 
 // parseRules extracts and validates rules from the 4 top-level arrays: tools, resources, prompts, methods
-func parseRules(params map[string]any) ([]Rule, error) {
+func parseRules(params map[string]any) ([]Rule, deprecationUsage, error) {
 	var allRules []Rule
+	var dep deprecationUsage
 
 	// Parse each array type
 	arrayTypes := []struct {
@@ -119,108 +187,238 @@ func parseRules(params map[string]any) ([]Rule, error) {
 	}
 
 	for _, at := range arrayTypes {
-		rules, err := parseArrayRules(params, at.key, at.type_)
+		rules, d, err := parseArrayRules(params, at.key, at.type_)
 		if err != nil {
-			return nil, fmt.Errorf("failed to parse %s: %w", at.key, err)
+			return nil, dep, fmt.Errorf("failed to parse %s: %w", at.key, err)
 		}
 		allRules = append(allRules, rules...)
+		dep = dep.or(d)
 	}
 
-	return allRules, nil
+	return allRules, dep, nil
 }
 
 // parseArrayRules parses rules from a specific array (tools, resources, prompts, or methods)
-func parseArrayRules(params map[string]any, arrayKey, attributeType string) ([]Rule, error) {
+func parseArrayRules(params map[string]any, arrayKey, attributeType string) ([]Rule, deprecationUsage, error) {
+	var dep deprecationUsage
 	rulesRaw, ok := params[arrayKey]
 	if !ok {
 		// Array is optional
-		return nil, nil
+		return nil, dep, nil
 	}
 
 	rulesArray, ok := rulesRaw.([]any)
 	if !ok {
-		return nil, fmt.Errorf("%s must be an array", arrayKey)
+		return nil, dep, fmt.Errorf("%s must be an array", arrayKey)
 	}
 
 	var rules []Rule
 	for i, ruleRaw := range rulesArray {
 		ruleMap, ok := ruleRaw.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf("%s[%d] must be an object", arrayKey, i)
+			return nil, dep, fmt.Errorf("%s[%d] must be an object", arrayKey, i)
 		}
 
-		rule, err := parseRuleItem(ruleMap, arrayKey, i, attributeType)
+		rule, d, err := parseRuleItem(ruleMap, arrayKey, i, attributeType)
 		if err != nil {
-			return nil, err
+			return nil, dep, err
 		}
 		rules = append(rules, rule)
+		dep = dep.or(d)
 	}
 
-	return rules, nil
+	return rules, dep, nil
 }
 
-// parseRuleItem parses a single rule item from a map
-func parseRuleItem(ruleMap map[string]any, arrayKey string, index int, attributeType string) (Rule, error) {
-	rule := Rule{
-		Attribute: Attribute{
-			Type: attributeType,
-		},
-	}
-	hasRequiredClaims := false
-	hasRequiredScopes := false
+// parseRuleItem parses a single rule item from a map. It reads both the new scopes/claims and the
+// deprecated requiredScopes/requiredClaims; the new fields take precedence per dimension at
+// evaluation time. Returns which deprecated fields were used (for one-time warnings).
+func parseRuleItem(ruleMap map[string]any, arrayKey string, index int, attributeType string) (Rule, deprecationUsage, error) {
+	var dep deprecationUsage
+	rule := Rule{Attribute: Attribute{Type: attributeType}}
+	ctx := fmt.Sprintf("%s[%d]", arrayKey, index)
 
 	// Parse name (required)
 	nameRaw, ok := ruleMap["name"]
 	if !ok {
-		return rule, fmt.Errorf("%s[%d].name is required", arrayKey, index)
+		return rule, dep, fmt.Errorf("%s.name is required", ctx)
 	}
 	nameStr, ok := nameRaw.(string)
 	if !ok {
-		return rule, fmt.Errorf("%s[%d].name must be a string", arrayKey, index)
+		return rule, dep, fmt.Errorf("%s.name must be a string", ctx)
 	}
 	rule.Attribute.Name = nameStr
 
-	// Parse requiredClaims (optional)
+	// Parse the new scopes / claims (optional). Malformed → error (fail closed at load).
+	scopes, err := parseScopeConstraints(ruleMap, ctx)
+	if err != nil {
+		return rule, dep, err
+	}
+	claims, err := parseClaimConstraints(ruleMap, ctx)
+	if err != nil {
+		return rule, dep, err
+	}
+	rule.Scopes = scopes
+	rule.Claims = claims
+
+	// Parse the deprecated requiredScopes (any-match) / requiredClaims (exact-match, AND).
+	if scopesRaw, ok := ruleMap["requiredScopes"]; ok {
+		scopesArray, ok := scopesRaw.([]any)
+		if !ok {
+			return rule, dep, fmt.Errorf("%s.requiredScopes must be an array", ctx)
+		}
+		for j, scopeRaw := range scopesArray {
+			scopeStr, ok := scopeRaw.(string)
+			if !ok {
+				return rule, dep, fmt.Errorf("%s.requiredScopes[%d] must be a string", ctx, j)
+			}
+			rule.RequiredScopes = append(rule.RequiredScopes, scopeStr)
+		}
+	}
 	if claimsRaw, ok := ruleMap["requiredClaims"]; ok {
-		hasRequiredClaims = true
 		claimsMap, ok := claimsRaw.(map[string]any)
 		if !ok {
-			return rule, fmt.Errorf("%s[%d].requiredClaims must be an object", arrayKey, index)
+			return rule, dep, fmt.Errorf("%s.requiredClaims must be an object", ctx)
 		}
 		rule.RequiredClaims = make(map[string]string)
 		for k, v := range claimsMap {
 			vStr, ok := v.(string)
 			if !ok {
-				return rule, fmt.Errorf("%s[%d].requiredClaims[%s] must be a string", arrayKey, index, k)
+				return rule, dep, fmt.Errorf("%s.requiredClaims[%s] must be a string", ctx, k)
 			}
 			rule.RequiredClaims[k] = vStr
 		}
 	}
 
-	// Parse requiredScopes (optional)
-	if scopesRaw, ok := ruleMap["requiredScopes"]; ok {
-		hasRequiredScopes = true
-		scopesArray, ok := scopesRaw.([]any)
+	// Record deprecation usage (only when actually provided with values — decision D3).
+	if len(rule.RequiredScopes) > 0 {
+		dep.scopesUsed = true
+		dep.scopesIgnored = !rule.Scopes.isEmpty()
+	}
+	if len(rule.RequiredClaims) > 0 {
+		dep.claimsUsed = true
+		dep.claimsIgnored = !rule.Claims.isEmpty()
+	}
+
+	// A rule must define at least one authorization condition (new or deprecated).
+	if rule.Scopes.isEmpty() && rule.Claims.isEmpty() && len(rule.RequiredScopes) == 0 && len(rule.RequiredClaims) == 0 {
+		return rule, dep, fmt.Errorf("%s must define at least one of scopes, claims, requiredScopes, or requiredClaims", ctx)
+	}
+
+	return rule, dep, nil
+}
+
+// getString returns v as a string, or "" if it is not a string.
+func getString(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+// parseStringArray extracts a []string from m[key]; absent/nil → nil; malformed → error. Blank entries dropped.
+func parseStringArray(m map[string]any, key, ctx string) ([]string, error) {
+	raw, ok := m[key]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	arr, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s.%s must be an array", ctx, key)
+	}
+	var out []string
+	for i, item := range arr {
+		s, ok := item.(string)
 		if !ok {
-			return rule, fmt.Errorf("%s[%d].requiredScopes must be an array", arrayKey, index)
+			return nil, fmt.Errorf("%s.%s[%d] must be a string", ctx, key, i)
 		}
-		for j, scopeRaw := range scopesArray {
-			scopeStr, ok := scopeRaw.(string)
-			if !ok {
-				return rule, fmt.Errorf("%s[%d].requiredScopes[%d] must be a string", arrayKey, index, j)
-			}
-			rule.RequiredScopes = append(rule.RequiredScopes, scopeStr)
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
 		}
 	}
+	return out, nil
+}
 
-	if !hasRequiredClaims && !hasRequiredScopes {
-		return rule, fmt.Errorf("%s[%d] must define at least one of requiredClaims or requiredScopes", arrayKey, index)
+// parseScopeConstraints reads the new per-rule `scopes` object. Absent/empty → empty; malformed → error.
+func parseScopeConstraints(ruleMap map[string]any, ctx string) (ScopeConstraints, error) {
+	raw, ok := ruleMap["scopes"]
+	if !ok || raw == nil {
+		return ScopeConstraints{}, nil
 	}
-	if len(rule.RequiredClaims) == 0 && len(rule.RequiredScopes) == 0 {
-		return rule, fmt.Errorf("%s[%d] must define at least one non-empty authorization condition", arrayKey, index)
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return ScopeConstraints{}, fmt.Errorf("%s.scopes must be an object", ctx)
 	}
+	allOf, err := parseStringArray(m, "allOf", ctx+".scopes")
+	if err != nil {
+		return ScopeConstraints{}, err
+	}
+	anyOf, err := parseStringArray(m, "anyOf", ctx+".scopes")
+	if err != nil {
+		return ScopeConstraints{}, err
+	}
+	return ScopeConstraints{AllOf: allOf, AnyOf: anyOf}, nil
+}
 
-	return rule, nil
+// parseClaimMatchers parses an array of { claim, values:[…] } matchers. Malformed → error.
+func parseClaimMatchers(raw any, ctx string) ([]ClaimMatcher, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	arr, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s must be an array", ctx)
+	}
+	var out []ClaimMatcher
+	for i, item := range arr {
+		mm, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("%s[%d] must be an object", ctx, i)
+		}
+		claim := strings.TrimSpace(getString(mm["claim"]))
+		if claim == "" {
+			return nil, fmt.Errorf("%s[%d].claim is required", ctx, i)
+		}
+		values, err := parseStringArray(mm, "values", fmt.Sprintf("%s[%d]", ctx, i))
+		if err != nil {
+			return nil, err
+		}
+		if len(values) == 0 {
+			return nil, fmt.Errorf("%s[%d].values must have at least one value", ctx, i)
+		}
+		out = append(out, ClaimMatcher{Claim: claim, Values: values})
+	}
+	return out, nil
+}
+
+// parseClaimConstraints reads the new per-rule `claims` object. Absent/empty → empty; malformed → error.
+func parseClaimConstraints(ruleMap map[string]any, ctx string) (ClaimConstraints, error) {
+	raw, ok := ruleMap["claims"]
+	if !ok || raw == nil {
+		return ClaimConstraints{}, nil
+	}
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return ClaimConstraints{}, fmt.Errorf("%s.claims must be an object", ctx)
+	}
+	allOf, err := parseClaimMatchers(m["allOf"], ctx+".claims.allOf")
+	if err != nil {
+		return ClaimConstraints{}, err
+	}
+	anyOf, err := parseClaimMatchers(m["anyOf"], ctx+".claims.anyOf")
+	if err != nil {
+		return ClaimConstraints{}, err
+	}
+	return ClaimConstraints{AllOf: allOf, AnyOf: anyOf}, nil
+}
+
+// claimConstraintsFromRequired maps the deprecated requiredClaims (all exact-match, AND) onto the new structure.
+func claimConstraintsFromRequired(rc map[string]string) ClaimConstraints {
+	matchers := make([]ClaimMatcher, 0, len(rc))
+	for k, v := range rc {
+		matchers = append(matchers, ClaimMatcher{Claim: k, Values: []string{v}, legacyExactString: true})
+	}
+	return ClaimConstraints{AllOf: matchers}
 }
 
 func (p *McpAuthzPolicy) Mode() policy.ProcessingMode {
@@ -444,19 +642,28 @@ func (p *McpAuthzPolicy) findMatchingRules(attributeType, attributeName, method 
 	return append(specificRules, wildcardRules...)
 }
 
-// ruleGrantsAccess checks if a rule's claims and scopes are satisfied
+// ruleGrantsAccess checks if a rule's claims and scopes are satisfied. The new Scopes/Claims take
+// precedence per dimension; each falls back to the deprecated field when its new counterpart is empty.
 func (p *McpAuthzPolicy) ruleGrantsAccess(rule Rule, authCtx *policy.AuthContext) (bool, []string) {
-	// Check required claims
-	if len(rule.RequiredClaims) > 0 {
-		if !p.checkClaims(rule.RequiredClaims, authCtx) {
+	scopes := rule.Scopes
+	if scopes.isEmpty() && len(rule.RequiredScopes) > 0 {
+		scopes = ScopeConstraints{AnyOf: rule.RequiredScopes}
+	}
+	claims := rule.Claims
+	if claims.isEmpty() && len(rule.RequiredClaims) > 0 {
+		claims = claimConstraintsFromRequired(rule.RequiredClaims)
+	}
+
+	// Check claims
+	if !claims.isEmpty() {
+		if !p.checkClaims(claims, authCtx) {
 			return false, nil
 		}
 	}
 
-	// Check required scopes
-	if len(rule.RequiredScopes) > 0 {
-		ok, missing := p.checkScopes(rule.RequiredScopes, authCtx)
-		if !ok {
+	// Check scopes
+	if !scopes.isEmpty() {
+		if ok, missing := p.checkScopes(scopes, authCtx); !ok {
 			return false, missing
 		}
 	}
@@ -464,75 +671,146 @@ func (p *McpAuthzPolicy) ruleGrantsAccess(rule Rule, authCtx *policy.AuthContext
 	return true, nil
 }
 
-// checkClaims verifies that all required claims match their expected values in the AuthContext
-func (p *McpAuthzPolicy) checkClaims(requiredClaims map[string]string, authCtx *policy.AuthContext) bool {
-	for claimName, expectedValue := range requiredClaims {
-		switch claimName {
-		case "sub":
-			if authCtx.Subject != expectedValue {
-				slog.Debug("MCP Authorization Policy: Claim value mismatch",
-					"claim", claimName,
-					"expected", expectedValue,
-					"actual", authCtx.Subject)
-				return false
-			}
-		case "iss":
-			if authCtx.Issuer != expectedValue {
-				slog.Debug("MCP Authorization Policy: Claim value mismatch",
-					"claim", claimName,
-					"expected", expectedValue,
-					"actual", authCtx.Issuer)
-				return false
-			}
-		case "aud":
-			found := false
-			for _, a := range authCtx.Audience {
-				if a == expectedValue {
-					found = true
-					break
-				}
-			}
-			if !found {
-				slog.Debug("MCP Authorization Policy: Required audience not found",
-					"claim", claimName,
-					"expected", expectedValue)
-				return false
-			}
-		default:
-			if authCtx.Properties == nil {
-				slog.Debug("MCP Authorization Policy: Required claim not found (no properties)",
-					"claim", claimName)
-				return false
-			}
-			if authCtx.Properties[claimName] != expectedValue {
-				slog.Debug("MCP Authorization Policy: Claim value mismatch",
-					"claim", claimName,
-					"expected", expectedValue,
-					"actual", authCtx.Properties[claimName])
-				return false
-			}
+// checkClaims verifies a ClaimConstraints set against the AuthContext: every allOf matcher must
+// match, and (when present) at least one anyOf matcher must match.
+func (p *McpAuthzPolicy) checkClaims(cc ClaimConstraints, authCtx *policy.AuthContext) bool {
+	for _, m := range cc.AllOf {
+		if !claimMatcherMatches(m, authCtx) {
+			slog.Debug("MCP Authorization Policy: allOf claim matcher not satisfied", "claim", m.Claim)
+			return false
 		}
 	}
-
+	if len(cc.AnyOf) > 0 {
+		found := false
+		for _, m := range cc.AnyOf {
+			if claimMatcherMatches(m, authCtx) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			slog.Debug("MCP Authorization Policy: no anyOf claim matcher satisfied")
+			return false
+		}
+	}
 	return true
 }
 
-// checkScopes verifies that at least one of the required scopes is present in the AuthContext
-func (p *McpAuthzPolicy) checkScopes(requiredScopes []string, authCtx *policy.AuthContext) (bool, []string) {
-	found := false
-	var matchedScope string
-	for _, required := range requiredScopes {
-		if authCtx.Scopes[required] {
-			found = true
-			matchedScope = required
-			break
+// claimMatcherMatches reports whether the AuthContext value for the matcher's claim is one of its
+// values. sub/iss/aud are read from the typed fields; any other claim prefers the structured
+// TypedProperties (so array-valued claims match as sets) and falls back to the flattened Properties.
+func claimMatcherMatches(m ClaimMatcher, authCtx *policy.AuthContext) bool {
+	if len(m.Values) == 0 {
+		return false
+	}
+	want := make(map[string]bool, len(m.Values))
+	for _, v := range m.Values {
+		want[v] = true
+	}
+	switch m.Claim {
+	case "sub":
+		return want[authCtx.Subject]
+	case "iss":
+		return want[authCtx.Issuer]
+	case "aud":
+		for _, a := range authCtx.Audience {
+			if want[a] {
+				return true
+			}
+		}
+		return false
+	default:
+		// Deprecated requiredClaims: exact string comparison against the flattened Properties
+		// value, preserving the pre-TypedProperties behavior where an array-valued claim never
+		// matches a scalar requiredClaims entry. Only the new `claims` field gets array-aware
+		// matching below.
+		if m.legacyExactString {
+			if authCtx.Properties == nil {
+				return false
+			}
+			return want[authCtx.Properties[m.Claim]]
+		}
+		// Prefer the typed claim value (set intersection); this correctly handles array-valued
+		// custom claims. Fall back to the flattened Properties string for auth policies that do
+		// not populate TypedProperties.
+		if raw, ok := authCtx.TypedProperties[m.Claim]; ok {
+			for _, tv := range typedValueStrings(raw) {
+				if want[tv] {
+					return true
+				}
+			}
+			return false
+		}
+		if authCtx.Properties == nil {
+			return false
+		}
+		return want[authCtx.Properties[m.Claim]]
+	}
+}
+
+// typedValueToString renders a scalar typed claim value as a string, matching how jwt-auth flattens
+// values into Properties (numbers as integers, bools as true/false, anything else as JSON).
+func typedValueToString(v interface{}) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	case float64:
+		return strconv.FormatInt(int64(val), 10)
+	case bool:
+		return strconv.FormatBool(val)
+	default:
+		b, _ := json.Marshal(val)
+		return string(b)
+	}
+}
+
+// typedValueStrings renders a typed claim value (as stored in AuthContext.TypedProperties) as a slice
+// of strings: a scalar becomes one element, an array becomes many. Blank results are dropped so an
+// empty or nil value never matches (fail-closed).
+func typedValueStrings(v interface{}) []string {
+	switch val := v.(type) {
+	case nil:
+		return nil
+	case []interface{}:
+		var out []string
+		for _, item := range val {
+			if s := typedValueToString(item); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		if s := typedValueToString(v); s != "" {
+			return []string{s}
+		}
+		return nil
+	}
+}
+
+// checkScopes verifies a ScopeConstraints set against the AuthContext scopes: every allOf scope must
+// be present, and (when present) at least one anyOf scope must be present. On failure it returns the
+// scopes that would satisfy the unmet condition (for the WWW-Authenticate challenge).
+func (p *McpAuthzPolicy) checkScopes(sc ScopeConstraints, authCtx *policy.AuthContext) (bool, []string) {
+	var missing []string
+	for _, s := range sc.AllOf {
+		if !authCtx.Scopes[s] {
+			missing = append(missing, s)
 		}
 	}
-	if !found {
-		slog.Debug("MCP Authorization Policy: Missing required scopes", "missing", requiredScopes)
-		return false, requiredScopes
+	if len(missing) > 0 {
+		slog.Debug("MCP Authorization Policy: Missing required (allOf) scopes", "missing", missing)
+		return false, missing
 	}
-	slog.Debug("MCP Authorization Policy: Found matching scope", "scope", matchedScope)
+	if len(sc.AnyOf) > 0 {
+		for _, s := range sc.AnyOf {
+			if authCtx.Scopes[s] {
+				slog.Debug("MCP Authorization Policy: Found matching (anyOf) scope", "scope", s)
+				return true, nil
+			}
+		}
+		slog.Debug("MCP Authorization Policy: No anyOf scope present", "anyOf", sc.AnyOf)
+		return false, sc.AnyOf
+	}
 	return true, nil
 }
 

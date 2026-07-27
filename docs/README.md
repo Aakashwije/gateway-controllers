@@ -45,13 +45,13 @@ All available policies, sorted alphabetically.
 | [Interceptor Service](./interceptor-service/v1.0/docs/interceptor-service.md) | Transformation | Invokes a user-defined HTTP interceptor service in the request and/or response phase. |
 | [JSON Schema Guardrail](./json-schema-guardrail/v1.0/docs/json-schema.md) | Guardrails, AI | Validates request or response body content against a JSON Schema. |
 | [JSON/XML Mediator](./json-xml-mediator/v1.0/docs/json-xml-mediator.md) | Transformation | Mediates request and response payloads between downstream and upstream JSON/XML formats. |
-| [JWT Auth](./jwt-auth/v1.2/docs/jwt-authentication.md) | Security, AI, WebSub, WebBroker | Validates JWT access tokens included in API requests. |
+| [JWT Auth](./jwt-auth/v1.3/docs/jwt-authentication.md) | Security, AI, WebSub, WebBroker | Validates JWT access tokens included in API requests. |
 | [LLM Cost](./llm-cost/v1.0/docs/llm-cost.md) | AI | Calculates the monetary cost of LLM API calls at response time and stores the result in SharedContext for use by downstream policies. |
 | [LLM Cost Based Ratelimit](./llm-cost-based-ratelimit/v1.0/docs/llm-cost-based-ratelimit.md) | AI | A specialized rate limiting policy that enforces monetary budget limits on LLM API usage. |
 | [Log Message](./log-message/v1.0/docs/log-message.md) | Logging, Analytics & Monitoring, MCP, WebSub, WebBroker | This policy provides the capability to log the payload and headers of a request/response. |
 | [MCP Access Control](./mcp-acl-list/v1.0/docs/mcp-acl-list.md) | MCP, AI | MCP ACL List policy controls access to tools, resources, and prompts using mode and exceptions. |
 | [MCP Authentication](./mcp-auth/v1.0/docs/mcp-authentication.md) | MCP, AI, Security | This policy is used to secure traffic to Model Context Protocol server as defined in the specification (https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization). |
-| [MCP Authorization](./mcp-authz/v1.0/docs/mcp-authorization.md) | MCP, AI, Security | MCP Authorization policy validates access to MCP resources (tools, resources, prompts) and methods based on JWT claims or OAuth scopes provided by the mcp-auth policy. |
+| [MCP Authorization](./mcp-authz/v1.1/docs/mcp-authorization.md) | MCP, AI, Security | MCP Authorization policy validates access to MCP resources (tools, resources, prompts) and methods based on JWT claims or OAuth scopes provided by the mcp-auth policy. |
 | [MCP Rate Limit](./mcp-ratelimit/v1.0/docs/mcp-ratelimit.md) | MCP, AI, Security | Applies rate limits to MCP traffic per tool, resource, prompt, or JSON-RPC method. |
 | [MCP Rewrite](./mcp-rewrite/v1.0/docs/mcp-rewrite.md) | MCP, AI | MCP Rewrite policy defines user-facing tools, resources, and prompts and maps them to backend capability names using optional "target" fields. |
 | [Model Round Robin](./model-round-robin/v1.0/docs/model-round-robin.md) | AI | Implements round-robin load balancing for AI models. |

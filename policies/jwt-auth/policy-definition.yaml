@@ -1,5 +1,5 @@
 name: jwt-auth
-version: v1.2.3
+version: v1.3.0
 description: |
   Validates JWT access tokens included in API requests. The gateway verifies the
   token's signature, expiry, issuer, audience, scopes, and required claims.
@@ -30,7 +30,10 @@ parameters:
     requiredScopes:
       type: array
       x-wso2-policy-advanced-param: true
-      description: Specifies scopes to check against the token's `scope` (space-delimited) or `scp` (array) claims. At least one of the listed scopes must be present in the token.
+      description: >-
+        DEPRECATED — use `scopes` (allOf/anyOf) instead. Specifies scopes to check against the
+        token's `scope` (space-delimited) or `scp` (array) claims; at least one of the listed
+        scopes must be present. Ignored when `scopes` is configured.
       default: []
       items:
         type: string
@@ -38,10 +41,80 @@ parameters:
     requiredClaims:
       type: object
       x-wso2-policy-advanced-param: true
-      description: Specifies required claim-value pairs as `claimName -> expectedValue`.
+      description: >-
+        DEPRECATED — use `claims` (allOf/anyOf) instead. Specifies required claim-value pairs as
+        `claimName -> expectedValue`; every pair must match. Ignored when `claims` is configured.
       default: {}
       additionalProperties:
         type: string
+
+    scopes:
+      type: object
+      x-wso2-policy-advanced-param: true
+      additionalProperties: false
+      description: >-
+        Scope requirements evaluated against the token's scopes. `allOf` requires every listed
+        scope to be present; `anyOf` requires at least one. When both are given they are AND-ed:
+        (all of allOf) AND (any of anyOf). Takes precedence over the deprecated `requiredScopes`.
+      default: {}
+      properties:
+        allOf:
+          type: array
+          description: All listed scopes must be present in the token.
+          items:
+            type: string
+        anyOf:
+          type: array
+          description: At least one of the listed scopes must be present in the token.
+          items:
+            type: string
+
+    claims:
+      type: object
+      x-wso2-policy-advanced-param: true
+      additionalProperties: false
+      description: >-
+        Claim requirements evaluated against the token's claims. `allOf` requires every matcher to
+        match; `anyOf` requires at least one. When both are given they are AND-ed. Each matcher
+        names a claim and a list of accepted values; the matcher is satisfied when the token's
+        claim value is one of those values (for a multi-valued claim, any overlap). Takes
+        precedence over the deprecated `requiredClaims`.
+      default: {}
+      properties:
+        allOf:
+          type: array
+          description: Every matcher must be satisfied.
+          items:
+            type: object
+            additionalProperties: false
+            required: ["claim", "values"]
+            properties:
+              claim:
+                type: string
+                description: Name of the token claim to evaluate.
+              values:
+                type: array
+                minItems: 1
+                description: Accepted values; the matcher is satisfied when the claim's value is one of these.
+                items:
+                  type: string
+        anyOf:
+          type: array
+          description: At least one matcher must be satisfied.
+          items:
+            type: object
+            additionalProperties: false
+            required: ["claim", "values"]
+            properties:
+              claim:
+                type: string
+                description: Name of the token claim to evaluate.
+              values:
+                type: array
+                minItems: 1
+                description: Accepted values; the matcher is satisfied when the claim's value is one of these.
+                items:
+                  type: string
 
     claimMappings:
       type: object
@@ -127,6 +200,18 @@ systemParameters:
           issuer:
             type: string
             description: Optional issuer (iss) value associated with keys from this provider.
+          scopeClaim:
+            type: string
+            description: >-
+              Optional token claim from which scopes are read for tokens verified by this key
+              manager. When omitted, scopes are read from both the space-delimited `scope` string
+              claim and the `scp` array claim (the default behavior).
+          scopeClaimSeparator:
+            type: string
+            description: >-
+              Separator used to split a string-valued `scopeClaim` into individual scopes.
+              Defaults to a single space (" ") when omitted. Ignored when `scopeClaim` resolves to
+              an array claim. Has no effect unless `scopeClaim` is set.
           jwks:
             type: object
             description: JWKS configuration supporting both remote endpoints and local certificates. Either 'remote' or 'local' must be specified, but not both.

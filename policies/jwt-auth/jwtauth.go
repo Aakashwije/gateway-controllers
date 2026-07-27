@@ -84,6 +84,10 @@ var standardJWTClaims = map[string]bool{
 // HMAC, none, EdDSA, and any other algorithm are rejected unconditionally.
 var supportedAlgorithms = []string{"RS256", "PS256", "ES256"}
 
+// defaultScopeClaimSeparator is the separator applied to a string-valued scope claim when a
+// key manager configures a ScopeClaim without an explicit ScopeClaimSeparator.
+const defaultScopeClaimSeparator = " "
+
 // signatureKeyFunc returns a jwt.Keyfunc that binds the token's signing method to the
 // actual key type. An RSA key may only verify RSA/PSS tokens; an EC key may only verify
 // ECDSA tokens. Any mismatch — including HMAC-confusion attacks — is rejected.
@@ -131,9 +135,13 @@ type CachedJWKS struct {
 // invalid failure (expired or malformed token only — see errTokenExpired) that is safe to
 // short-circuit on repeat presentation. expiresAt is enforced on read (see getCachedVerdict)
 // since the SDK cache itself is created with ttl=0.
+
+// scopes contains resolved token scopes, cached with claims so both cache-hit and cache-miss paths enforce
+// scopes and populate AuthContext.Scopes consistently without re-running verification.
 type cachedVerdict struct {
-	ok        bool
-	claims    jwt.MapClaims
+	ok     bool
+	claims jwt.MapClaims
+	scopes    []string
 	reason    string
 	expiresAt time.Time
 }
@@ -143,6 +151,8 @@ type KeyManager struct {
 	Name   string      // Unique name for this key manager
 	Issuer string      // Optional issuer value
 	JWKS   *JWKSConfig // JWKS configuration (remote and/or local)
+	ScopeClaim string // Token claim used to read scopes; if unset, falls back to the legacy "scope" and "scp" claims.
+	ScopeClaimSeparator string // Separator for string-valued ScopeClaim; defaults to a space and is ignored for array claims.
 }
 
 // JWKSConfig holds both remote and local key configurations
@@ -320,6 +330,7 @@ func GetPolicy(
 		maxSize = defaultTokenCacheMaxSize
 	}
 	ins.ensureTokenCache(maxSize)
+	logDeprecatedParamUsage(params)
 	return ins, nil
 }
 
@@ -335,7 +346,7 @@ func (p *JwtAuthPolicy) Mode() policy.ProcessingMode {
 // validateTokenWithSignature validates JWT signature using JWKS
 func (p *JwtAuthPolicy) validateTokenWithSignature(tokenString string, unverifiedToken *jwt.Token,
 	keyManagers map[string]*KeyManager, userIssuers []string, validateIssuer bool,
-	leeway time.Duration, cacheTTL time.Duration, fetchTimeout time.Duration, retryCount int, retryInterval time.Duration) (jwt.MapClaims, error) {
+	leeway time.Duration, cacheTTL time.Duration, fetchTimeout time.Duration, retryCount int, retryInterval time.Duration) (jwt.MapClaims, *KeyManager, error) {
 
 	slog.Debug("JWT Auth Policy: Starting token signature validation",
 		"keyManagersCount", len(keyManagers),
@@ -346,7 +357,7 @@ func (p *JwtAuthPolicy) validateTokenWithSignature(tokenString string, unverifie
 	unverifiedClaims, ok := unverifiedToken.Claims.(jwt.MapClaims)
 	if !ok {
 		slog.Debug("JWT Auth Policy: Invalid token claims format")
-		return nil, fmt.Errorf("invalid token claims format")
+		return nil, nil, fmt.Errorf("invalid token claims format")
 	}
 
 	// Validate exp and nbf with leeway
@@ -363,7 +374,7 @@ func (p *JwtAuthPolicy) validateTokenWithSignature(tokenString string, unverifie
 				"expTime", expTime,
 				"now", now,
 			)
-			return nil, errTokenExpired
+			return nil, nil, errTokenExpired
 		}
 		slog.Debug("JWT Auth Policy: Token expiration check passed")
 	} else {
@@ -382,7 +393,7 @@ func (p *JwtAuthPolicy) validateTokenWithSignature(tokenString string, unverifie
 				"nbfTime", nbfTime,
 				"now", now,
 			)
-			return nil, fmt.Errorf("token not yet valid")
+			return nil, nil, fmt.Errorf("token not yet valid")
 		}
 		slog.Debug("JWT Auth Policy: Token not-before check passed")
 	} else {
@@ -454,7 +465,7 @@ func (p *JwtAuthPolicy) validateTokenWithSignature(tokenString string, unverifie
 				"tokenIssuer", tokenIssuer,
 				"userIssuers", userIssuers,
 			)
-			return nil, fmt.Errorf("token issuer '%s' does not match any configured issuer or key manager", tokenIssuer)
+			return nil, nil, fmt.Errorf("token issuer '%s' does not match any configured issuer or key manager", tokenIssuer)
 		}
 	} else if tokenIssuer != "" {
 		// No user issuers specified, but token has issuer claim
@@ -486,7 +497,7 @@ func (p *JwtAuthPolicy) validateTokenWithSignature(tokenString string, unverifie
 					slog.Debug("JWT Auth Policy: No key manager found for token issuer (validateIssuer=true)",
 						"tokenIssuer", tokenIssuer,
 					)
-					return nil, fmt.Errorf("no key manager configured for token issuer '%s'", tokenIssuer)
+					return nil, nil, fmt.Errorf("no key manager configured for token issuer '%s'", tokenIssuer)
 				}
 				slog.Debug("JWT Auth Policy: Using key managers without issuer for token validation",
 					"tokenIssuer", tokenIssuer,
@@ -504,7 +515,7 @@ func (p *JwtAuthPolicy) validateTokenWithSignature(tokenString string, unverifie
 		// No issuer in token
 		if validateIssuer {
 			slog.Debug("JWT Auth Policy: Token has no issuer claim (validateIssuer=true)")
-			return nil, fmt.Errorf("token does not contain an issuer claim")
+			return nil, nil, fmt.Errorf("token does not contain an issuer claim")
 		}
 		// Lenient mode: try all key managers
 		slog.Debug("JWT Auth Policy: No issuer in token, using all key managers (validateIssuer=false)")
@@ -559,7 +570,7 @@ func (p *JwtAuthPolicy) validateTokenWithSignature(tokenString string, unverifie
 					"keyManager", km.Name,
 				)
 				if claims, ok := verifiedToken.Claims.(jwt.MapClaims); ok {
-					return claims, nil
+					return claims, km, nil
 				}
 			}
 			slog.Debug("JWT Auth Policy: Signature verification failed with local certificate",
@@ -629,7 +640,7 @@ func (p *JwtAuthPolicy) validateTokenWithSignature(tokenString string, unverifie
 					"keyManager", km.Name,
 				)
 				if claims, ok := verifiedToken.Claims.(jwt.MapClaims); ok {
-					return claims, nil
+					return claims, km, nil
 				}
 			} else {
 				// No kid, try all keys in JWKS
@@ -649,7 +660,7 @@ func (p *JwtAuthPolicy) validateTokenWithSignature(tokenString string, unverifie
 							"keyManager", km.Name,
 						)
 						if claims, ok := verifiedToken.Claims.(jwt.MapClaims); ok {
-							return claims, nil
+							return claims, km, nil
 						}
 					} else {
 						slog.Debug("JWT Auth Policy: Signature verification failed with key",
@@ -671,10 +682,10 @@ func (p *JwtAuthPolicy) validateTokenWithSignature(tokenString string, unverifie
 		slog.Debug("JWT Auth Policy: All key managers failed to verify signature",
 			"lastError", lastErr,
 		)
-		return nil, lastErr
+		return nil, nil, lastErr
 	}
 	slog.Debug("JWT Auth Policy: Unable to verify token signature with any available key manager")
-	return nil, fmt.Errorf("unable to verify token signature with available key managers")
+	return nil, nil, fmt.Errorf("unable to verify token signature with available key managers")
 }
 
 // fetchJWKSWithRetry fetches JWKS with caching and retry logic
@@ -1052,7 +1063,8 @@ func parseAudience(audClaim interface{}) []string {
 	return []string{}
 }
 
-// parseScopes parses scope claim (space-delimited string or array)
+// parseScopes parses scope claim (space-delimited string or array). This is the legacy fallback
+// used when a key manager does not configure an explicit ScopeClaim.
 func parseScopes(scopeClaim, scpClaim interface{}) []string {
 	var scopes []string
 
@@ -1073,9 +1085,44 @@ func parseScopes(scopeClaim, scpClaim interface{}) []string {
 	return scopes
 }
 
-// buildScopesMap converts JWT scope/scp claims to a map[string]bool for AuthContext.Scopes.
-func buildScopesMap(claims jwt.MapClaims) map[string]bool {
-	scopes := parseScopes(claims["scope"], claims["scp"])
+// Resolves token scopes using the matched key manager's scope-claim configuration, 
+// falling back to the legacy "scope"/"scp" claims when none is configured.
+func resolveScopes(claims jwt.MapClaims, km *KeyManager) []string {
+	if km != nil && km.ScopeClaim != "" {
+		return parseScopeClaim(claims[km.ScopeClaim], km.ScopeClaimSeparator)
+	}
+	return parseScopes(claims["scope"], claims["scp"])
+}
+
+// parseScopeClaim extracts scopes from a single configured claim value. A string value is split
+// by separator (defaulting to defaultScopeClaimSeparator); a string-array value is taken as-is.
+// Empty tokens are discarded so a trailing/duplicate separator does not yield blank scopes.
+func parseScopeClaim(claimValue interface{}, separator string) []string {
+	if separator == "" {
+		separator = defaultScopeClaimSeparator
+	}
+	var scopes []string
+	switch v := claimValue.(type) {
+	case string:
+		for _, s := range strings.Split(v, separator) {
+			if s = strings.TrimSpace(s); s != "" {
+				scopes = append(scopes, s)
+			}
+		}
+	case []interface{}:
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				if s = strings.TrimSpace(s); s != "" {
+					scopes = append(scopes, s)
+				}
+			}
+		}
+	}
+	return scopes
+}
+
+// buildScopesMap converts a resolved scope slice to a map[string]bool for AuthContext.Scopes.
+func buildScopesMap(scopes []string) map[string]bool {
 	if len(scopes) == 0 {
 		return nil
 	}
@@ -1084,6 +1131,293 @@ func buildScopesMap(claims jwt.MapClaims) map[string]bool {
 		result[s] = true
 	}
 	return result
+}
+
+// ScopeConstraints defines required scopes using AllOf and/or 
+// AnyOf; empty means no constraints and supersedes deprecated requiredScopes.
+type ScopeConstraints struct {
+	AllOf []string
+	AnyOf []string
+}
+
+func (s ScopeConstraints) isEmpty() bool { return len(s.AllOf) == 0 && len(s.AnyOf) == 0 }
+
+// ClaimMatcher matches a single claim: satisfied when the token's value for Claim is one of Values
+// (OR within Values; for a multi-valued token claim, a non-empty intersection).
+type ClaimMatcher struct {
+	Claim  string
+	Values []string
+	legacyExactString bool // Preserves legacy requiredClaims semantics by matching only exact scalar string claims.
+}
+
+// ClaimConstraints defines required claim matchers using AllOf and/or 
+// AnyOf; empty means no constraints and supersedes deprecated requiredClaims.
+type ClaimConstraints struct {
+	AllOf []ClaimMatcher
+	AnyOf []ClaimMatcher
+}
+
+func (c ClaimConstraints) isEmpty() bool { return len(c.AllOf) == 0 && len(c.AnyOf) == 0 }
+
+// stringArrayField extracts a []string from m[key]. An absent key yields nil. A present value that
+// is not an array of strings is an error (fail-closed, decision D2). Blank entries are dropped.
+func stringArrayField(m map[string]interface{}, key string) ([]string, error) {
+	v, ok := m[key]
+	if !ok || v == nil {
+		return nil, nil
+	}
+	arr, ok := v.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("%q must be an array", key)
+	}
+	var out []string
+	for _, item := range arr {
+		s, ok := item.(string)
+		if !ok {
+			return nil, fmt.Errorf("%q entries must be strings", key)
+		}
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+// Parses `scopes`; empty values trigger the legacy requiredScopes fallback, 
+// while malformed values return an error to fail closed.
+func parseScopeConstraints(params map[string]interface{}) (ScopeConstraints, error) {
+	raw, present := params["scopes"]
+	if !present || raw == nil {
+		return ScopeConstraints{}, nil
+	}
+	m, ok := raw.(map[string]interface{})
+	if !ok {
+		return ScopeConstraints{}, fmt.Errorf("scopes must be an object")
+	}
+	allOf, err := stringArrayField(m, "allOf")
+	if err != nil {
+		return ScopeConstraints{}, fmt.Errorf("scopes.%w", err)
+	}
+	anyOf, err := stringArrayField(m, "anyOf")
+	if err != nil {
+		return ScopeConstraints{}, fmt.Errorf("scopes.%w", err)
+	}
+	return ScopeConstraints{AllOf: allOf, AnyOf: anyOf}, nil
+}
+
+// Parses claim matchers; returns nil if absent and errors on any invalid or incomplete structure..
+func parseClaimMatchers(raw interface{}, field string) ([]ClaimMatcher, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	arr, ok := raw.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("%s must be an array", field)
+	}
+	var out []ClaimMatcher
+	for _, item := range arr {
+		mm, ok := item.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("%s entries must be objects", field)
+		}
+		claim := strings.TrimSpace(getString(mm["claim"]))
+		if claim == "" {
+			return nil, fmt.Errorf("%s entries must have a non-empty 'claim'", field)
+		}
+		values, err := stringArrayField(mm, "values")
+		if err != nil {
+			return nil, fmt.Errorf("%s claim %q %w", field, claim, err)
+		}
+		if len(values) == 0 {
+			return nil, fmt.Errorf("%s claim %q must have at least one value", field, claim)
+		}
+		out = append(out, ClaimMatcher{Claim: claim, Values: values})
+	}
+	return out, nil
+}
+
+// parseClaimConstraints reads the `claims` param. Same absent/empty/malformed contract as
+// parseScopeConstraints.
+func parseClaimConstraints(params map[string]interface{}) (ClaimConstraints, error) {
+	raw, present := params["claims"]
+	if !present || raw == nil {
+		return ClaimConstraints{}, nil
+	}
+	m, ok := raw.(map[string]interface{})
+	if !ok {
+		return ClaimConstraints{}, fmt.Errorf("claims must be an object")
+	}
+	allOf, err := parseClaimMatchers(m["allOf"], "claims.allOf")
+	if err != nil {
+		return ClaimConstraints{}, err
+	}
+	anyOf, err := parseClaimMatchers(m["anyOf"], "claims.anyOf")
+	if err != nil {
+		return ClaimConstraints{}, err
+	}
+	return ClaimConstraints{AllOf: allOf, AnyOf: anyOf}, nil
+}
+
+// scopeConstraintsFromRequiredScopes maps the deprecated requiredScopes (any-match / OR) onto the
+// new structure so both the new and deprecated paths share a single evaluator.
+func scopeConstraintsFromRequiredScopes(rs []string) ScopeConstraints {
+	return ScopeConstraints{AnyOf: rs}
+}
+
+// claimConstraintsFromRequiredClaims maps the deprecated requiredClaims (every claim must equal its
+// configured value / AND) onto the new structure.
+func claimConstraintsFromRequiredClaims(rc map[string]string) ClaimConstraints {
+	matchers := make([]ClaimMatcher, 0, len(rc))
+	for claim, value := range rc {
+		matchers = append(matchers, ClaimMatcher{Claim: claim, Values: []string{value}, legacyExactString: true})
+	}
+	return ClaimConstraints{AllOf: matchers}
+}
+
+// resolveScopeConstraints applies precedence: the new `scopes` wins when non-empty; otherwise the
+// deprecated requiredScopes is used. A malformed `scopes` returns an error so the caller fails
+// closed.
+func resolveScopeConstraints(params map[string]interface{}) (ScopeConstraints, error) {
+	sc, err := parseScopeConstraints(params)
+	if err != nil {
+		return ScopeConstraints{}, err
+	}
+	if !sc.isEmpty() {
+		return sc, nil
+	}
+	if old := getStringArrayParam(params, "requiredScopes", nil); len(old) > 0 {
+		return scopeConstraintsFromRequiredScopes(old), nil
+	}
+	return ScopeConstraints{}, nil
+}
+
+// resolveClaimConstraints applies precedence: the new `claims` wins when non-empty; otherwise the
+// deprecated requiredClaims is used. A malformed `claims` returns an error so the caller fails
+// closed.
+func resolveClaimConstraints(params map[string]interface{}) (ClaimConstraints, error) {
+	cc, err := parseClaimConstraints(params)
+	if err != nil {
+		return ClaimConstraints{}, err
+	}
+	if !cc.isEmpty() {
+		return cc, nil
+	}
+	if old := getStringMapParam(params, "requiredClaims", nil); len(old) > 0 {
+		return claimConstraintsFromRequiredClaims(old), nil
+	}
+	return ClaimConstraints{}, nil
+}
+
+// claimValuesAsStrings renders a token claim value as a slice of strings: a scalar becomes one
+// element, an array becomes many. Uses claimValueToString so numeric/bool claims stringify
+// consistently with how they are surfaced elsewhere. Blank results are dropped.
+func claimValuesAsStrings(v interface{}) []string {
+	switch val := v.(type) {
+	case nil:
+		return nil
+	case []interface{}:
+		var out []string
+		for _, item := range val {
+			if s := claimValueToString(item); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		if s := claimValueToString(v); s != "" {
+			return []string{s}
+		}
+		return nil
+	}
+}
+
+// claimMatcherMatches reports whether the token satisfies a single matcher. A matcher with no
+// values, or a claim absent/blank in the token, never matches (fail-closed).
+func claimMatcherMatches(m ClaimMatcher, claims jwt.MapClaims) bool {
+	if len(m.Values) == 0 {
+		return false
+	}
+	want := make(map[string]bool, len(m.Values))
+	for _, v := range m.Values {
+		want[v] = true
+	}
+	if m.legacyExactString {
+		// Legacy requiredClaims matches only exact scalar string 
+		// claims; arrays and non-string claims never match.
+		got := getString(claims[m.Claim])
+		return got != "" && want[got]
+	}
+	tokenVals := claimValuesAsStrings(claims[m.Claim])
+	for _, tv := range tokenVals {
+		if want[tv] {
+			return true
+		}
+	}
+	return false
+}
+
+// evaluateScopeConstraints reports whether the token's scope set satisfies sc. The returned string
+// is an internal-only reason for debug logging (never returned to the client).
+func evaluateScopeConstraints(sc ScopeConstraints, tokenScopes map[string]bool) (bool, string) {
+	for _, s := range sc.AllOf {
+		if !tokenScopes[s] {
+			return false, fmt.Sprintf("required scope %q not present", s)
+		}
+	}
+	if len(sc.AnyOf) > 0 {
+		found := false
+		for _, s := range sc.AnyOf {
+			if tokenScopes[s] {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false, fmt.Sprintf("none of the any-of scopes %v present", sc.AnyOf)
+		}
+	}
+	return true, ""
+}
+
+// evaluateClaimConstraints reports whether the token's claims satisfy cc. The returned string is an
+// internal-only reason for debug logging (never returned to the client).
+func evaluateClaimConstraints(cc ClaimConstraints, claims jwt.MapClaims) (bool, string) {
+	for _, m := range cc.AllOf {
+		if !claimMatcherMatches(m, claims) {
+			return false, fmt.Sprintf("required claim %q not satisfied", m.Claim)
+		}
+	}
+	if len(cc.AnyOf) > 0 {
+		found := false
+		for _, m := range cc.AnyOf {
+			if claimMatcherMatches(m, claims) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false, "none of the any-of claim matchers satisfied"
+		}
+	}
+	return true, ""
+}
+
+// Logs warnings for deprecated config params used during policy load, noting when they're ignored in favor of new ones.
+func logDeprecatedParamUsage(params map[string]interface{}) {
+	if len(getStringArrayParam(params, "requiredScopes", nil)) > 0 {
+		if sc, err := parseScopeConstraints(params); err == nil && !sc.isEmpty() {
+			slog.Warn("JWT Auth Policy: 'requiredScopes' is deprecated and ignored because 'scopes' is configured; remove 'requiredScopes' and use 'scopes' (allOf/anyOf).")
+		} else {
+			slog.Warn("JWT Auth Policy: 'requiredScopes' is deprecated; migrate to 'scopes' (allOf/anyOf).")
+		}
+	}
+	if len(getStringMapParam(params, "requiredClaims", nil)) > 0 {
+		if cc, err := parseClaimConstraints(params); err == nil && !cc.isEmpty() {
+			slog.Warn("JWT Auth Policy: 'requiredClaims' is deprecated and ignored because 'claims' is configured; remove 'requiredClaims' and use 'claims' (allOf/anyOf).")
+		} else {
+			slog.Warn("JWT Auth Policy: 'requiredClaims' is deprecated; migrate to 'claims' (allOf/anyOf).")
+		}
+	}
 }
 
 // buildProperties extracts non-standard claims into a map[string]string for AuthContext.Properties.
@@ -1099,6 +1433,27 @@ func buildProperties(claims jwt.MapClaims) map[string]string {
 		props[k] = claimValueToString(v)
 	}
 	return props
+}
+
+// buildTypedProperties extracts non-standard claims into a map[string]interface{}, preserving each
+// claim's native type (string, []interface{}, map[string]interface{}, etc.) so downstream policies
+// (e.g. mcp-authz) can match array-valued claims as sets or process structured data. Unlike
+// buildProperties, it does not flatten values into a serialized string.
+func buildTypedProperties(claims jwt.MapClaims) map[string]interface{} {
+	var out map[string]interface{}
+	for k, v := range claims {
+		if standardJWTClaims[k] {
+			continue
+		}
+		if v == nil {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]interface{})
+		}
+		out[k] = v
+	}
+	return out
 }
 
 // Helper functions for type assertions
@@ -1437,8 +1792,18 @@ func (p *JwtAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.Req
 
 	userIssuers := getStringArrayParam(params, "issuers", []string{})
 	userAudiences := getStringArrayParam(params, "audiences", []string{})
-	userRequiredScopes := getStringArrayParam(params, "requiredScopes", []string{})
-	userRequiredClaims := getStringMapParam(params, "requiredClaims", map[string]string{})
+	// scopes/claims (new) take precedence over requiredScopes/requiredClaims (deprecated). A
+	// malformed new param denies the request rather than silently dropping a security constraint.
+	scopeConstraints, scopeErr := resolveScopeConstraints(params)
+	if scopeErr != nil {
+		slog.Warn("JWT Auth Policy: invalid 'scopes' configuration; denying request", "error", scopeErr)
+		return p.handleAuthFailureHeaders(reqCtx.SharedContext, onFailureStatusCode, errorMessageFormat, errorMessage, "invalid scopes configuration")
+	}
+	claimConstraints, claimErr := resolveClaimConstraints(params)
+	if claimErr != nil {
+		slog.Warn("JWT Auth Policy: invalid 'claims' configuration; denying request", "error", claimErr)
+		return p.handleAuthFailureHeaders(reqCtx.SharedContext, onFailureStatusCode, errorMessageFormat, errorMessage, "invalid claims configuration")
+	}
 	userClaimMappings := getStringMapParam(params, "claimMappings", map[string]string{})
 	userIdClaim := getStringParam(params, "userIdClaim", "sub")
 	userAuthHeaderPrefix := getStringParam(params, "authHeaderPrefix", "")
@@ -1449,8 +1814,9 @@ func (p *JwtAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.Req
 	slog.Debug("JWT Auth Policy: User configuration loaded",
 		"issuers", userIssuers,
 		"audiences", userAudiences,
-		"requiredScopes", userRequiredScopes,
-		"requiredClaimsCount", len(userRequiredClaims),
+		"scopeAllOf", scopeConstraints.AllOf,
+		"scopeAnyOf", scopeConstraints.AnyOf,
+		"claimMatcherCount", len(claimConstraints.AllOf)+len(claimConstraints.AnyOf),
 		"claimMappingsCount", len(userClaimMappings),
 		"userIdClaim", userIdClaim,
 		"authHeaderPrefix", userAuthHeaderPrefix,
@@ -1505,8 +1871,8 @@ func (p *JwtAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.Req
 					"cacheKey", cacheKey,
 					"expiresAt", verdict.expiresAt,
 				)
-				return p.finishAuthentication(reqCtx, verdict.claims, onFailureStatusCode, errorMessageFormat, errorMessage,
-					userAudiences, userRequiredScopes, userRequiredClaims, userClaimMappings, userIdClaim,
+				return p.finishAuthentication(reqCtx, verdict.claims, verdict.scopes, onFailureStatusCode, errorMessageFormat, errorMessage,
+					userAudiences, scopeConstraints, claimConstraints, userClaimMappings, userIdClaim,
 					headerName, authHeader, token, forwardToken, forwardedTokenHeader, forwardTokenStripScheme)
 			}
 			slog.Debug("JWT Auth Policy: Token verdict cache hit (failure)",
@@ -1537,12 +1903,32 @@ func (p *JwtAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.Req
 					continue
 				}
 
+				// Per-key-manager scope claim configuration. When scopeClaim is empty the legacy
+				// fallback applies downstream (read both "scope" and "scp"); when set, the separator
+				// defaults to defaultScopeClaimSeparator unless the operator overrides it.
+				scopeClaim := getString(kmMap["scopeClaim"])
+				scopeClaimSeparator := getString(kmMap["scopeClaimSeparator"])
+				if scopeClaim != "" && scopeClaimSeparator == "" {
+					scopeClaimSeparator = defaultScopeClaimSeparator
+				}
+				if scopeClaim == "" && scopeClaimSeparator != "" {
+					slog.Debug("JWT Auth Policy: scopeClaimSeparator ignored because scopeClaim is not set",
+						"keyManager", name,
+					)
+				}
+
 				slog.Debug("JWT Auth Policy: Processing key manager",
 					"name", name,
 					"issuer", issuer,
+					"scopeClaim", scopeClaim,
 				)
 
-				keyManager := &KeyManager{Name: name, Issuer: issuer}
+				keyManager := &KeyManager{
+					Name:                name,
+					Issuer:              issuer,
+					ScopeClaim:          scopeClaim,
+					ScopeClaimSeparator: scopeClaimSeparator,
+				}
 				if jwksRaw, ok := kmMap["jwks"].(map[string]interface{}); ok {
 					jwksConfig := &JWKSConfig{}
 					if remoteRaw, ok := jwksRaw["remote"].(map[string]interface{}); ok {
@@ -1669,7 +2055,7 @@ func (p *JwtAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.Req
 		"type", unverifiedToken.Header["typ"],
 	)
 
-	claims, err := p.validateTokenWithSignature(token, unverifiedToken, keyManagers, userIssuers, validateIssuer,
+	claims, matchedKeyManager, err := p.validateTokenWithSignature(token, unverifiedToken, keyManagers, userIssuers, validateIssuer,
 		leeway, jwksCacheTtl, jwksFetchTimeout, jwksFetchRetryCount, jwksFetchRetryInterval)
 	if err != nil {
 		slog.Debug("JWT Auth Policy: Token validation failed",
@@ -1692,6 +2078,9 @@ func (p *JwtAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.Req
 
 	slog.Debug("JWT Auth Policy: Token signature validated successfully")
 
+    // Resolve and cache scopes while the matched key manager is known to keep cache-hit behavior consistent.
+	scopes := resolveScopes(claims, matchedKeyManager)
+
 	if tokenCaching {
 		// expiresAt is capped at the sooner of "now + tokenCacheTtl" and the token's own
 		// exp (minus leeway), so a live cache entry is always still within the token's
@@ -1708,7 +2097,7 @@ func (p *JwtAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.Req
 				"cacheKey", cacheKey,
 				"expiresAt", expiresAt,
 			)
-			p.putVerdict(ctx, cacheKey, cachedVerdict{ok: true, claims: claims, expiresAt: expiresAt})
+			p.putVerdict(ctx, cacheKey, cachedVerdict{ok: true, claims: claims, scopes: scopes, expiresAt: expiresAt})
 		} else {
 			slog.Debug("JWT Auth Policy: Skipping positive cache write, computed expiry is not in the future",
 				"cacheKey", cacheKey,
@@ -1717,8 +2106,8 @@ func (p *JwtAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.Req
 		}
 	}
 
-	return p.finishAuthentication(reqCtx, claims, onFailureStatusCode, errorMessageFormat, errorMessage,
-		userAudiences, userRequiredScopes, userRequiredClaims, userClaimMappings, userIdClaim,
+	return p.finishAuthentication(reqCtx, claims, scopes, onFailureStatusCode, errorMessageFormat, errorMessage,
+		userAudiences, scopeConstraints, claimConstraints, userClaimMappings, userIdClaim,
 		headerName, authHeader, token, forwardToken, forwardedTokenHeader, forwardTokenStripScheme)
 }
 
@@ -1727,9 +2116,9 @@ func (p *JwtAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.Req
 // deliberately kept out of the cache key, and then builds the upstream header modifications on
 // success. Shared by both the cache-hit and cache-miss paths in OnRequestHeaders so the two
 // converge on identical downstream behavior.
-func (p *JwtAuthPolicy) finishAuthentication(reqCtx *policy.RequestHeaderContext, claims jwt.MapClaims,
+func (p *JwtAuthPolicy) finishAuthentication(reqCtx *policy.RequestHeaderContext, claims jwt.MapClaims, scopes []string,
 	onFailureStatusCode int, errorMessageFormat, errorMessage string,
-	userAudiences, userRequiredScopes []string, userRequiredClaims, userClaimMappings map[string]string,
+	userAudiences []string, scopeConstraints ScopeConstraints, claimConstraints ClaimConstraints, userClaimMappings map[string]string,
 	userIdClaim, headerName, authHeader, token string,
 	forwardToken bool, forwardedTokenHeader string, forwardTokenStripScheme bool) policy.RequestHeaderAction {
 
@@ -1760,64 +2149,45 @@ func (p *JwtAuthPolicy) finishAuthentication(reqCtx *policy.RequestHeaderContext
 		slog.Debug("JWT Auth Policy: Audience validation passed")
 	}
 
-	if len(userRequiredScopes) > 0 {
-		scopes := parseScopes(claims["scope"], claims["scp"])
-		slog.Debug("JWT Auth Policy: Validating required scopes",
+	if !scopeConstraints.isEmpty() {
+		slog.Debug("JWT Auth Policy: Validating scope constraints",
 			"tokenScopes", scopes,
-			"requiredScopes", userRequiredScopes,
+			"allOf", scopeConstraints.AllOf,
+			"anyOf", scopeConstraints.AnyOf,
 		)
-		found := false
-		for _, requiredScope := range userRequiredScopes {
-			for _, tokenScope := range scopes {
-				if tokenScope == requiredScope {
-					found = true
-					break
-				}
-			}
-			if found {
-				break
-			}
-		}
-		if !found {
-			slog.Debug("JWT Auth Policy: No required scope found",
-				"requiredScopes", userRequiredScopes,
+		if ok, reason := evaluateScopeConstraints(scopeConstraints, buildScopesMap(scopes)); !ok {
+			slog.Debug("JWT Auth Policy: Scope constraint not satisfied",
+				"reason", reason,
 				"tokenScopes", scopes,
 			)
-			return p.handleAuthFailureHeaders(reqCtx.SharedContext, onFailureStatusCode, errorMessageFormat, errorMessage, fmt.Sprintf("none of the required scopes %v found", userRequiredScopes))
+			// Client message is generic; the specific reason stays in the debug log only.
+			return p.handleAuthFailureHeaders(reqCtx.SharedContext, onFailureStatusCode, errorMessageFormat, errorMessage, "required scopes not satisfied")
 		}
 		slog.Debug("JWT Auth Policy: Scope validation passed")
 	}
 
-	if len(userRequiredClaims) > 0 {
-		slog.Debug("JWT Auth Policy: Validating required claims",
-			"requiredClaimsCount", len(userRequiredClaims),
+	if !claimConstraints.isEmpty() {
+		slog.Debug("JWT Auth Policy: Validating claim constraints",
+			"allOfCount", len(claimConstraints.AllOf),
+			"anyOfCount", len(claimConstraints.AnyOf),
 		)
-	}
-	for claimName, expectedValue := range userRequiredClaims {
-		claimValue := getString(claims[claimName])
-		slog.Debug("JWT Auth Policy: Checking required claim",
-			"claimName", claimName,
-			"expectedValue", expectedValue,
-			"actualValue", claimValue,
-		)
-		if claimValue != expectedValue {
-			slog.Debug("JWT Auth Policy: Required claim validation failed",
-				"claimName", claimName,
-				"expectedValue", expectedValue,
-				"actualValue", claimValue,
+		if ok, reason := evaluateClaimConstraints(claimConstraints, claims); !ok {
+			slog.Debug("JWT Auth Policy: Claim constraint not satisfied",
+				"reason", reason,
 			)
-			return p.handleAuthFailureHeaders(reqCtx.SharedContext, onFailureStatusCode, errorMessageFormat, errorMessage, fmt.Sprintf("claim '%s' validation failed", claimName))
+			return p.handleAuthFailureHeaders(reqCtx.SharedContext, onFailureStatusCode, errorMessageFormat, errorMessage, "required claims not satisfied")
 		}
+		slog.Debug("JWT Auth Policy: Claim validation passed")
 	}
 
 	slog.Debug("JWT Auth Policy: All validations passed, authentication successful")
 
-	return p.handleAuthSuccessHeaders(reqCtx.SharedContext, claims, userClaimMappings, userIdClaim, headerName, authHeader, token,
+	return p.handleAuthSuccessHeaders(reqCtx.SharedContext, claims, scopes, userClaimMappings, userIdClaim, headerName, authHeader, token,
 		forwardToken, forwardedTokenHeader, forwardTokenStripScheme)
 }
 
 // handleAuthSuccessHeaders handles successful JWT authentication in the header phase.
-func (p *JwtAuthPolicy) handleAuthSuccessHeaders(shared *policy.SharedContext, claims jwt.MapClaims, claimMappings map[string]string,
+func (p *JwtAuthPolicy) handleAuthSuccessHeaders(shared *policy.SharedContext, claims jwt.MapClaims, scopes []string, claimMappings map[string]string,
 	userIdClaim string, headerName string, authHeaderValue string, tokenValue string, forwardToken bool, forwardedTokenHeader string,
 	forwardTokenStripScheme bool) policy.RequestHeaderAction {
 	sub, _ := claims["sub"].(string)
@@ -1836,16 +2206,17 @@ func (p *JwtAuthPolicy) handleAuthSuccessHeaders(shared *policy.SharedContext, c
 	}
 
 	shared.AuthContext = &policy.AuthContext{
-		Authenticated: true,
-		AuthType:      AuthType,
-		Subject:       subject,
-		Issuer:        iss,
-		Audience:      parseAudience(claims["aud"]),
-		Scopes:        buildScopesMap(claims),
-		Properties:    buildProperties(claims),
-		TokenId:       jti,
-		CredentialID:  credential_id,
-		Previous:      shared.AuthContext,
+		Authenticated:   true,
+		AuthType:        AuthType,
+		Subject:         subject,
+		Issuer:          iss,
+		Audience:        parseAudience(claims["aud"]),
+		Scopes:          buildScopesMap(scopes),
+		Properties:      buildProperties(claims),
+		TypedProperties: buildTypedProperties(claims),
+		TokenId:         jti,
+		CredentialID:    credential_id,
+		Previous:        shared.AuthContext,
 	}
 
 	modifications := policy.UpstreamRequestHeaderModifications{
