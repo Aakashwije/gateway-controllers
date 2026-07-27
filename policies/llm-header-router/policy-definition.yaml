@@ -21,9 +21,9 @@ parameters:
       type: string
       x-wso2-policy-advanced-param: false
       description: |
-        Provider id selected when the header is missing, empty, or does
-        not match any entry in "mappings". This must be a provider id that
-        a downstream translator is bound to.
+        Optional provider id selected when the header is missing, empty, or
+        does not match any entry in "mappings". When omitted, the request
+        does not select any configured provider.
       minLength: 1
     mappings:
       type: array
@@ -53,7 +53,6 @@ parameters:
       minItems: 1
   required:
     - mappings
-    - defaultProvider
 
 systemParameters:
   type: object

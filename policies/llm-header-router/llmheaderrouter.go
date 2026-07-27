@@ -38,6 +38,11 @@ const (
 	// router writes after picking a provider. Downstream consumer
 	// policies read this key to decide whether to run.
 	MetadataKeySelectedProvider = "selected_provider"
+
+	// noMatchingProvider is published when no mapping matches and no default
+	// provider is configured. It is deliberately non-empty so downstream
+	// translators do not mistake the request for single-provider mode.
+	noMatchingProvider = "__llm_header_router_no_match__"
 )
 
 // HeaderMapping is a single header-value → provider ID rule.
@@ -56,8 +61,8 @@ type PolicyParams struct {
 	// against incoming headers is case-insensitive.
 	HeaderName string
 
-	// DefaultProvider is selected when the header is missing, empty, or
-	// no mapping matches. parseParams enforces it is non-empty.
+	// DefaultProvider is selected when the header is missing, empty, or no
+	// mapping matches. When empty, noMatchingProvider is published instead.
 	DefaultProvider string
 
 	// Mappings is checked in order; the first match wins. Order is the
@@ -140,9 +145,10 @@ func (p *RouterPolicy) OnRequestBody(
 }
 
 // publishSelection reads the configured header, picks the provider via the
-// mappings (falling back to defaultProvider), and writes the result into
-// metadata. If selected_provider is already set by an upstream policy or an
-// earlier phase, it is left untouched. Shared by the header and body phases.
+// mappings (falling back to defaultProvider when configured), and writes the
+// result into metadata. If selected_provider is already set by an upstream
+// policy or an earlier phase, it is left untouched. Shared by the header and
+// body phases.
 func (p *RouterPolicy) publishSelection(metadata map[string]interface{}, headers *policy.Headers) {
 	if existing, ok := metadata[MetadataKeySelectedProvider].(string); ok && existing != "" {
 		return
@@ -162,8 +168,8 @@ func (p *RouterPolicy) publishSelection(metadata map[string]interface{}, headers
 // chosen (used for telemetry / logging).
 //
 //   - "header"  — a mapping matched the header value.
-//   - "default" — fell back to defaultProvider (header missing, empty, or
-//     no mapping matched).
+//   - "default"  — fell back to defaultProvider.
+//   - "no_match" — no mapping matched and no defaultProvider is configured.
 func (p *RouterPolicy) selectProvider(headerValue string) (string, string) {
 	if headerValue != "" {
 		for _, m := range p.params.Mappings {
@@ -172,7 +178,10 @@ func (p *RouterPolicy) selectProvider(headerValue string) (string, string) {
 			}
 		}
 	}
-	return p.params.DefaultProvider, "default"
+	if p.params.DefaultProvider != "" {
+		return p.params.DefaultProvider, "default"
+	}
+	return noMatchingProvider, "no_match"
 }
 
 // readHeader extracts the configured header from the request, trimmed of
@@ -205,9 +214,6 @@ func parseParams(params map[string]interface{}) (PolicyParams, error) {
 	defaultProvider, err := optionalString(params, "defaultProvider")
 	if err != nil {
 		return result, err
-	}
-	if defaultProvider == "" {
-		return result, fmt.Errorf("'defaultProvider' is required")
 	}
 	result.DefaultProvider = defaultProvider
 

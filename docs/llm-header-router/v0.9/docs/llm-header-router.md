@@ -17,7 +17,7 @@ Use this policy when you need to:
 ## Features
 
 - **Header-based selection**: Reads a configurable header (default `x-provider`) and matches it case-insensitively against the configured mappings; the first match wins.
-- **Default fallback**: Falls back to `defaultProvider` when the header is missing, empty, or matches no mapping.
+- **Optional default fallback**: Falls back to `defaultProvider`, when configured, if the header is missing, empty, or matches no mapping. Otherwise no configured provider is selected.
 - **Two-phase publish**: Publishes the selection in the request-header phase (so header-phase consumers see it) and republishes idempotently in the body phase.
 - **Duplicate detection**: Rejects duplicate (case-insensitive) header values at configuration time so a mapping cannot be silently shadowed.
 
@@ -25,7 +25,7 @@ Use this policy when you need to:
 
 | Name | Required | Default | Description |
 |------|----------|---------|-------------|
-| `defaultProvider` | Yes | — | Provider id selected when the header is missing, empty, or does not match any entry in `mappings`. Must be a provider id a downstream translator is bound to. |
+| `defaultProvider` | No | — | Provider id selected when the header is missing, empty, or does not match any entry in `mappings`. When omitted, no configured provider is selected. |
 | `mappings` | Yes | — | Array of `{ headerValue, provider }` rules. The first matching entry (case-insensitive, whitespace-trimmed) wins. |
 | `headerName` | No | `x-provider` | Name of the request header read for provider selection. Comparison is case-insensitive. |
 
@@ -59,4 +59,5 @@ Each entry in `mappings` has:
 ## Notes
 
 - This policy only selects and publishes a provider id; the actual request/response translation is performed by the downstream `openai-to-*` translator policies, and the upstream routing is performed by whatever consumes `selected_provider`.
-- The `provider` values in `mappings` and `defaultProvider` must match the translator's `providerId` (and an upstream cluster) configured on the same proxy.
+- When `defaultProvider` is omitted and no mapping matches, the router publishes an internal no-match value so downstream translators skip the request instead of treating it as single-provider mode.
+- The `provider` values in `mappings` and a configured `defaultProvider` must match the translator's `providerId` (and an upstream cluster) configured on the same proxy.

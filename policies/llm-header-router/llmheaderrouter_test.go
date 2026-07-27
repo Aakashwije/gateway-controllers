@@ -38,11 +38,11 @@ func TestGetPolicy_ValidAndInvalid(t *testing.T) {
 	if _, err := GetPolicy(policy.PolicyMetadata{}, validParams()); err != nil {
 		t.Fatalf("unexpected error for valid params: %v", err)
 	}
-	// defaultProvider is required.
+	// defaultProvider is optional.
 	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
 		"mappings": []interface{}{map[string]interface{}{"headerValue": "a", "provider": "p"}},
-	}); err == nil {
-		t.Error("expected error when defaultProvider is missing")
+	}); err != nil {
+		t.Errorf("unexpected error when defaultProvider is missing: %v", err)
 	}
 	// mappings is required.
 	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
@@ -94,6 +94,22 @@ func TestSelectProvider(t *testing.T) {
 	// Empty header falls back to default.
 	if got, src := p.selectProvider(""); got != "openai-provider" || src != "default" {
 		t.Errorf("expected openai-provider/default, got %s/%s", got, src)
+	}
+}
+
+func TestSelectProvider_WithoutDefault(t *testing.T) {
+	params := validParams()
+	delete(params, "defaultProvider")
+	parsed, err := parseParams(params)
+	if err != nil {
+		t.Fatalf("parseParams failed: %v", err)
+	}
+	p := &RouterPolicy{params: parsed}
+
+	for _, headerValue := range []string{"", "unknown"} {
+		if got, src := p.selectProvider(headerValue); got != noMatchingProvider || src != "no_match" {
+			t.Errorf("header %q: expected %s/no_match, got %s/%s", headerValue, noMatchingProvider, got, src)
+		}
 	}
 }
 
