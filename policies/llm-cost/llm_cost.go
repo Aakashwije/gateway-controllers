@@ -381,16 +381,22 @@ func isSSEContent(b []byte) bool {
 
 // responseBodyForNormalization converts streaming wire formats into the JSON
 // object expected by the provider calculators. Transformed Bedrock responses
-// are SSE and take the existing path; native ConverseStream responses are
-// Amazon event-stream frames whose metadata event carries usage.
+// are SSE and take the existing path. Native Bedrock streaming responses are
+// Amazon event-stream frames: ConverseStream exposes usage in a metadata event,
+// while InvokeModelWithResponseStream carries model-native JSON in chunk events.
 func responseBodyForNormalization(body []byte, requestPath string) ([]byte, error) {
 	path := requestPath
 	if end := strings.IndexByte(path, '?'); end >= 0 {
 		path = path[:end]
 	}
-	if strings.HasSuffix(path, "/converse-stream") {
+	switch {
+	case strings.HasSuffix(path, "/converse-stream"):
 		if metadata, ok := bedrockConverseStreamMetadata(body); ok {
 			return metadata, nil
+		}
+	case strings.HasSuffix(path, "/invoke-with-response-stream"):
+		if response, ok := bedrockInvokeStreamResponse(body); ok {
+			return response, nil
 		}
 	}
 	if isSSEContent(body) {
@@ -408,7 +414,7 @@ func responseBodyForNormalization(body []byte, requestPath string) ([]byte, erro
 // from earlier events (e.g. input_tokens) survive when a later event
 // only carries output_tokens.
 func mergeSSEEvents(body []byte) ([]byte, error) {
-	merged := make(map[string]interface{})
+	var events [][]byte
 
 	for _, line := range strings.Split(string(body), "\n") {
 		line = strings.TrimRight(line, "\r")
@@ -425,11 +431,26 @@ func mergeSSEEvents(body []byte) ([]byte, error) {
 			continue
 		}
 
-		var event map[string]interface{}
-		if err := json.Unmarshal([]byte(value), &event); err != nil {
+		event := []byte(value)
+		if !json.Valid(event) {
 			continue // skip non-JSON lines
 		}
+		events = append(events, event)
+	}
 
+	return mergeJSONEvents(events)
+}
+
+// mergeJSONEvents shallow-merges model streaming events into one object. Usage
+// maps are deep-merged because providers commonly split input and output token
+// counts across different events.
+func mergeJSONEvents(events [][]byte) ([]byte, error) {
+	merged := make(map[string]interface{})
+	for _, data := range events {
+		var event map[string]interface{}
+		if err := json.Unmarshal(data, &event); err != nil {
+			continue
+		}
 		for k, v := range event {
 			// Deep-merge "usage" and "usageMetadata" maps so that fields
 			// from earlier events (e.g. input_tokens) survive when a later
@@ -447,9 +468,8 @@ func mergeSSEEvents(body []byte) ([]byte, error) {
 			merged[k] = v
 		}
 	}
-
 	if len(merged) == 0 {
-		return nil, fmt.Errorf("no valid SSE events found")
+		return nil, fmt.Errorf("no valid JSON events found")
 	}
 
 	return json.Marshal(merged)

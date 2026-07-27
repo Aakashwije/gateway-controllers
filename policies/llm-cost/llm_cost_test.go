@@ -18,6 +18,7 @@ package llmcost
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"math"
@@ -593,6 +594,116 @@ func TestOnResponseBodyChunk_BedrockConverseStream_NativeEventStream(t *testing.
 	}, nil)
 	// Claude 3.7 Sonnet on Bedrock: 10 * $3/M + 3 * $15/M = $0.000075.
 	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000750000")
+}
+
+func TestOnResponseBodyChunk_BedrockAnthropicInvokeModelWithResponseStream(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	ctx := makeStreamResponseContext()
+	ctx.RequestPath = "/model/anthropic.claude-3-7-sonnet-20250219-v1:0/invoke-with-response-stream"
+
+	messageStart := encodeBedrockEventStreamFrame("chunk",
+		`{"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":0}}}`)
+	messageDelta := encodeBedrockEventStreamFrame("chunk",
+		`{"type":"message_delta","usage":{"output_tokens":3}}`)
+
+	action := p.OnResponseBodyChunk(context.Background(), ctx, &policy.StreamBody{
+		Chunk: messageStart,
+		Index: 0,
+	}, nil)
+	if _, ok := ctx.Metadata[MetadataLLMCostStatus]; ok {
+		t.Fatal("cost status set before the native stream reached end-of-stream")
+	}
+
+	action = p.OnResponseBodyChunk(context.Background(), ctx, &policy.StreamBody{
+		Chunk:       messageDelta,
+		EndOfStream: true,
+		Index:       1,
+	}, nil)
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000750000")
+}
+
+func TestBedrockInvokeStreamResponse_DecodesSerializedPayloadPart(t *testing.T) {
+	messageStart := base64.StdEncoding.EncodeToString([]byte(
+		`{"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":0}}}`,
+	))
+	messageDelta := base64.StdEncoding.EncodeToString([]byte(
+		`{"type":"message_delta","usage":{"output_tokens":3}}`,
+	))
+	stream := append(
+		encodeBedrockEventStreamFrame("chunk", `{"bytes":"`+messageStart+`"}`),
+		encodeBedrockEventStreamFrame("chunk", `{"chunk":{"bytes":"`+messageDelta+`"}}`)...,
+	)
+
+	response, ok := bedrockInvokeStreamResponse(stream)
+	if !ok {
+		t.Fatal("expected serialized PayloadPart frames to be decoded")
+	}
+	usage, err := (&BedrockCalculator{}).Normalize(response, nil)
+	if err != nil {
+		t.Fatalf("unexpected normalization error: %v", err)
+	}
+	if usage.PromptTokens != 10 || usage.CompletionTokens != 3 || usage.TotalTokens != 13 {
+		t.Fatalf("unexpected Anthropic streaming usage: %+v", usage)
+	}
+}
+
+func TestBedrockInvokeStreamResponse_NovaMetadata(t *testing.T) {
+	stream := append(
+		encodeBedrockEventStreamFrame("chunk",
+			`{"contentBlockDelta":{"delta":{"text":"hello"}}}`),
+		encodeBedrockEventStreamFrame("chunk",
+			`{"metadata":{"usage":{"inputTokens":10,"outputTokens":3,"totalTokens":13}}}`)...,
+	)
+
+	response, ok := bedrockInvokeStreamResponse(stream)
+	if !ok {
+		t.Fatal("expected Nova chunk frames to be merged")
+	}
+	usage, err := (&BedrockCalculator{}).Normalize(response, nil)
+	if err != nil {
+		t.Fatalf("unexpected normalization error: %v", err)
+	}
+	if usage.PromptTokens != 10 || usage.CompletionTokens != 3 || usage.TotalTokens != 13 {
+		t.Fatalf("unexpected Nova streaming usage: %+v", usage)
+	}
+}
+
+func TestBedrockInvokeStreamResponse_TitanUsage(t *testing.T) {
+	stream := append(
+		encodeBedrockEventStreamFrame("chunk",
+			`{"index":0,"inputTextTokenCount":10,"totalOutputTextTokenCount":1,"outputText":"hello"}`),
+		encodeBedrockEventStreamFrame("chunk",
+			`{"index":0,"inputTextTokenCount":10,"totalOutputTextTokenCount":3,"outputText":" world","completionReason":"FINISHED"}`)...,
+	)
+
+	response, ok := bedrockInvokeStreamResponse(stream)
+	if !ok {
+		t.Fatal("expected Titan chunk frames to be merged")
+	}
+	usage, err := (&BedrockCalculator{}).Normalize(response, nil)
+	if err != nil {
+		t.Fatalf("unexpected normalization error: %v", err)
+	}
+	if usage.PromptTokens != 10 || usage.CompletionTokens != 3 || usage.TotalTokens != 13 {
+		t.Fatalf("unexpected Titan streaming usage: %+v", usage)
+	}
+}
+
+func TestBedrockInvokeStreamResponse_InvocationMetrics(t *testing.T) {
+	stream := encodeBedrockEventStreamFrame("chunk",
+		`{"completion":"done","amazon-bedrock-invocationMetrics":{"inputTokenCount":10,"outputTokenCount":3}}`)
+
+	response, ok := bedrockInvokeStreamResponse(stream)
+	if !ok {
+		t.Fatal("expected invocation metrics chunk to be extracted")
+	}
+	usage, err := (&BedrockCalculator{}).Normalize(response, nil)
+	if err != nil {
+		t.Fatalf("unexpected normalization error: %v", err)
+	}
+	if usage.PromptTokens != 10 || usage.CompletionTokens != 3 || usage.TotalTokens != 13 {
+		t.Fatalf("unexpected invocation metrics usage: %+v", usage)
+	}
 }
 
 func encodeBedrockEventStreamFrame(eventType, payload string) []byte {

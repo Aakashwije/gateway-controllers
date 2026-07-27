@@ -27,15 +27,91 @@ const (
 	bedrockEventStreamMaxFrame   = 16 * 1024 * 1024
 )
 
+type bedrockEventStreamFrame struct {
+	eventType string
+	payload   []byte
+}
+
 // bedrockConverseStreamMetadata extracts the JSON payload from the metadata
 // event in a complete Amazon event-stream response. The trailing and prelude
 // CRC fields are framing bytes here; integrity is already handled by the
 // upstream transport.
 func bedrockConverseStreamMetadata(data []byte) ([]byte, bool) {
 	var metadata []byte
-	offset := 0
+	frames, ok := bedrockEventStreamFrames(data)
+	if !ok {
+		return nil, false
+	}
+	for _, frame := range frames {
+		if frame.eventType == "metadata" {
+			if !json.Valid(frame.payload) {
+				return nil, false
+			}
+			metadata = append(metadata[:0], frame.payload...)
+		}
+	}
 
-	for offset < len(data) {
+	return metadata, metadata != nil
+}
+
+// bedrockInvokeStreamResponse extracts and merges the model-native JSON objects
+// carried by chunk events in an InvokeModelWithResponseStream response.
+//
+// On the Amazon event-stream wire, a PayloadPart is normally the raw model JSON
+// payload. Some intermediaries serialize the SDK union member instead, producing
+// either {"bytes":"<base64>"} or {"chunk":{"bytes":"<base64>"}}. Accept all
+// three forms so normalization works for direct and serialized Bedrock streams.
+func bedrockInvokeStreamResponse(data []byte) ([]byte, bool) {
+	frames, ok := bedrockEventStreamFrames(data)
+	if !ok {
+		return nil, false
+	}
+
+	payloads := make([][]byte, 0, len(frames))
+	for _, frame := range frames {
+		if frame.eventType != "chunk" {
+			continue
+		}
+		payload, ok := bedrockInvokeChunkPayload(frame.payload)
+		if !ok {
+			return nil, false
+		}
+		payloads = append(payloads, payload)
+	}
+	if len(payloads) == 0 {
+		return nil, false
+	}
+
+	merged, err := mergeJSONEvents(payloads)
+	return merged, err == nil
+}
+
+func bedrockInvokeChunkPayload(payload []byte) ([]byte, bool) {
+	if !json.Valid(payload) {
+		return nil, false
+	}
+
+	var envelope struct {
+		Bytes []byte `json:"bytes"`
+		Chunk *struct {
+			Bytes []byte `json:"bytes"`
+		} `json:"chunk"`
+	}
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		return nil, false
+	}
+	switch {
+	case len(envelope.Bytes) != 0:
+		payload = envelope.Bytes
+	case envelope.Chunk != nil && len(envelope.Chunk.Bytes) != 0:
+		payload = envelope.Chunk.Bytes
+	}
+	return payload, json.Valid(payload)
+}
+
+func bedrockEventStreamFrames(data []byte) ([]bedrockEventStreamFrame, bool) {
+	var frames []bedrockEventStreamFrame
+	for offset := 0; offset < len(data); {
 		remaining := data[offset:]
 		if len(remaining) < bedrockEventStreamPreludeLen {
 			return nil, false
@@ -55,17 +131,13 @@ func bedrockConverseStreamMetadata(data []byte) ([]byte, bool) {
 		if !ok {
 			return nil, false
 		}
-		if eventType == "metadata" {
-			payload := remaining[headersEnd : totalLen-4]
-			if !json.Valid(payload) {
-				return nil, false
-			}
-			metadata = append(metadata[:0], payload...)
-		}
+		frames = append(frames, bedrockEventStreamFrame{
+			eventType: eventType,
+			payload:   remaining[headersEnd : totalLen-4],
+		})
 		offset += totalLen
 	}
-
-	return metadata, metadata != nil
+	return frames, len(frames) != 0
 }
 
 // bedrockEventStreamEventType walks the packed Amazon event-stream headers and

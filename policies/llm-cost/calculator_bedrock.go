@@ -88,15 +88,50 @@ func (c *BedrockCalculator) Normalize(responseBody []byte, requestBody []byte) (
 		} `json:"usage"`
 
 		// Amazon Titan InvokeModel.
-		InputTextTokenCount int64 `json:"inputTextTokenCount"`
-		Results             []struct {
+		InputTextTokenCount       int64 `json:"inputTextTokenCount"`
+		TotalOutputTextTokenCount int64 `json:"totalOutputTextTokenCount"`
+		Results                   []struct {
 			TokenCount int64 `json:"tokenCount"`
 		} `json:"results"`
+
+		// Bedrock adds these metrics to the final model-native streaming chunk
+		// for providers that do not expose a regular usage object.
+		InvocationMetrics struct {
+			InputTokenCount       int64 `json:"inputTokenCount"`
+			OutputTokenCount      int64 `json:"outputTokenCount"`
+			CacheReadInputTokens  int64 `json:"cacheReadInputTokenCount"`
+			CacheWriteInputTokens int64 `json:"cacheWriteInputTokenCount"`
+		} `json:"amazon-bedrock-invocationMetrics"`
+
+		// Nova InvokeModelWithResponseStream emits a final metadata event whose
+		// usage object is nested under the event name.
+		Metadata struct {
+			Usage struct {
+				InputTokens           int64                `json:"inputTokens"`
+				OutputTokens          int64                `json:"outputTokens"`
+				TotalTokens           int64                `json:"totalTokens"`
+				CacheReadInputTokens  int64                `json:"cacheReadInputTokens"`
+				CacheWriteInputTokens int64                `json:"cacheWriteInputTokens"`
+				CacheDetails          []bedrockCacheDetail `json:"cacheDetails"`
+			} `json:"usage"`
+		} `json:"metadata"`
 	}
 	if err := json.Unmarshal(responseBody, &resp); err != nil {
 		return Usage{}, err
 	}
 	u := resp.Usage
+
+	// Hoist Nova's named metadata event into the native usage shape used below.
+	if metadataUsage := resp.Metadata.Usage; metadataUsage.InputTokens != 0 ||
+		metadataUsage.OutputTokens != 0 || metadataUsage.CacheReadInputTokens != 0 ||
+		metadataUsage.CacheWriteInputTokens != 0 || len(metadataUsage.CacheDetails) != 0 {
+		u.InputTokens = metadataUsage.InputTokens
+		u.OutputTokens = metadataUsage.OutputTokens
+		u.TotalTokens = metadataUsage.TotalTokens
+		u.CacheReadInputTokens = metadataUsage.CacheReadInputTokens
+		u.CacheWriteInputTokens = metadataUsage.CacheWriteInputTokens
+		u.CacheDetails = metadataUsage.CacheDetails
+	}
 
 	// Native Converse (and Nova InvokeModel) token usage.
 	if u.InputTokens != 0 || u.OutputTokens != 0 ||
@@ -135,11 +170,31 @@ func (c *BedrockCalculator) Normalize(responseBody []byte, requestBody []byte) (
 		return usage, nil
 	}
 
+	// Some model-native streams (including older Anthropic completion streams)
+	// report token counts only in Bedrock's final invocation-metrics object.
+	metrics := resp.InvocationMetrics
+	if metrics.InputTokenCount != 0 || metrics.OutputTokenCount != 0 ||
+		metrics.CacheReadInputTokens != 0 || metrics.CacheWriteInputTokens != 0 {
+		promptTokens := metrics.InputTokenCount +
+			metrics.CacheReadInputTokens + metrics.CacheWriteInputTokens
+		return Usage{
+			PromptTokens:          promptTokens,
+			CompletionTokens:      metrics.OutputTokenCount,
+			TotalTokens:           promptTokens + metrics.OutputTokenCount,
+			InputTokensForTiering: promptTokens,
+			CachedReadTokens:      metrics.CacheReadInputTokens,
+			CacheWriteTokens:      metrics.CacheWriteInputTokens,
+		}, nil
+	}
+
 	// Titan InvokeModel reports input usage at the top level and output usage per
-	// result. Sum all result token counts because every generated candidate is billed.
-	var titanOutputTokens int64
-	for _, result := range resp.Results {
-		titanOutputTokens += result.TokenCount
+	// result. Its streaming shape instead reports the cumulative output count at
+	// the top level, so use whichever representation is present.
+	titanOutputTokens := resp.TotalOutputTextTokenCount
+	if titanOutputTokens == 0 {
+		for _, result := range resp.Results {
+			titanOutputTokens += result.TokenCount
+		}
 	}
 	if resp.InputTextTokenCount != 0 || titanOutputTokens != 0 {
 		return Usage{
