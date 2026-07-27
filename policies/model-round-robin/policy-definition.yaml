@@ -1,5 +1,5 @@
 name: model-round-robin
-version: v1.0.3
+version: v1.1.0
 description: |
   Distributes requests across configured AI models in round-robin order to
   balance traffic and reduce overloading on any single model.
@@ -18,6 +18,14 @@ parameters:
           model:
             type: string
             description: Specifies the AI model name.
+            minLength: 1
+          provider:
+            type: string
+            description: |
+              Optionally routes this target to an additional LLM provider.
+              Must match an LlmProxy additionalProviders[].as value, or the
+              provider id when `as` is absent. When omitted, the request uses
+              the LlmProxy primary/default provider.
             minLength: 1
         required:
           - model

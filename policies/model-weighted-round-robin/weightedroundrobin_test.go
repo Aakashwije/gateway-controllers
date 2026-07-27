@@ -258,8 +258,8 @@ func TestModelWeightedRoundRobinPolicy_OnRequestHeaders_AllModelsSuspended(t *te
 	})
 
 	until := time.Now().Add(10 * time.Minute)
-	p.suspendedModels["gpt-4"] = until
-	p.suspendedModels["gpt-35"] = until
+	p.suspendedModels[suspensionKey("", "gpt-4")] = until
+	p.suspendedModels[suspensionKey("", "gpt-35")] = until
 
 	ctx := &policy.RequestHeaderContext{
 		SharedContext: weightedSharedContext(),
@@ -299,7 +299,7 @@ func TestModelWeightedRoundRobinPolicy_OnResponseHeaders_SuspendsSelectedModel(t
 	if _, ok := action.(policy.DownstreamResponseHeaderModifications); !ok {
 		t.Fatalf("expected DownstreamResponseHeaderModifications, got %T", action)
 	}
-	if until, exists := p.suspendedModels["gpt-4"]; !exists || !until.After(time.Now()) {
+	if until, exists := p.suspendedModels[suspensionKey("", "gpt-4")]; !exists || !until.After(time.Now()) {
 		t.Fatalf("expected selected model to be suspended")
 	}
 }
@@ -307,7 +307,7 @@ func TestModelWeightedRoundRobinPolicy_OnResponseHeaders_SuspendsSelectedModel(t
 func TestModelWeightedRoundRobinPolicy_SelectNextAvailable_SkipsSuspended(t *testing.T) {
 	p := &ModelWeightedRoundRobinPolicy{
 		suspendedModels: map[string]time.Time{
-			"a": time.Now().Add(5 * time.Minute),
+			suspensionKey("", "a"): time.Now().Add(5 * time.Minute),
 		},
 		weightedSequence: []*WeightedModel{
 			{Model: "a", Weight: 2},
@@ -318,6 +318,126 @@ func TestModelWeightedRoundRobinPolicy_SelectNextAvailable_SkipsSuspended(t *tes
 	got := p.selectNextAvailableWeightedModel()
 	if got == nil || got.Model != "b" {
 		t.Fatalf("expected to skip suspended model a and pick b, got %+v", got)
+	}
+}
+
+func TestModelWeightedRoundRobinPolicy_GetPolicy_ProviderParsing(t *testing.T) {
+	_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+		"models": []interface{}{
+			map[string]interface{}{"model": "gpt-4", "weight": 1, "provider": 123},
+		},
+		"requestModel": map[string]interface{}{"location": "payload", "identifier": "$.model"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "'models[0].provider' must be a string") {
+		t.Fatalf("expected provider type error, got %v", err)
+	}
+
+	p := mustGetWeightedPolicy(t, map[string]interface{}{
+		"models": []interface{}{
+			map[string]interface{}{"model": "gpt-4o", "weight": 3},
+			map[string]interface{}{"model": "claude-sonnet-4-5-20250929", "weight": 1, "provider": "anthropic-provider"},
+		},
+		"requestModel": map[string]interface{}{"location": "payload", "identifier": "$.model"},
+	})
+	if p.params.Models[0].Provider != "" {
+		t.Fatalf("expected empty provider for first model, got %q", p.params.Models[0].Provider)
+	}
+	if p.params.Models[1].Provider != "anthropic-provider" {
+		t.Fatalf("expected anthropic-provider, got %q", p.params.Models[1].Provider)
+	}
+	// The provider must survive expansion into the weighted sequence.
+	for _, m := range p.weightedSequence {
+		if m.Model == "claude-sonnet-4-5-20250929" && m.Provider != "anthropic-provider" {
+			t.Fatalf("expected provider preserved in weighted sequence, got %q", m.Provider)
+		}
+	}
+}
+
+func TestModelWeightedRoundRobinPolicy_OnRequestHeaders_DefaultProvider(t *testing.T) {
+	p := mustGetWeightedPolicy(t, map[string]interface{}{
+		"models":       []interface{}{map[string]interface{}{"model": "gpt-4o", "weight": 1}},
+		"requestModel": map[string]interface{}{"location": "payload", "identifier": "$.model"},
+	})
+
+	shared := weightedSharedContext()
+	ctx := &policy.RequestHeaderContext{SharedContext: shared}
+	mods := mustWeightedRequestHeaderMods(t, p.OnRequestHeaders(context.Background(), ctx, nil))
+
+	if mods.UpstreamName != nil {
+		t.Fatalf("expected no UpstreamName for default provider, got %q", *mods.UpstreamName)
+	}
+	if _, ok := shared.Metadata[MetadataKeyProviderRouting]; ok {
+		t.Fatalf("expected selected_provider metadata to be unset for default provider")
+	}
+}
+
+func TestModelWeightedRoundRobinPolicy_OnRequestHeaders_AdditionalProvider(t *testing.T) {
+	p := mustGetWeightedPolicy(t, map[string]interface{}{
+		"models": []interface{}{
+			map[string]interface{}{"model": "claude-sonnet-4-5-20250929", "weight": 1, "provider": "anthropic-provider"},
+		},
+		"requestModel": map[string]interface{}{"location": "payload", "identifier": "$.model"},
+	})
+
+	shared := weightedSharedContext()
+	ctx := &policy.RequestHeaderContext{SharedContext: shared}
+	mods := mustWeightedRequestHeaderMods(t, p.OnRequestHeaders(context.Background(), ctx, nil))
+
+	if mods.UpstreamName == nil || *mods.UpstreamName != "anthropic-provider" {
+		t.Fatalf("expected UpstreamName anthropic-provider, got %v", mods.UpstreamName)
+	}
+	if shared.Metadata[MetadataKeyProviderRouting] != "anthropic-provider" {
+		t.Fatalf("expected selected_provider metadata anthropic-provider, got %v", shared.Metadata[MetadataKeyProviderRouting])
+	}
+}
+
+func TestModelWeightedRoundRobinPolicy_IndependentSuspensionPerProvider(t *testing.T) {
+	p := mustGetWeightedPolicy(t, map[string]interface{}{
+		"models": []interface{}{
+			map[string]interface{}{"model": "shared-model", "weight": 1, "provider": "provider-a"},
+			map[string]interface{}{"model": "shared-model", "weight": 1, "provider": "provider-b"},
+		},
+		"requestModel": map[string]interface{}{"location": "payload", "identifier": "$.model"},
+	})
+
+	p.suspendedModels[suspensionKey("provider-a", "shared-model")] = time.Now().Add(10 * time.Minute)
+
+	got := p.selectNextAvailableWeightedModel()
+	if got == nil || got.Provider != "provider-b" {
+		t.Fatalf("expected provider-b to remain available, got %+v", got)
+	}
+	if _, suspended := p.suspendedModels[suspensionKey("provider-b", "shared-model")]; suspended {
+		t.Fatalf("provider-b/shared-model should not be suspended")
+	}
+}
+
+func TestModelWeightedRoundRobinPolicy_OnResponseHeaders_SuspendsProviderModelPair(t *testing.T) {
+	p := mustGetWeightedPolicy(t, map[string]interface{}{
+		"models": []interface{}{
+			map[string]interface{}{"model": "shared-model", "weight": 1, "provider": "provider-a"},
+			map[string]interface{}{"model": "shared-model", "weight": 1, "provider": "provider-b"},
+		},
+		"suspendDuration": 60,
+		"requestModel":    map[string]interface{}{"location": "payload", "identifier": "$.model"},
+	})
+
+	ctx := &policy.ResponseHeaderContext{
+		SharedContext: &policy.SharedContext{
+			RequestID: "id",
+			Metadata: map[string]interface{}{
+				MetadataKeySelectedModel:    "shared-model",
+				MetadataKeySelectedProvider: "provider-a",
+			},
+		},
+		ResponseStatus: 429,
+	}
+	p.OnResponseHeaders(context.Background(), ctx, nil)
+
+	if _, ok := p.suspendedModels[suspensionKey("provider-a", "shared-model")]; !ok {
+		t.Fatalf("expected provider-a/shared-model to be suspended")
+	}
+	if _, ok := p.suspendedModels[suspensionKey("provider-b", "shared-model")]; ok {
+		t.Fatalf("expected provider-b/shared-model to remain available")
 	}
 }
 
