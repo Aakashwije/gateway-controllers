@@ -515,13 +515,10 @@ func TestOnRequestHeaders_WellKnown_FalsePositivePathDoesNotMatch(t *testing.T) 
 
 // ─── Transport endpoint authentication (GET /mcp, DELETE /mcp) ───────────────
 //
-// Every MCP API is generated with GET, POST and DELETE operations on /mcp. Only
-// POST carries a JSON-RPC body, so the POST-only body-phase check used to let
-// GET (SSE stream) and DELETE (session termination) reach the upstream MCP
-// server with no token at all. These are the regression tests for that bypass.
+// Only POST /mcp carries a JSON-RPC body, so the POST-only body-phase check used to
+// let GET (SSE stream) and DELETE (session termination) through unauthenticated.
 
-// mcpTransportKeyManagerParams returns delegation params pointing at a JWKS test
-// server, matching what the runtime passes to the policy.
+// mcpTransportKeyManagerParams returns delegation params pointing at a JWKS test server.
 func mcpTransportKeyManagerParams(jwksURL string) map[string]any {
 	return map[string]any{
 		"gatewayHost":         "gateway.com",
@@ -543,8 +540,7 @@ func mcpTransportKeyManagerParams(jwksURL string) map[string]any {
 	}
 }
 
-// mcpTransportRequest issues an OnRequestHeaders call for the given method on the
-// generated /mcp endpoint with the supplied headers.
+// mcpTransportRequest issues an OnRequestHeaders call for the given method on /mcp.
 func mcpTransportRequest(t *testing.T, p *McpAuthPolicy, method string, headers map[string][]string, params map[string]any) policy.RequestHeaderAction {
 	t.Helper()
 	ctx := createMockRequestHeaderContext(headers)
@@ -554,9 +550,8 @@ func mcpTransportRequest(t *testing.T, p *McpAuthPolicy, method string, headers 
 	return p.OnRequestHeaders(context.Background(), ctx, params)
 }
 
-// TestOnRequestHeaders_TransportEndpoints_RequireAuthentication verifies that the
-// non-POST MCP endpoints are rejected with a 401 challenge when no token is
-// presented, instead of being forwarded upstream unauthenticated.
+// TestOnRequestHeaders_TransportEndpoints_RequireAuthentication verifies GET/DELETE
+// /mcp are rejected with a 401 challenge when no token is presented.
 func TestOnRequestHeaders_TransportEndpoints_RequireAuthentication(t *testing.T) {
 	_, publicKey := generateRSATestKeys(t)
 	jwksServer := createMcpTestJWKSServer(t, publicKey, "test-kid")
@@ -586,9 +581,8 @@ func TestOnRequestHeaders_TransportEndpoints_RequireAuthentication(t *testing.T)
 	}
 }
 
-// TestOnRequestHeaders_TransportEndpoints_ValidTokenAccepted verifies the fix does
-// not break legitimate clients: a valid token lets GET/DELETE /mcp through and is
-// recorded as an mcp/oauth authentication.
+// TestOnRequestHeaders_TransportEndpoints_ValidTokenAccepted verifies a valid token
+// lets GET/DELETE /mcp through and is recorded as an mcp/oauth authentication.
 func TestOnRequestHeaders_TransportEndpoints_ValidTokenAccepted(t *testing.T) {
 	privateKey, publicKey := generateRSATestKeys(t)
 	jwksServer := createMcpTestJWKSServer(t, publicKey, "test-kid")
@@ -624,8 +618,7 @@ func TestOnRequestHeaders_TransportEndpoints_ValidTokenAccepted(t *testing.T) {
 }
 
 // TestOnRequestHeaders_OptionsMcp_SkipsAuthentication verifies CORS preflights stay
-// unauthenticated — browsers never send credentials on a preflight, so requiring a
-// token there would break browser-based MCP clients.
+// unauthenticated, since browsers send them without credentials.
 func TestOnRequestHeaders_OptionsMcp_SkipsAuthentication(t *testing.T) {
 	action := mcpTransportRequest(t, createTestPolicy(), "OPTIONS", nil, map[string]any{})
 
@@ -634,9 +627,8 @@ func TestOnRequestHeaders_OptionsMcp_SkipsAuthentication(t *testing.T) {
 	}
 }
 
-// TestOnRequestHeaders_PostMcp_DefersToBodyPhase verifies POST /mcp is still
-// authenticated in the body phase, where the JSON-RPC method is known and the
-// per-capability exception lists can be applied.
+// TestOnRequestHeaders_PostMcp_DefersToBodyPhase verifies POST /mcp is still gated in
+// the body phase, where the JSON-RPC method is known.
 func TestOnRequestHeaders_PostMcp_DefersToBodyPhase(t *testing.T) {
 	action := mcpTransportRequest(t, createTestPolicy(), "POST", nil, map[string]any{})
 
@@ -645,10 +637,8 @@ func TestOnRequestHeaders_PostMcp_DefersToBodyPhase(t *testing.T) {
 	}
 }
 
-// TestOnRequestHeaders_TransportEndpoints_FullyUnprotectedServer verifies that an
-// MCP server with every capability group disabled — an intentionally public server
-// — keeps its transport endpoints open, so the fix adds no 401 where no request is
-// authenticated anyway.
+// TestOnRequestHeaders_TransportEndpoints_FullyUnprotectedServer verifies an MCP
+// server with every capability group disabled keeps its transport endpoints open.
 func TestOnRequestHeaders_TransportEndpoints_FullyUnprotectedServer(t *testing.T) {
 	p := createTestPolicy()
 	p.AuthConfig = GetMcpAuthConfig(map[string]any{
@@ -665,9 +655,8 @@ func TestOnRequestHeaders_TransportEndpoints_FullyUnprotectedServer(t *testing.T
 	}
 }
 
-// TestOnRequestHeaders_TransportEndpoints_PartiallyProtectedServer verifies that
-// disabling one capability group does not open the transport endpoints while any
-// other part of the MCP server is still protected.
+// TestOnRequestHeaders_TransportEndpoints_PartiallyProtectedServer verifies the
+// transport endpoints stay gated while any part of the MCP server is still protected.
 func TestOnRequestHeaders_TransportEndpoints_PartiallyProtectedServer(t *testing.T) {
 	cases := map[string]map[string]any{
 		"methods disabled, tools enabled": {
@@ -676,8 +665,7 @@ func TestOnRequestHeaders_TransportEndpoints_PartiallyProtectedServer(t *testing
 			"prompts":   map[string]any{"enabled": false},
 			"methods":   map[string]any{"enabled": false},
 		},
-		// An exception under a disabled group inverts to "this one does require
-		// auth", so the server is still partially protected.
+		// An exception under a disabled group inverts to "requires auth".
 		"all disabled, one exception": {
 			"tools":     map[string]any{"enabled": false},
 			"resources": map[string]any{"enabled": false},
@@ -708,8 +696,7 @@ func TestOnRequestHeaders_TransportEndpoints_PartiallyProtectedServer(t *testing
 	}
 }
 
-// TestRequiresTransportAuth covers the request classification directly, including
-// the paths that must stay public and lower-cased methods.
+// TestRequiresTransportAuth covers the request classification directly.
 func TestRequiresTransportAuth(t *testing.T) {
 	p := createTestPolicy()
 	cases := []struct {
@@ -740,8 +727,7 @@ func TestRequiresTransportAuth(t *testing.T) {
 }
 
 // TestOnRequestBody_TransportEndpoints_NoSecondDelegation verifies the body phase
-// leaves the non-POST endpoints alone: the header phase has already authenticated
-// them, and a bodyless request may never reach the body phase at all.
+// leaves GET/DELETE /mcp alone, as the header phase has already authenticated them.
 func TestOnRequestBody_TransportEndpoints_NoSecondDelegation(t *testing.T) {
 	for _, method := range []string{"GET", "DELETE"} {
 		t.Run(method, func(t *testing.T) {

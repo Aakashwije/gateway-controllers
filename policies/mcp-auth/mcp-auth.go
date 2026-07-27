@@ -317,31 +317,21 @@ func isWellKnownEndpointRequest(path string) bool {
 	return path == WellKnownEndpointPath || strings.HasSuffix(path, WellKnownEndpointPath)
 }
 
-// isMcpEndpointRequest reports whether the request targets the MCP transport
-// endpoint. Every MCP API is generated with GET, POST and DELETE operations on
-// /mcp (plus OPTIONS when CORS is enabled), so the operation path is the marker
-// for MCP traffic in both the header and the body phase.
+// isMcpEndpointRequest reports whether the request targets the MCP endpoint (/mcp).
 func isMcpEndpointRequest(operationPath string) bool {
 	return strings.Contains(operationPath, McpPathSegment)
 }
 
 // isMcpPostRequest reports whether the request is the JSON-RPC POST to the MCP
-// endpoint — the only MCP request whose body carries the method, tool, resource
-// or prompt name that the per-capability exception lists key off.
+// endpoint, the only MCP request carrying a body the exception lists can key off.
 func isMcpPostRequest(method, operationPath string) bool {
 	return strings.EqualFold(method, "POST") && isMcpEndpointRequest(operationPath)
 }
 
-// requiresTransportAuth reports whether a non-POST request to the MCP endpoint
-// must be authenticated. GET /mcp opens the server-to-client SSE stream and
-// DELETE /mcp terminates the session: both act on live session state but carry
-// no JSON-RPC payload, so the POST-only body-phase check let them reach the
-// upstream MCP server without any token.
-//
-// Two request kinds stay unauthenticated by design: CORS preflights, which
-// browsers send without credentials, and the protected-resource metadata
-// endpoint, which RFC 9728 requires to be publicly readable (it is served
-// earlier in OnRequestHeaders).
+// requiresTransportAuth reports whether a non-POST request to the MCP endpoint must
+// be authenticated in the header phase. GET /mcp (SSE stream) and DELETE /mcp
+// (session termination) carry no JSON-RPC payload, so the body phase cannot gate
+// them. CORS preflights and the protected resource metadata endpoint stay public.
 func (p *McpAuthPolicy) requiresTransportAuth(method, operationPath string) bool {
 	if !isMcpEndpointRequest(operationPath) || isWellKnownEndpointRequest(operationPath) {
 		return false
@@ -349,17 +339,14 @@ func (p *McpAuthPolicy) requiresTransportAuth(method, operationPath string) bool
 	if isMcpPostRequest(method, operationPath) || strings.EqualFold(method, "OPTIONS") {
 		return false
 	}
-	// The exception lists key off a JSON-RPC name these requests do not carry, so
-	// they cannot be consulted per request. Authenticate unless the operator has
-	// turned protection off for the whole MCP server.
+	// No JSON-RPC name to match against the exception lists, so authenticate unless
+	// the whole MCP server is unprotected.
 	return !p.AuthConfig.isFullyUnprotected()
 }
 
-// isFullyUnprotected reports whether authentication is disabled for every
-// capability group with no exceptions, i.e. the MCP server is intentionally
-// public and no request to it is authenticated. Note that an exception under a
-// disabled group inverts to "this one does require auth", so a disabled group
-// carrying exceptions still counts as protected.
+// isFullyUnprotected reports whether every capability group is disabled with no
+// exceptions. An exception under a disabled group inverts to "requires auth", so a
+// disabled group with exceptions still counts as protected.
 func (c McpAuthConfig) isFullyUnprotected() bool {
 	for _, config := range []SecurityConfig{c.Tools, c.Resources, c.Prompts, c.Methods} {
 		if config.Enabled || len(config.Exceptions) > 0 {
@@ -475,9 +462,7 @@ func (p *McpAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.Req
 		}
 	}
 
-	// Authenticate the non-POST MCP endpoints here rather than in the body phase.
-	// GET /mcp and DELETE /mcp carry no body, so the body phase cannot be relied
-	// on to gate them, and there is no JSON-RPC payload to wait for.
+	// GET /mcp and DELETE /mcp carry no body, so gate them here instead of the body phase.
 	if p.requiresTransportAuth(reqCtx.Method, reqCtx.OperationPath) {
 		slog.Debug("MCP Auth Policy: Authenticating MCP transport request",
 			"method", reqCtx.Method,
@@ -593,13 +578,10 @@ func (p *McpAuthPolicy) handleBadRequest(parseErr error) policy.ImmediateRespons
 	}
 }
 
-// authenticate delegates token validation to the JWT Auth policy's header phase
-// and adapts the outcome to MCP semantics: failures gain the WWW-Authenticate
-// challenge and the session header, successes are re-stamped as mcp/oauth.
-//
-// Both phases share this path — the header phase gates the transport endpoints
-// (GET /mcp, DELETE /mcp) and the body phase gates POST /mcp once the JSON-RPC
-// method is known — so the two can never drift apart.
+// authenticate delegates token validation to the JWT Auth policy's header phase and
+// adapts the outcome to MCP semantics: failures gain the WWW-Authenticate challenge
+// and the session header, successes are re-stamped as mcp/oauth. Shared by both the
+// header and body phases.
 func (p *McpAuthPolicy) authenticate(ctx context.Context, headerCtx *policy.RequestHeaderContext, params map[string]any, scopes []string) policy.RequestHeaderAction {
 	type requestHeaderPolicer interface {
 		OnRequestHeaders(context.Context, *policy.RequestHeaderContext, map[string]interface{}) policy.RequestHeaderAction
@@ -678,9 +660,8 @@ func (p *McpAuthPolicy) authenticate(ctx context.Context, headerCtx *policy.Requ
 	return headerAction
 }
 
-// handleAuth performs MCP authentication in the request body phase by running
-// the shared header-phase delegation and translating its action to a body-phase
-// one.
+// handleAuth performs MCP authentication in the request body phase, translating the
+// shared delegation's header-phase action into a body-phase one.
 func (p *McpAuthPolicy) handleAuth(ctx context.Context, reqCtx *policy.RequestContext, params map[string]any, scopes []string) policy.RequestAction {
 	headerCtx := &policy.RequestHeaderContext{
 		SharedContext: reqCtx.SharedContext,
