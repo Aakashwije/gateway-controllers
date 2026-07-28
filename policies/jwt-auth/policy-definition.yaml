@@ -30,6 +30,7 @@ parameters:
     requiredScopes:
       type: array
       x-wso2-policy-advanced-param: true
+      x-wso2-policy-deprecated-param: true
       description: >-
         DEPRECATED — use `scopes` (allOf/anyOf) instead. Specifies scopes to check against the
         token's `scope` (space-delimited) or `scp` (array) claims; at least one of the listed
@@ -41,6 +42,7 @@ parameters:
     requiredClaims:
       type: object
       x-wso2-policy-advanced-param: true
+      x-wso2-policy-deprecated-param: true
       description: >-
         DEPRECATED — use `claims` (allOf/anyOf) instead. Specifies required claim-value pairs as
         `claimName -> expectedValue`; every pair must match. Ignored when `claims` is configured.
