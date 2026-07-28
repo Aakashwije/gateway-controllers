@@ -19,6 +19,7 @@ package semanticcache
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -47,8 +48,17 @@ const (
 	MetadataKeyAPIID = "semantic_cache_api_id"
 	// applicationIDMetadataKey is the shared inter-policy metadata key that carries the caller's application identity.
 	applicationIDMetadataKey = "x-wso2-application-id"
-	// cacheScopeSeparator joins apiID and caller identity into the cache partition key.
+	// cacheScopeSeparator joins apiID and the encoded caller identity into the cache partition key.
 	cacheScopeSeparator = "|"
+	// identitySourceSeparator joins an identity source tag and its base64-encoded
+	// value. Safe unconditionally: the tag is always one of the constants below
+	// (never user input) and base64.RawURLEncoding never emits ':'.
+	identitySourceSeparator = ":"
+
+	identitySourceApplicationID = "appid"
+	identitySourceSubject       = "subject"
+	identitySourceCredentialID  = "credential"
+	identitySourceTokenID       = "token"
 )
 
 // SemanticCachePolicy implements semantic caching for LLM responses
@@ -64,33 +74,48 @@ type SemanticCachePolicy struct {
 	cacheUnauthenticated bool
 }
 
-// callerIdentity resolves the caller principal from metadata, falling back to auth context.
-func callerIdentity(sc *policy.SharedContext) (string, bool) {
+// callerIdentity resolves the caller principal from metadata, falling back to
+// auth context. The returned source tags which field the value came from, so
+// equal values from different sources (e.g. an application ID that happens to
+// match another caller's JWT subject) can be told apart by cacheScopeID.
+func callerIdentity(sc *policy.SharedContext) (source string, value string, ok bool) {
 	if sc == nil {
-		return "", false
+		return "", "", false
 	}
 	if sc.Metadata != nil {
 		if v, ok := sc.Metadata[applicationIDMetadataKey]; ok {
 			if s, ok := v.(string); ok && s != "" {
-				return s, true
+				return identitySourceApplicationID, s, true
 			}
 		}
 	}
 	if sc.AuthContext != nil {
 		if sc.AuthContext.Subject != "" {
-			return sc.AuthContext.Subject, true
+			return identitySourceSubject, sc.AuthContext.Subject, true
 		}
 		if sc.AuthContext.CredentialID != "" {
-			return sc.AuthContext.CredentialID, true
+			return identitySourceCredentialID, sc.AuthContext.CredentialID, true
+		}
+		// api-key-auth sets neither Subject nor CredentialID for a key with no
+		// linked application (e.g. an LLM provider API key) - TokenId (a hash of
+		// the raw credential) is the last remaining per-caller signal in that case.
+		if sc.AuthContext.TokenId != "" {
+			return identitySourceTokenID, sc.AuthContext.TokenId, true
 		}
 	}
-	return "", false
+	return "", "", false
 }
 
-// cacheScopeID folds the caller identity into the api_id partition key used by Retrieve/Store.
+// cacheScopeID folds the caller identity into the api_id partition key used by
+// Retrieve/Store. The identity value is base64-encoded and tagged with its
+// source so two different sources can never collide on an equal raw value
+// (e.g. an application ID "victim" vs. a JWT subject "victim" get distinct
+// partitions, and a value crafted to contain a separator/tag can't be
+// mistaken for a different source).
 func (p *SemanticCachePolicy) cacheScopeID(sc *policy.SharedContext, apiID string) (string, bool) {
-	if identity, ok := callerIdentity(sc); ok {
-		return apiID + cacheScopeSeparator + identity, true
+	if source, value, ok := callerIdentity(sc); ok {
+		encoded := source + identitySourceSeparator + base64.RawURLEncoding.EncodeToString([]byte(value))
+		return apiID + cacheScopeSeparator + encoded, true
 	}
 	if p.cacheUnauthenticated {
 		return apiID, true
@@ -569,7 +594,7 @@ func (p *SemanticCachePolicy) processResponseBody(respCtx *policy.ResponseContex
 	// instead of a throwaway random value; falls back to a UUID only in the
 	// identity-less shared-bucket case (cacheUnauthenticated=true).
 	requestHash := uuid.New().String()
-	if identity, ok := callerIdentity(respCtx.SharedContext); ok {
+	if _, identity, ok := callerIdentity(respCtx.SharedContext); ok {
 		requestHash = identity
 	}
 

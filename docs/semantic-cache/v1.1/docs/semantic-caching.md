@@ -39,7 +39,7 @@ These parameters are usually set at the gateway level and automatically applied,
 |-----------|------|----------|-------------|
 | `embeddingProvider` | string | Yes | Embedding provider type. Must be one of: `OPENAI`, `MISTRAL`, `AZURE_OPENAI` |
 | `embeddingEndpoint` | string | Yes | Endpoint URL for the embedding service. Examples: OpenAI: `https://api.openai.com/v1/embeddings`, Mistral: `https://api.mistral.ai/v1/embeddings`, Azure OpenAI: Your Azure OpenAI endpoint URL |
-| `embeddingModel` | string | Conditional | - | Embedding model name. **Required for OPENAI and MISTRAL**, not required for AZURE_OPENAI (deployment name is in endpoint URL). Examples: OpenAI: `text-embedding-ada-002` or `text-embedding-3-small`, Mistral: `mistral-embed` |
+| `embeddingModel` | string | Conditional | Embedding model name. **Required for OPENAI and MISTRAL**, not required for AZURE_OPENAI (deployment name is in endpoint URL). Examples: OpenAI: `text-embedding-ada-002` or `text-embedding-3-small`, Mistral: `mistral-embed` |
 | `embeddingDimension` | integer | Yes | Dimension of embedding vectors. Common values: 1536 (OpenAI ada-002), 1024 (Mistral). Must match the model's output dimension. |
 | `apiKey` | string | Yes | API key for the embedding service authentication. The authentication header is automatically set to `api-key` for Azure OpenAI and `Authorization` for other providers. |
 
@@ -234,7 +234,7 @@ The `similarityThreshold` parameter controls how similar requests must be to tri
 
 
 #### Operational Resilience
-- **Graceful degradation**: If embedding generation, vector database access, cache storage, or JSONPath extraction fails, the request proceeds directly to the upstream service without blocking the client response.
+- **Graceful degradation**: If embedding generation, vector database access, or cache storage fails, the request proceeds directly to the upstream service without blocking the client response. A JSONPath extraction failure is the exception: the policy returns a `400` error response instead of proceeding to the upstream service.
 
 - **Non-blocking resilience**: Caching operations are best-effort and never interfere with normal request handling, ensuring uninterrupted service even when caching components are unavailable.
 

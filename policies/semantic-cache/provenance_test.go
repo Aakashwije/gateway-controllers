@@ -14,7 +14,7 @@
  *  limitations under the License.
  *
  */
- 
+
 package semanticcache
 
 import (
@@ -300,10 +300,11 @@ func TestOnResponseBody_NoIdentity_CacheUnauthenticatedOptIn(t *testing.T) {
 
 func TestCallerIdentity_Precedence(t *testing.T) {
 	tests := []struct {
-		name   string
-		sc     *policy.SharedContext
-		wantID string
-		wantOK bool
+		name       string
+		sc         *policy.SharedContext
+		wantSource string
+		wantValue  string
+		wantOK     bool
 	}{
 		{
 			name:   "no identity anywhere",
@@ -311,41 +312,109 @@ func TestCallerIdentity_Precedence(t *testing.T) {
 			wantOK: false,
 		},
 		{
-			name:   "metadata application id wins",
-			sc:     &policy.SharedContext{Metadata: map[string]interface{}{applicationIDMetadataKeyForTest: "app-A"}, AuthContext: &policy.AuthContext{Subject: "user-1", CredentialID: "client-1"}},
-			wantID: "app-A",
-			wantOK: true,
+			name:       "metadata application id wins",
+			sc:         &policy.SharedContext{Metadata: map[string]interface{}{applicationIDMetadataKeyForTest: "app-A"}, AuthContext: &policy.AuthContext{Subject: "user-1", CredentialID: "client-1"}},
+			wantSource: identitySourceApplicationID,
+			wantValue:  "app-A",
+			wantOK:     true,
 		},
 		{
-			name:   "falls back to AuthContext.Subject",
-			sc:     &policy.SharedContext{Metadata: map[string]interface{}{}, AuthContext: &policy.AuthContext{Subject: "user-1", CredentialID: "client-1"}},
-			wantID: "user-1",
-			wantOK: true,
+			name:       "falls back to AuthContext.Subject",
+			sc:         &policy.SharedContext{Metadata: map[string]interface{}{}, AuthContext: &policy.AuthContext{Subject: "user-1", CredentialID: "client-1"}},
+			wantSource: identitySourceSubject,
+			wantValue:  "user-1",
+			wantOK:     true,
 		},
 		{
-			name:   "falls back to AuthContext.CredentialID",
-			sc:     &policy.SharedContext{Metadata: map[string]interface{}{}, AuthContext: &policy.AuthContext{CredentialID: "client-1"}},
-			wantID: "client-1",
-			wantOK: true,
+			name:       "falls back to AuthContext.CredentialID",
+			sc:         &policy.SharedContext{Metadata: map[string]interface{}{}, AuthContext: &policy.AuthContext{CredentialID: "client-1"}},
+			wantSource: identitySourceCredentialID,
+			wantValue:  "client-1",
+			wantOK:     true,
 		},
 		{
-			name:   "empty metadata string value is ignored",
-			sc:     &policy.SharedContext{Metadata: map[string]interface{}{applicationIDMetadataKeyForTest: ""}, AuthContext: &policy.AuthContext{Subject: "user-1"}},
-			wantID: "user-1",
-			wantOK: true,
+			name:       "empty metadata string value is ignored",
+			sc:         &policy.SharedContext{Metadata: map[string]interface{}{applicationIDMetadataKeyForTest: ""}, AuthContext: &policy.AuthContext{Subject: "user-1"}},
+			wantSource: identitySourceSubject,
+			wantValue:  "user-1",
+			wantOK:     true,
+		},
+		{
+			// api-key-auth sets neither Subject nor CredentialID for a key with
+			// no linked application (e.g. an LLM provider API key) - only
+			// TokenId, a hash of the raw credential. Confirmed against a live
+			// gateway: an LLM provider API key produced an empty-string
+			// Metadata[x-wso2-application-id] and a nil Subject/CredentialID.
+			name:       "falls back to AuthContext.TokenId when Subject and CredentialID are both empty",
+			sc:         &policy.SharedContext{Metadata: map[string]interface{}{}, AuthContext: &policy.AuthContext{TokenId: "token-hash-1"}},
+			wantSource: identitySourceTokenID,
+			wantValue:  "token-hash-1",
+			wantOK:     true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			id, ok := callerIdentity(tt.sc)
+			source, value, ok := callerIdentity(tt.sc)
 			if ok != tt.wantOK {
-				t.Fatalf("expected ok=%v, got %v (id=%q)", tt.wantOK, ok, id)
+				t.Fatalf("expected ok=%v, got %v (source=%q value=%q)", tt.wantOK, ok, source, value)
 			}
-			if ok && id != tt.wantID {
-				t.Fatalf("expected id=%q, got %q", tt.wantID, id)
+			if ok && (source != tt.wantSource || value != tt.wantValue) {
+				t.Fatalf("expected source=%q value=%q, got source=%q value=%q", tt.wantSource, tt.wantValue, source, value)
 			}
 		})
+	}
+}
+
+// --- cache scope collision across identity sources --------------------------
+
+func TestCacheScopeID_NoCollisionAcrossIdentitySources(t *testing.T) {
+	p := &SemanticCachePolicy{}
+	const apiID = "Books:v1"
+
+	// Two callers resolved from DIFFERENT identity sources but with the SAME
+	// raw string value must never land in the same partition.
+	appIDScope, ok := p.cacheScopeID(&policy.SharedContext{
+		Metadata: map[string]interface{}{applicationIDMetadataKeyForTest: "victim"},
+	}, apiID)
+	if !ok {
+		t.Fatal("expected application-id-based scope to be cacheable")
+	}
+
+	subjectScope, ok := p.cacheScopeID(&policy.SharedContext{
+		Metadata:    map[string]interface{}{},
+		AuthContext: &policy.AuthContext{Subject: "victim"},
+	}, apiID)
+	if !ok {
+		t.Fatal("expected subject-based scope to be cacheable")
+	}
+
+	if appIDScope == subjectScope {
+		t.Fatalf("application-id and subject identities with the same raw value %q collided on scope %q", "victim", appIDScope)
+	}
+
+	// A crafted value containing what looks like another source's tag must not
+	// let one source impersonate another: base64-encoding the raw value (rather
+	// than concatenating it verbatim after the tag) means a value like
+	// "subject:victim" supplied AS an application id can never equal the scope
+	// produced for an actual subject "victim".
+	craftedScope, ok := p.cacheScopeID(&policy.SharedContext{
+		Metadata: map[string]interface{}{applicationIDMetadataKeyForTest: "subject:victim"},
+	}, apiID)
+	if !ok {
+		t.Fatal("expected crafted-value scope to be cacheable")
+	}
+	if craftedScope == subjectScope {
+		t.Fatalf("crafted application-id value impersonated the subject scope: %q", craftedScope)
+	}
+
+	// Same source, same value -> same scope (sanity check the encoding is
+	// deterministic, not merely "always different").
+	appIDScopeAgain, ok := p.cacheScopeID(&policy.SharedContext{
+		Metadata: map[string]interface{}{applicationIDMetadataKeyForTest: "victim"},
+	}, apiID)
+	if !ok || appIDScopeAgain != appIDScope {
+		t.Fatalf("expected identical identity to produce the same scope, got %q vs %q", appIDScope, appIDScopeAgain)
 	}
 }
 
