@@ -18,6 +18,8 @@ package llmcost
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"math"
 	"os"
@@ -221,6 +223,595 @@ func TestOpenAICalculator_Adjust_PassThrough(t *testing.T) {
 	c := &OpenAICalculator{}
 	if c.Adjust(0.42, Usage{}, ModelPricing{}) != 0.42 {
 		t.Error("Adjust should be a pass-through for OpenAI")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AWS Bedrock calculator
+// ---------------------------------------------------------------------------
+
+func TestSelectCalculator_Bedrock(t *testing.T) {
+	if _, ok := selectCalculator("bedrock").(*BedrockCalculator); !ok {
+		t.Error("provider bedrock did not select BedrockCalculator")
+	}
+}
+
+func TestPricingFixture_BedrockModels(t *testing.T) {
+	const expectedBedrockEntries = 138
+	bedrockEntries := 0
+	for _, pricing := range testPricingMap {
+		if pricing.Provider == "bedrock" {
+			bedrockEntries++
+		}
+	}
+	if bedrockEntries != expectedBedrockEntries {
+		t.Fatalf("Bedrock pricing entries = %d, want %d", bedrockEntries, expectedBedrockEntries)
+	}
+
+	// Cover representative vendors and regional inference profiles from the
+	// pricing snapshot imported from api-platform PR #2771.
+	for _, modelID := range []string{
+		"amazon.nova-micro-v1:0",
+		"apac.amazon.nova-micro-v1:0",
+		"eu.anthropic.claude-sonnet-4-6",
+		"global.anthropic.claude-opus-4-6-v1",
+		"us.meta.llama4-scout-17b-instruct-v1:0",
+		"mistral.mistral-large-3-675b-instruct",
+		"openai.gpt-oss-120b-1:0",
+		"qwen.qwen3-32b-v1:0",
+	} {
+		pricing, ok := lookupPricing(testPricingMap, modelID)
+		if !ok {
+			t.Errorf("missing Bedrock pricing for %q", modelID)
+			continue
+		}
+		if pricing.Provider != "bedrock" {
+			t.Errorf("provider for %q = %q, want bedrock", modelID, pricing.Provider)
+		}
+	}
+}
+
+func TestBedrockCalculator_NormalizeNativeConverseUsage(t *testing.T) {
+	c := &BedrockCalculator{}
+	usage, err := c.Normalize([]byte(`{
+		"usage": {
+			"inputTokens": 10,
+			"outputTokens": 3,
+			"totalTokens": 13,
+			"cacheReadInputTokens": 4,
+			"cacheWriteInputTokens": 2
+		}
+	}`), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if usage.PromptTokens != 16 || usage.CompletionTokens != 3 || usage.TotalTokens != 19 {
+		t.Errorf("unexpected Bedrock usage: %+v", usage)
+	}
+	if usage.CachedReadTokens != 4 || usage.CacheWriteTokens != 2 {
+		t.Errorf("unexpected Bedrock cache usage: %+v", usage)
+	}
+}
+
+func TestBedrockCalculator_NormalizeNativeConverseCacheWriteTTLs(t *testing.T) {
+	c := &BedrockCalculator{}
+	usage, err := c.Normalize([]byte(`{
+		"usage": {
+			"inputTokens": 10,
+			"outputTokens": 3,
+			"totalTokens": 13,
+			"cacheReadInputTokens": 4,
+			"cacheWriteInputTokens": 1200,
+			"cacheDetails": [
+				{"ttl": "1h", "inputTokens": 1000},
+				{"ttl": "5m", "inputTokens": 200}
+			]
+		}
+	}`), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if usage.PromptTokens != 1214 || usage.CompletionTokens != 3 || usage.TotalTokens != 1217 {
+		t.Errorf("unexpected Bedrock usage: %+v", usage)
+	}
+	if usage.CachedReadTokens != 4 || usage.CacheWriteTokens != 200 ||
+		usage.CacheWrite1hrTokens != 1000 {
+		t.Errorf("unexpected Bedrock cache TTL usage: %+v", usage)
+	}
+
+	pricing, ok := lookupPricing(testPricingMap, "anthropic.claude-opus-4-6-v1")
+	if !ok {
+		t.Fatal("missing Bedrock Claude Opus 4.6 pricing")
+	}
+	want := float64(10)*pricing.InputCostPerToken +
+		float64(3)*pricing.OutputCostPerToken +
+		float64(4)*pricing.CacheReadInputTokenCost +
+		float64(200)*pricing.CacheCreationInputTokenCost +
+		float64(1000)*pricing.CacheCreationInputTokenCostAbove1hr
+	if got := genericCalculateCost(usage, pricing); !almostEqual(got, want) {
+		t.Fatalf("native cache TTL usage cost = %.10f, want %.10f", got, want)
+	}
+}
+
+func TestBedrockCalculator_NormalizeAnthropicInvokeModel(t *testing.T) {
+	c := &BedrockCalculator{}
+	usage, err := c.Normalize([]byte(`{
+		"usage": {
+			"input_tokens": 10,
+			"output_tokens": 3,
+			"cache_read_input_tokens": 4,
+			"cache_creation_input_tokens": 2
+		}
+	}`), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if usage.PromptTokens != 16 || usage.CompletionTokens != 3 || usage.TotalTokens != 19 {
+		t.Errorf("unexpected Anthropic InvokeModel usage: %+v", usage)
+	}
+	if usage.CachedReadTokens != 4 || usage.CacheWriteTokens != 2 {
+		t.Errorf("unexpected Anthropic InvokeModel cache usage: %+v", usage)
+	}
+}
+
+func TestBedrockCalculator_NormalizeTitanInvokeModel(t *testing.T) {
+	c := &BedrockCalculator{}
+	usage, err := c.Normalize([]byte(`{
+		"inputTextTokenCount": 10,
+		"results": [{"tokenCount": 3}, {"tokenCount": 2}]
+	}`), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if usage.PromptTokens != 10 || usage.CompletionTokens != 5 || usage.TotalTokens != 15 {
+		t.Errorf("unexpected Titan InvokeModel usage: %+v", usage)
+	}
+}
+
+func TestBedrockCalculator_RejectsMissingUsage(t *testing.T) {
+	if _, err := (&BedrockCalculator{}).Normalize([]byte(`{"completion":"hello"}`), nil); err == nil {
+		t.Fatal("expected a Bedrock response without token usage to fail normalization")
+	}
+}
+
+func TestBedrockCalculator_TransformedCacheUsageCost(t *testing.T) {
+	c := &BedrockCalculator{}
+	body := []byte(`{
+		"usage": {
+			"prompt_tokens": 16,
+			"completion_tokens": 3,
+			"total_tokens": 19,
+			"prompt_tokens_details": {
+				"cached_tokens": 4,
+				"cache_write_tokens": 2
+			}
+		}
+	}`)
+	usage, err := c.Normalize(body, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pricing, ok := lookupPricing(testPricingMap, "anthropic.claude-3-7-sonnet-20250219-v1:0")
+	if !ok {
+		t.Fatal("missing Bedrock Claude 3.7 Sonnet pricing")
+	}
+	// Regular input $30e-6 + output $45e-6 + cache read $1.2e-6 +
+	// cache write $7.5e-6 = $83.7e-6.
+	if got, want := genericCalculateCost(usage, pricing), 0.0000837; !almostEqual(got, want) {
+		t.Fatalf("transformed cache usage cost = %.10f, want %.10f", got, want)
+	}
+}
+
+func TestBedrockCalculator_TransformedCacheWriteTTLCost(t *testing.T) {
+	c := &BedrockCalculator{}
+	body := []byte(`{
+		"usage": {
+			"prompt_tokens": 20,
+			"completion_tokens": 3,
+			"total_tokens": 23,
+			"prompt_tokens_details": {
+				"cached_tokens": 4,
+				"cache_write_tokens": 6,
+				"cache_write_5m_tokens": 2,
+				"cache_write_1h_tokens": 4
+			}
+		}
+	}`)
+	usage, err := c.Normalize(body, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if usage.CacheWriteTokens != 2 || usage.CacheWrite1hrTokens != 4 {
+		t.Fatalf("unexpected transformed cache TTL usage: %+v", usage)
+	}
+
+	pricing, ok := lookupPricing(testPricingMap, "anthropic.claude-opus-4-6-v1")
+	if !ok {
+		t.Fatal("missing Bedrock Claude Opus 4.6 pricing")
+	}
+	want := float64(10)*pricing.InputCostPerToken +
+		float64(3)*pricing.OutputCostPerToken +
+		float64(4)*pricing.CacheReadInputTokenCost +
+		float64(2)*pricing.CacheCreationInputTokenCost +
+		float64(4)*pricing.CacheCreationInputTokenCostAbove1hr
+	if got := genericCalculateCost(usage, pricing); !almostEqual(got, want) {
+		t.Fatalf("transformed cache TTL usage cost = %.10f, want %.10f", got, want)
+	}
+}
+
+func TestBedrockCalculator_CacheWrite1hrAbove200kCost(t *testing.T) {
+	pricing, ok := lookupPricing(testPricingMap, "anthropic.claude-sonnet-4-5-20250929-v1:0")
+	if !ok {
+		t.Fatal("missing Bedrock Claude Sonnet 4.5 pricing")
+	}
+	if got, want := pricing.CacheCreationInputTokenCostAbove1hrAbove200k, 0.000012; got != want {
+		t.Fatalf("decoded combined 1hr and >200k cache-write rate = %g, want %g", got, want)
+	}
+
+	usage := Usage{
+		PromptTokens:          200_002,
+		InputTokensForTiering: 200_002,
+		CacheWriteTokens:      1,
+		CacheWrite1hrTokens:   1,
+	}
+	rates := resolveRates(usage, pricing)
+	if got, want := rates.cacheWrite5m, 0.0000075; got != want {
+		t.Errorf(">200k 5-minute cache-write rate = %g, want %g", got, want)
+	}
+	if got, want := rates.cacheWrite1h, 0.000012; got != want {
+		t.Errorf(">200k 1-hour cache-write rate = %g, want %g", got, want)
+	}
+
+	wantCost := float64(200_000)*pricing.InputCostPerTokenAbove200k +
+		pricing.CacheCreationInputTokenCostAbove200k +
+		pricing.CacheCreationInputTokenCostAbove1hrAbove200k
+	if got := genericCalculateCost(usage, pricing); !almostEqual(got, wantCost) {
+		t.Fatalf("combined 1hr and >200k cost = %.10f, want %.10f", got, wantCost)
+	}
+}
+
+func TestModelNameFromRequest_BedrockPaths(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{
+			name: "converse inference profile",
+			path: "/model/us.anthropic.claude-3-haiku-20240307-v1:0/converse",
+			want: "us.anthropic.claude-3-haiku-20240307-v1:0",
+		},
+		{
+			name: "invoke model",
+			path: "/model/anthropic.claude-3-haiku-20240307-v1:0/invoke?trace=enabled",
+			want: "anthropic.claude-3-haiku-20240307-v1:0",
+		},
+		{
+			name: "URL encoded foundation model ARN",
+			path: "/model/arn%3Aaws%3Abedrock%3Aus-east-1%3A%3Afoundation-model%2Fanthropic.claude-3-haiku-20240307-v1%3A0/converse-stream",
+			want: "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-haiku-20240307-v1:0",
+		},
+		{
+			name: "decoded foundation model ARN",
+			path: "/model/arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-haiku-20240307-v1:0/converse",
+			want: "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-haiku-20240307-v1:0",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := modelNameFromRequest(nil, tt.path); got != tt.want {
+				t.Fatalf("modelNameFromRequest() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLookupPricing_BedrockModelIDAliases(t *testing.T) {
+	for _, modelID := range []string{
+		"anthropic.claude-3-7-sonnet-20250219-v1:0",
+		"us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+		"bedrock/us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+		"arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-7-sonnet-20250219-v1:0",
+		"arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+	} {
+		pricing, ok := lookupPricing(testPricingMap, modelID)
+		if !ok {
+			t.Errorf("expected Bedrock pricing for %q", modelID)
+			continue
+		}
+		if pricing.Provider != "bedrock" {
+			t.Errorf("provider for %q = %q, want bedrock", modelID, pricing.Provider)
+		}
+	}
+}
+
+func TestLookupPricing_BedrockInferenceProfileFallbacks(t *testing.T) {
+	const model = "anthropic.claude-sonnet-4-5-20250929-v1:0"
+	pricingMap := map[string]ModelPricing{
+		model: {Provider: "bedrock", InputCostPerToken: 1},
+	}
+	for _, prefix := range []string{"us-gov.", "au.", "jp."} {
+		pricing, key, ok := lookupPricingWithKey(pricingMap, prefix+model)
+		if !ok {
+			t.Errorf("expected %s inference profile to fall back to foundation-model pricing", prefix)
+			continue
+		}
+		if key != model || pricing.Provider != "bedrock" {
+			t.Errorf("unexpected %s pricing match: key=%q pricing=%+v", prefix, key, pricing)
+		}
+	}
+}
+
+func TestOnResponseBodyChunk_BedrockNative_ModelFromURL(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	ctx := makeStreamResponseContext()
+	ctx.RequestPath = "/model/us.anthropic.claude-3-7-sonnet-20250219-v1:0/converse"
+	body := []byte(`{"usage":{"inputTokens":10,"outputTokens":3,"totalTokens":13}}`)
+	action := p.OnResponseBodyChunk(context.Background(), ctx, &policy.StreamBody{
+		Chunk: body, EndOfStream: true,
+	}, nil)
+	// Claude 3.7 Sonnet on Bedrock: 10 * $3/M + 3 * $15/M = $0.000075.
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000750000")
+}
+
+func TestOnResponseBodyChunk_BedrockNative_CacheCost(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	ctx := makeStreamResponseContext()
+	ctx.RequestPath = "/model/anthropic.claude-3-7-sonnet-20250219-v1:0/converse"
+	body := []byte(`{"usage":{"inputTokens":10,"outputTokens":3,"totalTokens":13,"cacheReadInputTokens":4,"cacheWriteInputTokens":2}}`)
+	action := p.OnResponseBodyChunk(context.Background(), ctx, &policy.StreamBody{
+		Chunk: body, EndOfStream: true,
+	}, nil)
+	// Regular input $30e-6 + output $45e-6 + cache read $1.2e-6 +
+	// cache write $7.5e-6 = $83.7e-6.
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000837000")
+}
+
+func TestOnResponseBodyChunk_BedrockConverseStream_NativeEventStream(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	ctx := makeStreamResponseContext()
+	ctx.RequestPath = "/model/anthropic.claude-3-7-sonnet-20250219-v1:0/converse-stream"
+
+	messageStart := encodeBedrockEventStreamFrame("messageStart", `{"role":"assistant"}`)
+	metadata := encodeBedrockEventStreamFrame("metadata",
+		`{"usage":{"inputTokens":10,"outputTokens":3,"totalTokens":13}}`)
+
+	action := p.OnResponseBodyChunk(context.Background(), ctx, &policy.StreamBody{
+		Chunk: messageStart,
+		Index: 0,
+	}, nil)
+	if _, ok := ctx.Metadata[MetadataLLMCostStatus]; ok {
+		t.Fatal("cost status set before the native stream reached end-of-stream")
+	}
+	if forward, ok := action.(policy.ForwardResponseChunk); ok && len(forward.AnalyticsMetadata) != 0 {
+		t.Fatal("analytics metadata set before the native stream reached end-of-stream")
+	}
+
+	action = p.OnResponseBodyChunk(context.Background(), ctx, &policy.StreamBody{
+		Chunk:       metadata,
+		EndOfStream: true,
+		Index:       1,
+	}, nil)
+	// Claude 3.7 Sonnet on Bedrock: 10 * $3/M + 3 * $15/M = $0.000075.
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000750000")
+}
+
+func TestOnResponseBodyChunk_BedrockAnthropicInvokeModelWithResponseStream(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	ctx := makeStreamResponseContext()
+	ctx.RequestPath = "/model/anthropic.claude-3-7-sonnet-20250219-v1:0/invoke-with-response-stream"
+
+	messageStart := encodeBedrockEventStreamFrame("chunk",
+		`{"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":0}}}`)
+	messageDelta := encodeBedrockEventStreamFrame("chunk",
+		`{"type":"message_delta","usage":{"output_tokens":3}}`)
+
+	action := p.OnResponseBodyChunk(context.Background(), ctx, &policy.StreamBody{
+		Chunk: messageStart,
+		Index: 0,
+	}, nil)
+	if _, ok := ctx.Metadata[MetadataLLMCostStatus]; ok {
+		t.Fatal("cost status set before the native stream reached end-of-stream")
+	}
+
+	action = p.OnResponseBodyChunk(context.Background(), ctx, &policy.StreamBody{
+		Chunk:       messageDelta,
+		EndOfStream: true,
+		Index:       1,
+	}, nil)
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000750000")
+}
+
+func TestBedrockInvokeStreamResponse_DecodesSerializedPayloadPart(t *testing.T) {
+	messageStart := base64.StdEncoding.EncodeToString([]byte(
+		`{"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":0}}}`,
+	))
+	messageDelta := base64.StdEncoding.EncodeToString([]byte(
+		`{"type":"message_delta","usage":{"output_tokens":3}}`,
+	))
+	stream := append(
+		encodeBedrockEventStreamFrame("chunk", `{"bytes":"`+messageStart+`"}`),
+		encodeBedrockEventStreamFrame("chunk", `{"chunk":{"bytes":"`+messageDelta+`"}}`)...,
+	)
+
+	response, ok := bedrockInvokeStreamResponse(stream)
+	if !ok {
+		t.Fatal("expected serialized PayloadPart frames to be decoded")
+	}
+	usage, err := (&BedrockCalculator{}).Normalize(response, nil)
+	if err != nil {
+		t.Fatalf("unexpected normalization error: %v", err)
+	}
+	if usage.PromptTokens != 10 || usage.CompletionTokens != 3 || usage.TotalTokens != 13 {
+		t.Fatalf("unexpected Anthropic streaming usage: %+v", usage)
+	}
+}
+
+func TestBedrockInvokeStreamResponse_NovaMetadata(t *testing.T) {
+	stream := append(
+		encodeBedrockEventStreamFrame("chunk",
+			`{"contentBlockDelta":{"delta":{"text":"hello"}}}`),
+		encodeBedrockEventStreamFrame("chunk",
+			`{"metadata":{"usage":{"inputTokens":10,"outputTokens":3,"totalTokens":13}}}`)...,
+	)
+
+	response, ok := bedrockInvokeStreamResponse(stream)
+	if !ok {
+		t.Fatal("expected Nova chunk frames to be merged")
+	}
+	usage, err := (&BedrockCalculator{}).Normalize(response, nil)
+	if err != nil {
+		t.Fatalf("unexpected normalization error: %v", err)
+	}
+	if usage.PromptTokens != 10 || usage.CompletionTokens != 3 || usage.TotalTokens != 13 {
+		t.Fatalf("unexpected Nova streaming usage: %+v", usage)
+	}
+}
+
+func TestBedrockInvokeStreamResponse_TitanUsage(t *testing.T) {
+	stream := append(
+		encodeBedrockEventStreamFrame("chunk",
+			`{"index":0,"inputTextTokenCount":10,"totalOutputTextTokenCount":1,"outputText":"hello"}`),
+		encodeBedrockEventStreamFrame("chunk",
+			`{"index":0,"inputTextTokenCount":10,"totalOutputTextTokenCount":3,"outputText":" world","completionReason":"FINISHED"}`)...,
+	)
+
+	response, ok := bedrockInvokeStreamResponse(stream)
+	if !ok {
+		t.Fatal("expected Titan chunk frames to be merged")
+	}
+	usage, err := (&BedrockCalculator{}).Normalize(response, nil)
+	if err != nil {
+		t.Fatalf("unexpected normalization error: %v", err)
+	}
+	if usage.PromptTokens != 10 || usage.CompletionTokens != 3 || usage.TotalTokens != 13 {
+		t.Fatalf("unexpected Titan streaming usage: %+v", usage)
+	}
+}
+
+func TestBedrockInvokeStreamResponse_InvocationMetrics(t *testing.T) {
+	stream := encodeBedrockEventStreamFrame("chunk",
+		`{"completion":"done","amazon-bedrock-invocationMetrics":{"inputTokenCount":10,"outputTokenCount":3}}`)
+
+	response, ok := bedrockInvokeStreamResponse(stream)
+	if !ok {
+		t.Fatal("expected invocation metrics chunk to be extracted")
+	}
+	usage, err := (&BedrockCalculator{}).Normalize(response, nil)
+	if err != nil {
+		t.Fatalf("unexpected normalization error: %v", err)
+	}
+	if usage.PromptTokens != 10 || usage.CompletionTokens != 3 || usage.TotalTokens != 13 {
+		t.Fatalf("unexpected invocation metrics usage: %+v", usage)
+	}
+}
+
+func encodeBedrockEventStreamFrame(eventType, payload string) []byte {
+	headers := encodeBedrockEventStreamStringHeader(":event-type", eventType)
+	headers = append(headers, encodeBedrockEventStreamStringHeader(":message-type", "event")...)
+
+	totalLen := bedrockEventStreamOverhead + len(headers) + len(payload)
+	frame := make([]byte, 0, totalLen)
+	frame = binary.BigEndian.AppendUint32(frame, uint32(totalLen))
+	frame = binary.BigEndian.AppendUint32(frame, uint32(len(headers)))
+	frame = binary.BigEndian.AppendUint32(frame, 0)
+	frame = append(frame, headers...)
+	frame = append(frame, payload...)
+	frame = binary.BigEndian.AppendUint32(frame, 0)
+	return frame
+}
+
+func encodeBedrockEventStreamStringHeader(name, value string) []byte {
+	header := []byte{byte(len(name))}
+	header = append(header, name...)
+	header = append(header, 7)
+	header = binary.BigEndian.AppendUint16(header, uint16(len(value)))
+	return append(header, value...)
+}
+
+func TestOnResponseBodyChunk_BedrockAnthropicInvokeModel(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	ctx := makeStreamResponseContext()
+	ctx.RequestPath = "/model/anthropic.claude-3-7-sonnet-20250219-v1:0/invoke"
+	body := []byte(`{"usage":{"input_tokens":10,"output_tokens":3}}`)
+	action := p.OnResponseBodyChunk(context.Background(), ctx, &policy.StreamBody{
+		Chunk: body, EndOfStream: true,
+	}, nil)
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000750000")
+}
+
+func TestOnResponseBodyChunk_BedrockInvokeModelMissingUsage_NotCalculated(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	ctx := makeStreamResponseContext()
+	ctx.RequestPath = "/model/anthropic.claude-3-7-sonnet-20250219-v1:0/invoke"
+	action := p.OnResponseBodyChunk(context.Background(), ctx, &policy.StreamBody{
+		Chunk: []byte(`{"completion":"hello"}`), EndOfStream: true,
+	}, nil)
+	assertStreamCostMetadata(t, ctx, action, costStatusNotCalculated, "0.0000000000")
+}
+
+func TestOnResponseBodyChunk_BedrockARN_UsesCanonicalAnalyticsModel(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	ctx := makeStreamResponseContext()
+	ctx.RequestPath = "/model/arn%3Aaws%3Abedrock%3Aus-east-1%3A%3Afoundation-model%2Fanthropic.claude-3-7-sonnet-20250219-v1%3A0/converse"
+	action := p.OnResponseBodyChunk(context.Background(), ctx, &policy.StreamBody{
+		Chunk: []byte(`{"usage":{"inputTokens":10,"outputTokens":3,"totalTokens":13}}`), EndOfStream: true,
+	}, nil)
+	forward, ok := action.(policy.ForwardResponseChunk)
+	if !ok {
+		t.Fatalf("expected ForwardResponseChunk, got %T", action)
+	}
+	const wantModel = "anthropic.claude-3-7-sonnet-20250219-v1:0"
+	if got := forward.AnalyticsMetadata[metadataModelID]; got != wantModel {
+		t.Fatalf("analytics model = %v, want %q", got, wantModel)
+	}
+}
+
+func TestOnResponseBodyChunk_BedrockNova_ModelFromURL(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	ctx := makeStreamResponseContext()
+	ctx.RequestPath = "/model/apac.amazon.nova-micro-v1:0/converse"
+	body := []byte(`{"usage":{"inputTokens":10,"outputTokens":3,"totalTokens":13}}`)
+	action := p.OnResponseBodyChunk(context.Background(), ctx, &policy.StreamBody{
+		Chunk: body, EndOfStream: true,
+	}, nil)
+	// Nova Micro APAC: 10 * $0.037/M + 3 * $0.148/M = $0.000000814.
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000008140")
+}
+
+func TestOnResponseBodyChunk_SSE_BedrockTransformed_Calculated(t *testing.T) {
+	const model = "anthropic.claude-3-haiku-20240307-v1:0"
+	pricingMap := map[string]ModelPricing{
+		model: {
+			Provider:           "bedrock",
+			InputCostPerToken:  2.5e-7,
+			OutputCostPerToken: 1.25e-6,
+		},
+	}
+	p := &LLMCostPolicy{pricingMap: pricingMap}
+	body := []byte(
+		"data: {\"id\":\"chatcmpl-bedrock\",\"model\":\"" + model + "\",\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n" +
+			"data: {\"id\":\"chatcmpl-bedrock\",\"model\":\"" + model + "\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":3,\"total_tokens\":13}}\n" +
+			"data: [DONE]\n",
+	)
+	ctx, action := sendChunks(p, [][]byte{body})
+	// 10 * 2.5e-7 + 3 * 1.25e-6 = 6.25e-6.
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000062500")
+	fwd, ok := action.(policy.ForwardResponseChunk)
+	if !ok {
+		t.Fatalf("expected ForwardResponseChunk, got %T", action)
+	}
+	wantAnalytics := map[string]any{
+		MetadataLLMCost:              6.25e-6,
+		metadataModelID:              model,
+		metadataPromptTokenCount:     "10",
+		metadataCompletionTokenCount: "3",
+		metadataTotalTokenCount:      "13",
+	}
+	for key, want := range wantAnalytics {
+		if got := fwd.AnalyticsMetadata[key]; got != want {
+			t.Errorf("analytics metadata %q = %#v, want %#v", key, got, want)
+		}
 	}
 }
 
