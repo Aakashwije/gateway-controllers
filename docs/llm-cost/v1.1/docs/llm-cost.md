@@ -36,7 +36,7 @@ This policy has no user parameters. All configuration is handled by the gateway 
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `pricing_file` | string | Yes | - | Path to the model pricing JSON file shipped with the gateway image. Can be overridden by the gateway administrator via `config.toml`. |
+| `pricing_file` | string | Yes | - | Path to the model pricing JSON file shipped with the gateway image. Gateway administrators can override this path in `config.toml`. |
 
 #### Sample System Configuration
 
