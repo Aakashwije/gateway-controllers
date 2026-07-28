@@ -373,13 +373,10 @@ func TestConversionHelpers(t *testing.T) {
 	}
 }
 
-// ─── amplification / resource-exhaustion regression coverage ──────────────────
+// ─── conversion budget coverage ───────────────────────────────────────────────
 
-// buildNestedJSONArray returns the amplification payload from the json-xml-mediator
-// request-body OOM report: a depth-D array chain whose innermost level holds W
-// integer leaves. Against the pre-fix converter this expanded ~9000x, because
-// xml.MarshalIndent emitted 2*D spaces of indentation on every one of the W
-// leaf lines.
+// buildNestedJSONArray returns a JSON array nested `depth` levels deep whose
+// innermost level holds `leaves` integer values.
 func buildNestedJSONArray(depth, leaves int) []byte {
 	var b strings.Builder
 	b.WriteString(strings.Repeat("[", depth))
@@ -389,9 +386,8 @@ func buildNestedJSONArray(depth, leaves int) []byte {
 	return []byte(b.String())
 }
 
-// TestOnRequest_JSONToXML_RejectsAmplificationPayload pins the actual reported
-// attack: a ~41 KB body that produced a 361 MB XML document and OOM-killed the
-// shared gateway-runtime. It must now be rejected outright.
+// A request body that exceeds the conversion budget must be rejected with a
+// 500 and a complexity message, rather than converted.
 func TestOnRequest_JSONToXML_RejectsAmplificationPayload(t *testing.T) {
 	p := newConfiguredPolicy(t, configuredParams("xml", "json"))
 	ctx := &policy.RequestContext{
@@ -402,7 +398,7 @@ func TestOnRequest_JSONToXML_RejectsAmplificationPayload(t *testing.T) {
 	result := p.OnRequestBody(context.Background(), ctx, nil)
 	res, ok := result.(policy.ImmediateResponse)
 	if !ok {
-		t.Fatalf("expected the amplification payload to be rejected, got %T", result)
+		t.Fatalf("expected an over-budget payload to be rejected, got %T", result)
 	}
 	if res.StatusCode != 500 {
 		t.Fatalf("expected status 500, got %d", res.StatusCode)
@@ -412,19 +408,18 @@ func TestOnRequest_JSONToXML_RejectsAmplificationPayload(t *testing.T) {
 	}
 }
 
-// TestConvertJSONToXML_OutputIsNotAmplified asserts the property the fix rests
-// on: output size stays proportional to input size instead of scaling with
-// depth*width. Pre-fix this input produced ~3.8 MB from 3.9 KB (1007x).
+// For input within the conversion budget, output size must stay proportional
+// to input size rather than growing with nesting depth.
 func TestConvertJSONToXML_OutputIsNotAmplified(t *testing.T) {
 	p := &JSONXMLMediationPolicy{}
-	input := buildNestedJSONArray(200, 1000) // within budget, deep enough to amplify
+	input := buildNestedJSONArray(200, 1000) // Within budget, but deeply nested
 
 	out, err := p.convertJSONBytesToXML(input)
 	if err != nil {
 		t.Fatalf("conversion of an in-budget payload should succeed: %v", err)
 	}
 	if ratio := float64(len(out)) / float64(len(input)); ratio > 20 {
-		t.Fatalf("output amplified %.0fx (%d -> %d bytes); indentation likely reintroduced",
+		t.Fatalf("output size ratio %.0fx exceeds the expected bound (%d -> %d bytes)",
 			ratio, len(input), len(out))
 	}
 }
@@ -450,15 +445,15 @@ func TestConvertJSONToXML_RejectsExcessElements(t *testing.T) {
 	}
 }
 
-// TestConvertXMLToJSON_RejectsAmplificationPayload covers the mirror direction,
-// which amplified ~1257x via json.MarshalIndent before the fix.
+// XML input that exceeds the conversion budget must be rejected, while an
+// ordinary document still converts.
 func TestConvertXMLToJSON_RejectsAmplificationPayload(t *testing.T) {
 	p := &JSONXMLMediationPolicy{}
 	const depth = 4900
 	body := strings.Repeat("<a>", depth) + strings.Repeat("<v>1</v>", 20000) + strings.Repeat("</a>", depth)
 
 	if _, err := p.convertXMLToJSON([]byte(body)); err == nil {
-		t.Fatal("expected the XML->JSON amplification payload to be rejected")
+		t.Fatal("expected an over-budget XML payload to be rejected")
 	}
 	if _, err := p.convertXMLToJSON([]byte(`<root><name>John</name></root>`)); err != nil {
 		t.Fatalf("an ordinary XML document must still convert: %v", err)
