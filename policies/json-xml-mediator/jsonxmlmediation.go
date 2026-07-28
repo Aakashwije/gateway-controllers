@@ -37,7 +37,46 @@ const (
 	// sseDataPrefix is the line prefix used in Server-Sent Events payloads.
 	// Used only for detection — SSE bodies are passed through without conversion.
 	sseDataPrefix = "data: "
+
+	// maxConversionDepth bounds how deeply the converter recurses into a
+	// consumer-supplied document. Real mediated payloads (SOAP envelopes, REST
+	// resources) nest to single or low double digits; anything past this is
+	// pathological. Without a cap, a body nested to encoding/json's own ~10000
+	// limit builds a correspondingly deep element tree.
+	maxConversionDepth = 256
+
+	// maxConversionElements bounds the total number of nodes the converter
+	// materialises for one body. The intermediate tree costs ~90 bytes per node
+	// regardless of how few bytes that node occupied in the input, so a node
+	// budget — not just an input-byte limit — is what actually bounds memory.
+	maxConversionElements = 100000
 )
+
+// errConversionTooComplex is returned when a body exceeds the depth or element
+// budget. Callers surface it as a 500 (fail closed) rather than attempting the
+// conversion, matching the mediator's existing error handling.
+var errConversionTooComplex = fmt.Errorf(
+	"payload is too complex to convert: exceeds the maximum nesting depth (%d) or element count (%d)",
+	maxConversionDepth, maxConversionElements,
+)
+
+// conversionBudget tracks the element allowance shared across one conversion.
+type conversionBudget struct {
+	remaining int
+}
+
+func newConversionBudget() *conversionBudget {
+	return &conversionBudget{remaining: maxConversionElements}
+}
+
+// consume debits a single element, reporting false once the budget is spent.
+func (b *conversionBudget) consume() bool {
+	if b.remaining <= 0 {
+		return false
+	}
+	b.remaining--
+	return true
+}
 
 // JSONXMLMediationPolicy mediates request/response payloads between JSON and XML.
 type JSONXMLMediationPolicy struct {
@@ -174,15 +213,34 @@ func (p *JSONXMLMediationPolicy) convertJSONBytesToXML(body []byte) ([]byte, err
 }
 
 func (p *JSONXMLMediationPolicy) convertJSONToXML(jsonData interface{}) ([]byte, error) {
-	xmlStruct := p.buildXMLStruct(jsonData, "root")
-	xmlData, err := xml.MarshalIndent(xmlStruct, "", "  ")
+	xmlStruct, err := p.buildXMLStruct(jsonData, "root", 0, newConversionBudget())
+	if err != nil {
+		return nil, err
+	}
+	// xml.Marshal, not xml.MarshalIndent: indentation costs 2*depth spaces on
+	// every element line, so pretty-printing turns a small deeply-nested body
+	// into an output that grows with depth*width rather than with input size.
+	// Mediated payloads are machine-to-machine and gain nothing from indenting.
+	xmlData, err := xml.Marshal(xmlStruct)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal to XML: %w", err)
 	}
 	return xmlData, nil
 }
 
-func (p *JSONXMLMediationPolicy) buildXMLStruct(data interface{}, tagName string) XMLElement {
+// buildXMLStruct converts decoded JSON into an element tree, failing closed
+// once the document exceeds the depth or element budget rather than recursing
+// to whatever nesting the caller supplied.
+func (p *JSONXMLMediationPolicy) buildXMLStruct(
+	data interface{},
+	tagName string,
+	depth int,
+	budget *conversionBudget,
+) (XMLElement, error) {
+	if depth > maxConversionDepth || !budget.consume() {
+		return XMLElement{}, errConversionTooComplex
+	}
+
 	sanitizedTagName := p.sanitizeTagName(tagName)
 	element := XMLElement{XMLName: xml.Name{Local: sanitizedTagName}}
 
@@ -190,23 +248,37 @@ func (p *JSONXMLMediationPolicy) buildXMLStruct(data interface{}, tagName string
 		element.OriginalKey = tagName
 	}
 
+	// appendChild recurses one level deeper and propagates a budget/depth
+	// failure to the caller instead of silently truncating the document.
+	appendChild := func(value interface{}, key string) error {
+		childElement, err := p.buildXMLStruct(value, key, depth+1, budget)
+		if err != nil {
+			return err
+		}
+		element.Children = append(element.Children, childElement)
+		return nil
+	}
+
 	switch v := data.(type) {
 	case map[string]interface{}:
 		for key, value := range v {
 			if arr, isArray := value.([]interface{}); isArray {
 				for _, item := range arr {
-					childElement := p.buildXMLStruct(item, key)
-					element.Children = append(element.Children, childElement)
+					if err := appendChild(item, key); err != nil {
+						return XMLElement{}, err
+					}
 				}
 			} else {
-				childElement := p.buildXMLStruct(value, key)
-				element.Children = append(element.Children, childElement)
+				if err := appendChild(value, key); err != nil {
+					return XMLElement{}, err
+				}
 			}
 		}
 	case []interface{}:
 		for _, item := range v {
-			childElement := p.buildXMLStruct(item, tagName)
-			element.Children = append(element.Children, childElement)
+			if err := appendChild(item, tagName); err != nil {
+				return XMLElement{}, err
+			}
 		}
 	case string:
 		element.Content = v
@@ -220,7 +292,7 @@ func (p *JSONXMLMediationPolicy) buildXMLStruct(data interface{}, tagName string
 		element.Content = fmt.Sprintf("%v", v)
 	}
 
-	return element
+	return element, nil
 }
 
 func (p *JSONXMLMediationPolicy) sanitizeTagName(name string) string {
@@ -274,9 +346,14 @@ func (p *JSONXMLMediationPolicy) convertXMLToJSON(xmlData []byte) ([]byte, error
 		return nil, fmt.Errorf("failed to parse XML: %w", err)
 	}
 
-	jsonData := p.nodeToMap(node)
+	jsonData, err := p.nodeToMap(node)
+	if err != nil {
+		return nil, err
+	}
 
-	result, err := json.MarshalIndent(jsonData, "", "  ")
+	// json.Marshal, not json.MarshalIndent — same amplification reasoning as
+	// convertJSONToXML above, mirrored for the XML->JSON direction.
+	result, err := json.Marshal(jsonData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal to JSON: %w", err)
 	}
@@ -284,19 +361,35 @@ func (p *JSONXMLMediationPolicy) convertXMLToJSON(xmlData []byte) ([]byte, error
 	return result, nil
 }
 
-func (p *JSONXMLMediationPolicy) nodeToMap(node XMLNode) interface{} {
+func (p *JSONXMLMediationPolicy) nodeToMap(node XMLNode) (interface{}, error) {
+	processed, err := p.processXMLNode(node, 0, newConversionBudget())
+	if err != nil {
+		return nil, err
+	}
 	result := make(map[string]interface{})
-	result[node.XMLName.Local] = p.processXMLNode(node)
-	return result
+	result[node.XMLName.Local] = processed
+	return result, nil
 }
 
-func (p *JSONXMLMediationPolicy) processXMLNode(node XMLNode) interface{} {
+// processXMLNode converts a parsed XML node tree into JSON-shaped values,
+// failing closed past the depth or element budget. encoding/xml enforces its
+// own nesting cap during Unmarshal, but that cap is far higher than any real
+// document and does nothing to bound the output this stage produces.
+func (p *JSONXMLMediationPolicy) processXMLNode(
+	node XMLNode,
+	depth int,
+	budget *conversionBudget,
+) (interface{}, error) {
+	if depth > maxConversionDepth || !budget.consume() {
+		return nil, errConversionTooComplex
+	}
+
 	if len(node.Nodes) == 0 && len(node.Attrs) == 0 {
 		content := strings.TrimSpace(node.Content)
 		if content == "" {
-			return nil
+			return nil, nil
 		}
-		return p.parseValue(content)
+		return p.parseValue(content), nil
 	}
 
 	result := make(map[string]interface{})
@@ -313,11 +406,19 @@ func (p *JSONXMLMediationPolicy) processXMLNode(node XMLNode) interface{} {
 
 	for name, children := range childGroups {
 		if len(children) == 1 {
-			result[name] = p.processXMLNode(children[0])
+			child, err := p.processXMLNode(children[0], depth+1, budget)
+			if err != nil {
+				return nil, err
+			}
+			result[name] = child
 		} else {
 			array := make([]interface{}, len(children))
 			for i, child := range children {
-				array[i] = p.processXMLNode(child)
+				processed, err := p.processXMLNode(child, depth+1, budget)
+				if err != nil {
+					return nil, err
+				}
+				array[i] = processed
 			}
 			result[name] = array
 		}
@@ -327,14 +428,14 @@ func (p *JSONXMLMediationPolicy) processXMLNode(node XMLNode) interface{} {
 	if content != "" && len(result) > 0 {
 		result["#text"] = p.parseValue(content)
 	} else if content != "" && len(result) == 0 {
-		return p.parseValue(content)
+		return p.parseValue(content), nil
 	}
 
 	if len(result) == 0 {
-		return nil
+		return nil, nil
 	}
 
-	return result
+	return result, nil
 }
 
 func (p *JSONXMLMediationPolicy) parseAttributeValue(value string) interface{} {

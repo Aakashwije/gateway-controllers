@@ -372,3 +372,90 @@ func TestConversionHelpers(t *testing.T) {
 		t.Fatalf("expected valid JSON output: %s", jsonData)
 	}
 }
+
+// ─── conversion budget coverage ───────────────────────────────────────────────
+
+// buildNestedJSONArray returns a JSON array nested `depth` levels deep whose
+// innermost level holds `leaves` integer values.
+func buildNestedJSONArray(depth, leaves int) []byte {
+	var b strings.Builder
+	b.WriteString(strings.Repeat("[", depth))
+	b.WriteString("1")
+	b.WriteString(strings.Repeat(",1", leaves-1))
+	b.WriteString(strings.Repeat("]", depth))
+	return []byte(b.String())
+}
+
+// A request body that exceeds the conversion budget must be rejected with a
+// 500 and a complexity message, rather than converted.
+func TestOnRequest_JSONToXML_RejectsAmplificationPayload(t *testing.T) {
+	p := newConfiguredPolicy(t, configuredParams("xml", "json"))
+	ctx := &policy.RequestContext{
+		Body:    &policy.Body{Content: buildNestedJSONArray(9000, 12000), Present: true},
+		Headers: createHeaders("content-type", "application/json"),
+	}
+
+	result := p.OnRequestBody(context.Background(), ctx, nil)
+	res, ok := result.(policy.ImmediateResponse)
+	if !ok {
+		t.Fatalf("expected an over-budget payload to be rejected, got %T", result)
+	}
+	if res.StatusCode != 500 {
+		t.Fatalf("expected status 500, got %d", res.StatusCode)
+	}
+	if msg, _ := parseErrorJSON(t, res.Body)["message"].(string); !strings.Contains(msg, "too complex") {
+		t.Fatalf("expected a complexity rejection, got %q", msg)
+	}
+}
+
+// For input within the conversion budget, output size must stay proportional
+// to input size rather than growing with nesting depth.
+func TestConvertJSONToXML_OutputIsNotAmplified(t *testing.T) {
+	p := &JSONXMLMediationPolicy{}
+	input := buildNestedJSONArray(200, 1000) // Within budget, but deeply nested
+
+	out, err := p.convertJSONBytesToXML(input)
+	if err != nil {
+		t.Fatalf("conversion of an in-budget payload should succeed: %v", err)
+	}
+	if ratio := float64(len(out)) / float64(len(input)); ratio > 20 {
+		t.Fatalf("output size ratio %.0fx exceeds the expected bound (%d -> %d bytes)",
+			ratio, len(input), len(out))
+	}
+}
+
+// TestConvertJSONToXML_RejectsExcessDepth covers the depth budget independently
+// of the element budget — a single deep chain spends almost no elements.
+func TestConvertJSONToXML_RejectsExcessDepth(t *testing.T) {
+	p := &JSONXMLMediationPolicy{}
+	if _, err := p.convertJSONBytesToXML(buildNestedJSONArray(maxConversionDepth+50, 1)); err == nil {
+		t.Fatal("expected a payload past maxConversionDepth to be rejected")
+	}
+	if _, err := p.convertJSONBytesToXML(buildNestedJSONArray(10, 1)); err != nil {
+		t.Fatalf("a shallow payload must still convert: %v", err)
+	}
+}
+
+// TestConvertJSONToXML_RejectsExcessElements covers the element budget
+// independently of depth — a flat but very wide document.
+func TestConvertJSONToXML_RejectsExcessElements(t *testing.T) {
+	p := &JSONXMLMediationPolicy{}
+	if _, err := p.convertJSONBytesToXML(buildNestedJSONArray(1, maxConversionElements+10)); err == nil {
+		t.Fatal("expected a payload past maxConversionElements to be rejected")
+	}
+}
+
+// XML input that exceeds the conversion budget must be rejected, while an
+// ordinary document still converts.
+func TestConvertXMLToJSON_RejectsAmplificationPayload(t *testing.T) {
+	p := &JSONXMLMediationPolicy{}
+	const depth = 4900
+	body := strings.Repeat("<a>", depth) + strings.Repeat("<v>1</v>", 20000) + strings.Repeat("</a>", depth)
+
+	if _, err := p.convertXMLToJSON([]byte(body)); err == nil {
+		t.Fatal("expected an over-budget XML payload to be rejected")
+	}
+	if _, err := p.convertXMLToJSON([]byte(`<root><name>John</name></root>`)); err != nil {
+		t.Fatalf("an ordinary XML document must still convert: %v", err)
+	}
+}
