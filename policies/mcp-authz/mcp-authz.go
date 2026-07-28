@@ -78,7 +78,7 @@ type Rule struct {
 	Claims ClaimConstraints
 }
 
-// ScopeConstraints defines required scopes: allOf (all), anyOf (any), or both. 
+// ScopeConstraints defines required scopes: allOf (all), anyOf (any), or both.
 // Empty means no requirement. Replaces deprecated requiredScopes (anyOf).
 type ScopeConstraints struct {
 	AllOf []string
@@ -97,7 +97,7 @@ type ClaimMatcher struct {
 	legacyExactString bool
 }
 
-// ClaimConstraints defines required claims: allOf (all match), anyOf (any match), or both. 
+// ClaimConstraints defines required claims: allOf (all match), anyOf (any match), or both.
 // Empty means no requirement. Replaces deprecated requiredClaims (allOf).
 type ClaimConstraints struct {
 	AllOf []ClaimMatcher

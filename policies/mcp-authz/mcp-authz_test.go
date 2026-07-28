@@ -885,6 +885,51 @@ func TestAuthExcludedTool_FailedAuthContext_PassesThrough(t *testing.T) {
 	assertPassthrough(t, action, "auth-excluded toolB with a failed AuthContext")
 }
 
+// The same exclusion scenario expressed with the scopes/claims allOf-anyOf rule shapes rather than
+// the deprecated requiredScopes. Rule matching keys off the attribute type and name alone, so the
+// condition shape must not affect whether an invocation is governed.
+func TestAuthExcludedTool_NewStyleRuleShapes_PassThrough(t *testing.T) {
+	cases := []struct {
+		name string
+		rule Rule
+	}{
+		{"scopes.allOf", Rule{
+			Attribute: Attribute{Type: "tool", Name: "toolA"},
+			Scopes:    ScopeConstraints{AllOf: []string{"scope:a", "scope:b"}},
+		}},
+		{"scopes.anyOf", Rule{
+			Attribute: Attribute{Type: "tool", Name: "toolA"},
+			Scopes:    ScopeConstraints{AnyOf: []string{"scope:a", "scope:b"}},
+		}},
+		{"claims.allOf", Rule{
+			Attribute: Attribute{Type: "tool", Name: "toolA"},
+			Claims:    ClaimConstraints{AllOf: []ClaimMatcher{{Claim: "role", Values: []string{"admin"}}}},
+		}},
+		{"claims.anyOf", Rule{
+			Attribute: Attribute{Type: "tool", Name: "toolA"},
+			Claims:    ClaimConstraints{AnyOf: []ClaimMatcher{{Claim: "role", Values: []string{"admin", "ops"}}}},
+		}},
+		{"scopes and claims combined", Rule{
+			Attribute: Attribute{Type: "tool", Name: "toolA"},
+			Scopes:    ScopeConstraints{AllOf: []string{"scope:a"}},
+			Claims:    ClaimConstraints{AllOf: []ClaimMatcher{{Claim: "role", Values: []string{"admin"}}}},
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &McpAuthzPolicy{Rules: []Rule{tc.rule}}
+
+			// The excluded, ungoverned capability passes through with no identity at all.
+			assertPassthrough(t, runBody(p, mcpBody("tools/call", map[string]any{"name": "toolB"}), nil),
+				"auth-excluded toolB against a "+tc.name+" rule for toolA")
+
+			// The governed capability still fails closed with no identity.
+			assertStatus(t, runBody(p, mcpBody("tools/call", map[string]any{"name": "toolA"}), nil), 401,
+				"governed toolA against a "+tc.name+" rule")
+		})
+	}
+}
+
 // ---- the other half: a governed capability still fails closed ----
 
 func TestGovernedTool_NoAuthContext_FailsClosed(t *testing.T) {
