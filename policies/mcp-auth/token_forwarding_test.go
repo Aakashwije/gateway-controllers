@@ -414,12 +414,18 @@ func TestIsTokenHeaderClaimed(t *testing.T) {
 	}{
 		{"identical", snapshotOf(headers("Bearer a")), headers("Bearer a"), false},
 		{"rewritten", snapshotOf(headers("Bearer a")), headers("Bearer b"), true},
-		{"added by peer", snapshotOf(policy.NewHeaders(nil)), headers("Bearer b"), true},
 		{"dropped by peer", snapshotOf(headers("Bearer a")), policy.NewHeaders(nil), true},
 		{"extra value appended", snapshotOf(headers("Bearer a")), headers("Bearer a", "Bearer b"), true},
 		{"absent in both", snapshotOf(policy.NewHeaders(nil)), policy.NewHeaders(nil), false},
+
+		// Shapes in which a gateway can omit the snapshot. Each must report
+		// unclaimed so the header is still stripped; reporting claimed here would
+		// forward the client credential upstream on every request.
 		{"nil downstream", nil, headers("Bearer b"), false},
 		{"nil request", &policy.DownstreamContext{}, headers("Bearer b"), false},
+		{"nil headers", &policy.DownstreamContext{Request: &policy.DownstreamRequest{}}, headers("Bearer b"), false},
+		{"unpopulated headers", snapshotOf(policy.NewHeaders(nil)), headers("Bearer b"), false},
+		{"snapshot missing this header", snapshotOf(policy.NewHeaders(map[string][]string{"x-other": {"v"}})), headers("Bearer b"), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

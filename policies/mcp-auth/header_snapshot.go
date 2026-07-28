@@ -47,16 +47,23 @@ func getDownstreamHeaders(ds *policy.DownstreamContext, live *policy.Headers) *p
 }
 
 // isTokenHeaderClaimed reports whether another peer policy has taken ownership
-// of the inbound token header by replacing the client-supplied value (for
-// example via set-headers). Values are compared byte-for-byte across all header
-// values to reliably detect rewrites. Without a Downstream snapshot, the
-// original value is unavailable, so the header is treated as unclaimed,
- // preserving the previous behaviour of removing it.
+// of the inbound token header by replacing the client-supplied value
+//
+// If the original header value cannot be retrieved from the request snapshot,
+// the header is treated as unclaimed to preserve the existing behaviour of
+// stripping it. This avoids the risk of forwarding client credentials when the
+// ownership cannot be determined. The absent-value check also handles legacy
+// gateways where the request snapshot may be missing or unpopulated in
+// different forms.
 func isTokenHeaderClaimed(ds *policy.DownstreamContext, live *policy.Headers, headerName string) bool {
 	if ds == nil || ds.Request == nil || ds.Request.Headers == nil {
 		return false
 	}
-	return !slices.Equal(live.Get(headerName), ds.Request.Headers.Get(headerName))
+	original := ds.Request.Headers.Get(headerName)
+	if len(original) == 0 {
+		return false
+	}
+	return !slices.Equal(live.Get(headerName), original)
 }
 
 // preserveTokenHeader strips every modification that would delete or overwrite
