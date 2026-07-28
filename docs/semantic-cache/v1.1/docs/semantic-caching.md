@@ -33,7 +33,7 @@ The Semantic Cache policy uses a two-level configuration
 
 These parameters are usually set at the gateway level and automatically applied, but they can also be overridden in the params section of an API artifact definition. System-wide defaults can be configured in the gateway's `config.toml` file, and while these defaults apply to all Semantic Cache policy instances, they can be customized for individual policies within the API configuration when necessary.
 
-##### Embedding Provider Configuration
+#### Embedding Provider Configuration
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -43,7 +43,7 @@ These parameters are usually set at the gateway level and automatically applied,
 | `embeddingDimension` | integer | Yes | Dimension of embedding vectors. Common values: 1536 (OpenAI ada-002), 1024 (Mistral). Must match the model's output dimension. |
 | `apiKey` | string | Yes | API key for the embedding service authentication. The authentication header is automatically set to `api-key` for Azure OpenAI and `Authorization` for other providers. |
 
-##### Vector Database Configuration
+#### Vector Database Configuration
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -186,7 +186,7 @@ curl -X POST http://openai:8080/chat/completions \
 
 ## How It Works
 
-#### Request Phase
+### Request Phase
 
 1. **Text Extraction**: Extracts text from the request body using JSONPath (if configured) or uses the entire request body
 2. **Caller Identity Resolution**: Resolves the caller's identity (application/subscriber ID from authentication, or a JWT subject/client ID). If no identity can be resolved and `cacheUnauthenticated` is not enabled, the cache is bypassed entirely and the request proceeds to the upstream service (see [Cache Scoping and Provenance](#cache-scoping-and-provenance))
@@ -195,7 +195,7 @@ curl -X POST http://openai:8080/chat/completions \
 5. **Threshold Check**: If a similar embedding is found with similarity >= similarityThreshold, returns the cached response immediately
 6. **Cache Miss**: If no similar response is found, the request proceeds to the upstream service
 
-#### Response Phase
+### Response Phase
 
 1. **Success Check**: Only processes responses with 200 status codes
 2. **Cacheability Check**: Responses marked `Cache-Control: no-store`, `private`, or `no-cache` are skipped and never stored
@@ -204,7 +204,7 @@ curl -X POST http://openai:8080/chat/completions \
 5. **TTL Application**: Applies the configured TTL to the cache entry
 
 
-#### Similarity Thresholds
+### Similarity Thresholds
 
 The `similarityThreshold` parameter controls how similar requests must be to trigger a cache hit:
 
@@ -224,7 +224,7 @@ The `similarityThreshold` parameter controls how similar requests must be to tri
   > **Security warning**: enabling `cacheUnauthenticated` means any identity-less caller who can influence the upstream's response for a given prompt can seed an entry that is later served to a *different* identity-less caller as a trusted cache hit (cache poisoning), and a personalized or sensitive response produced for one identity-less caller can be replayed to another. Only enable this when every possible response the upstream can produce is safe to share across all unauthenticated callers of the API.
 - **`no-store` responses are never cached**: a response whose `Cache-Control` header contains `no-store`, `private`, or `no-cache` is skipped by the storage step regardless of caller identity.
 
-#### Cache Behavior
+### Cache Behavior
 
 - **Cache Hit**: When a similar request from the same caller (or the same shared bucket, if `cacheUnauthenticated` is enabled) is found, the policy immediately returns the cached response with a `200` status, adds the `X-Cache-Status: HIT` header, and avoids any upstream call, typically responding in under 50 ms.
 
@@ -233,7 +233,7 @@ The `similarityThreshold` parameter controls how similar requests must be to tri
 - **Cache Storage**: Only eligible successful responses are cached along with their embeddings in the vector database, with a TTL applied to each entry and isolated cache namespaces maintained per route/API **and per caller** to prevent cross-contamination.
 
 
-#### Operational Resilience
+### Operational Resilience
 - **Graceful degradation**: If embedding generation, vector database access, or cache storage fails, the request proceeds directly to the upstream service without blocking the client response. A JSONPath extraction failure is the exception: the policy returns a `400` error response instead of proceeding to the upstream service.
 
 - **Non-blocking resilience**: Caching operations are best-effort and never interfere with normal request handling, ensuring uninterrupted service even when caching components are unavailable.
