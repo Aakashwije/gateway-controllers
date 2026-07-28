@@ -17,7 +17,12 @@
 
 package mcpauthn
 
-import policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
+import (
+	"net/http"
+	"slices"
+
+	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
+)
 
 // getDownstreamHeaders returns the snapshot of the original client
 // request headers when the gateway provides it, falling back to the live
@@ -39,4 +44,42 @@ func getDownstreamHeaders(ds *policy.DownstreamContext, live *policy.Headers) *p
 		return ds.Request.Headers
 	}
 	return live
+}
+
+// isTokenHeaderClaimed reports whether another peer policy has taken ownership
+// of the inbound token header by replacing the client-supplied value (for
+// example via set-headers). Values are compared byte-for-byte across all header
+// values to reliably detect rewrites. Without a Downstream snapshot, the
+// original value is unavailable, so the header is treated as unclaimed,
+ // preserving the previous behaviour of removing it.
+func isTokenHeaderClaimed(ds *policy.DownstreamContext, live *policy.Headers, headerName string) bool {
+	if ds == nil || ds.Request == nil || ds.Request.Headers == nil {
+		return false
+	}
+	return !slices.Equal(live.Get(headerName), ds.Request.Headers.Get(headerName))
+}
+
+// preserveTokenHeader strips every modification that would delete or overwrite
+// headerName, leaving the value its owner set in place.
+//
+// Both directions matter. The delegated JWT auth policy removes the inbound
+// header unconditionally once it has consumed the token, and additionally
+// rewrites it when forwardedTokenHeader names that same header. Each of those is
+// correct in the header phase it was written for and wrong once a peer owns the
+// header, so both are dropped.
+func preserveTokenHeader(mods policy.UpstreamRequestHeaderModifications, headerName string) policy.UpstreamRequestHeaderModifications {
+	canonical := http.CanonicalHeaderKey(headerName)
+	sameHeader := func(name string) bool { return http.CanonicalHeaderKey(name) == canonical }
+
+	mods.HeadersToRemove = slices.DeleteFunc(slices.Clone(mods.HeadersToRemove), sameHeader)
+	if len(mods.HeadersToRemove) == 0 {
+		mods.HeadersToRemove = nil
+	}
+
+	for name := range mods.HeadersToSet {
+		if sameHeader(name) {
+			delete(mods.HeadersToSet, name)
+		}
+	}
+	return mods
 }

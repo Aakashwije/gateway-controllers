@@ -107,6 +107,57 @@ parameters:
       additionalProperties:
         type: string
 
+    userIdClaim:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: >-
+        Specifies the claim name used to extract the user ID for analytics.
+        Defaults to "sub" when omitted.
+      default: sub
+
+    forwardToken:
+      type: boolean
+      x-wso2-policy-advanced-param: true
+      description: >-
+        If true, the validated token is forwarded to the upstream service under
+        `forwardedTokenHeader`. If false (the default), the token is not
+        forwarded at all and the MCP server never sees the client credential.
+        In both cases the inbound token header (`system.headerName`) is removed
+        before the request is proxied, unless another policy has already set that
+        header to a different value — see `forwardedTokenHeader`.
+      default: false
+
+    forwardedTokenHeader:
+      type: string
+      x-wso2-policy-advanced-param: true
+      minLength: 1
+      pattern: "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$"
+      description: >-
+        The header name used to forward the token to the upstream service when
+        `forwardToken` is true. If this differs from `system.headerName`, the
+        inbound header is removed and the token is forwarded under this name
+        instead. By default the full header value (including the scheme prefix)
+        is forwarded; set `forwardTokenStripScheme` to true to forward only the
+        bare token value. Has no effect when `forwardToken` is false.
+        The inbound header is preserved, rather than removed, when a peer policy
+        such as `set-headers` has set it to a value other than the one the client
+        sent — that policy is then treated as the owner of the header. Pointing
+        this at `system.headerName` therefore means the token is not forwarded at
+        all whenever a peer owns that header, since it is the only header the
+        token could travel in; a warning is logged when that happens.
+      default: x-forwarded-authorization
+
+    forwardTokenStripScheme:
+      type: boolean
+      x-wso2-policy-advanced-param: true
+      description: >-
+        Controls what is forwarded under `forwardedTokenHeader` when
+        `forwardToken` is true. If true, only the bare token value (with the
+        scheme prefix such as "Bearer" stripped) is forwarded. If false (the
+        default), the full header value including the prefix is forwarded. Has no
+        effect when `forwardToken` is false.
+      default: false
+
 systemParameters:          
   type: object
   additionalProperties: false

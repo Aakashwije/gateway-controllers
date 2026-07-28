@@ -143,6 +143,15 @@ func getStringParam(params map[string]interface{}, key, defaultValue string) str
 	return defaultValue
 }
 
+func getBoolParam(params map[string]interface{}, key string, defaultValue bool) bool {
+	if v, ok := params[key]; ok {
+		if b, ok := v.(bool); ok {
+			return b
+		}
+	}
+	return defaultValue
+}
+
 func getIntParam(params map[string]interface{}, key string, defaultValue int) int {
 	if v, ok := params[key]; ok {
 		if i, ok := v.(int); ok {
@@ -532,9 +541,28 @@ func (p *McpAuthPolicy) handleAuth(ctx context.Context, reqCtx *policy.RequestCo
 		sessionId = sessionIds[0]
 	}
 
-	// requiredScopes are not to be enforced
+	// Params are forwarded to the delegated policy verbatim, so any parameter it
+	// already understands needs no mapping here — only an entry in this policy's
+	// definition to make it configurable, since `parameters` sets
+	// additionalProperties: false. forwardToken, forwardedTokenHeader,
+	// forwardTokenStripScheme and userIdClaim reach jwt-auth this way and keep its
+	// names, types and defaults deliberately: a divergence in either name or type
+	// would be read as absent and silently fall back to jwt-auth's default.
+	//
+	// requiredScopes is the one parameter that must not be forwarded. mcp-auth
+	// advertises it through protected resource metadata without enforcing it,
+	// whereas jwt-auth would reject tokens that lack the listed scopes.
 	jwtParams := maps.Clone(params)
 	delete(jwtParams, "requiredScopes")
+
+	// forwardToken is the one parameter whose default differs from jwt-auth's.
+	// MCP servers are frequently third parties, so this policy defaults to not
+	// releasing the client credential upstream. Resolving it here rather than
+	// leaving the key absent is what makes that default authoritative: an absent
+	// key would fall through to jwt-auth's own default of true, whatever the
+	// control plane does or does not materialise from the policy definition.
+	forwardToken := getBoolParam(params, "forwardToken", false)
+	jwtParams["forwardToken"] = forwardToken
 
 	slog.Debug("MCP Auth Policy: Delegating authentication to JWT Auth Policy")
 	jwtPolicy, err := jwtauth.GetPolicy(policy.PolicyMetadata{}, jwtParams)
@@ -591,6 +619,31 @@ func (p *McpAuthPolicy) handleAuth(ctx context.Context, reqCtx *policy.RequestCo
 		reqCtx.SharedContext.AuthContext.AuthType = AuthType
 	}
 	if a, ok := headerAction.(policy.UpstreamRequestHeaderModifications); ok {
+		// The delegated policy decided to remove the inbound token header while
+		// reading the Downstream snapshot, but the modification is applied in this
+		// policy's body phase — after every peer's header phase has run. If a peer
+		// now owns the header, honour its value instead of deleting it.
+		tokenHeader := getStringParam(params, "headerName", "Authorization")
+		if isTokenHeaderClaimed(reqCtx.Downstream, reqCtx.Headers, tokenHeader) {
+			slog.Debug("MCP Auth Policy: Inbound token header claimed by a peer policy, preserving it",
+				"headerName", tokenHeader)
+
+			// Yielding the header also cancels the forward when the token was to be
+			// forwarded under that same name: the peer owns the only header the
+			// token could have travelled in, so it reaches the upstream nowhere.
+			// Warn rather than drop it silently — the configuration asked for the
+			// token to be forwarded and it will not be, and nothing else in the
+			// request or the logs would reveal that.
+			forwardedTokenHeader := getStringParam(params, "forwardedTokenHeader", "x-forwarded-authorization")
+			if forwardToken && strings.EqualFold(forwardedTokenHeader, tokenHeader) {
+				slog.Warn("MCP Auth Policy: forwardedTokenHeader is claimed by another policy, so the validated token is not forwarded upstream; "+
+					"set forwardedTokenHeader to a header no other policy writes",
+					"forwardedTokenHeader", forwardedTokenHeader,
+					"headerName", tokenHeader)
+			}
+
+			a = preserveTokenHeader(a, tokenHeader)
+		}
 		return policy.UpstreamRequestModifications{
 			HeadersToSet:            a.HeadersToSet,
 			HeadersToRemove:         a.HeadersToRemove,
