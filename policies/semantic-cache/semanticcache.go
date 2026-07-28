@@ -45,6 +45,10 @@ const (
 	MetadataKeyEmbedding = "semantic_cache_embedding"
 	// MetadataKeyAPIID is the key used to store API ID in metadata
 	MetadataKeyAPIID = "semantic_cache_api_id"
+	// applicationIDMetadataKey is the shared inter-policy metadata key that carries the caller's application identity.
+	applicationIDMetadataKey = "x-wso2-application-id"
+	// cacheScopeSeparator joins apiID and caller identity into the cache partition key.
+	cacheScopeSeparator = "|"
 )
 
 // SemanticCachePolicy implements semantic caching for LLM responses
@@ -56,6 +60,56 @@ type SemanticCachePolicy struct {
 	jsonPath            string
 	streamingJsonPath   string
 	threshold           float64
+	// cacheUnauthenticated allows caching for callers with no resolvable identity
+	cacheUnauthenticated bool
+}
+
+// callerIdentity resolves the caller principal from metadata, falling back to auth context.
+func callerIdentity(sc *policy.SharedContext) (string, bool) {
+	if sc == nil {
+		return "", false
+	}
+	if sc.Metadata != nil {
+		if v, ok := sc.Metadata[applicationIDMetadataKey]; ok {
+			if s, ok := v.(string); ok && s != "" {
+				return s, true
+			}
+		}
+	}
+	if sc.AuthContext != nil {
+		if sc.AuthContext.Subject != "" {
+			return sc.AuthContext.Subject, true
+		}
+		if sc.AuthContext.CredentialID != "" {
+			return sc.AuthContext.CredentialID, true
+		}
+	}
+	return "", false
+}
+
+// cacheScopeID folds the caller identity into the api_id partition key used by Retrieve/Store.
+func (p *SemanticCachePolicy) cacheScopeID(sc *policy.SharedContext, apiID string) (string, bool) {
+	if identity, ok := callerIdentity(sc); ok {
+		return apiID + cacheScopeSeparator + identity, true
+	}
+	if p.cacheUnauthenticated {
+		return apiID, true
+	}
+	return "", false
+}
+
+// isNoStoreResponse reports whether Cache-Control marks the response as non-shareable.
+func isNoStoreResponse(headers *policy.Headers) bool {
+	if headers == nil {
+		return false
+	}
+	for _, v := range headers.Get("cache-control") {
+		lower := strings.ToLower(v)
+		if strings.Contains(lower, "no-store") || strings.Contains(lower, "private") || strings.Contains(lower, "no-cache") {
+			return true
+		}
+	}
+	return false
 }
 
 // GetPolicy is the v1alpha2 factory entry point (loaded by v1alpha2 kernels).
@@ -238,6 +292,15 @@ func parseParams(params map[string]interface{}, p *SemanticCachePolicy) error {
 		}
 	}
 
+	// Optional: opt in to caching for callers with no resolvable identity
+	if cacheUnauthenticatedRaw, ok := params["cacheUnauthenticated"]; ok {
+		cacheUnauthenticated, ok := cacheUnauthenticatedRaw.(bool)
+		if !ok {
+			return fmt.Errorf("'cacheUnauthenticated' must be a boolean")
+		}
+		p.cacheUnauthenticated = cacheUnauthenticated
+	}
+
 	return nil
 }
 
@@ -371,6 +434,13 @@ func (p *SemanticCachePolicy) OnRequestBody(ctx context.Context, reqCtx *policy.
 	// Get API ID from context (use APIName and APIVersion to create unique ID)
 	apiID := fmt.Sprintf("%s:%s", reqCtx.APIName, reqCtx.APIVersion)
 
+	// Scope the lookup to the caller so responses are never cross-served
+	scopeID, cacheable := p.cacheScopeID(reqCtx.SharedContext, apiID)
+	if !cacheable {
+		slog.Debug("SemanticCache: No caller identity resolved and cacheUnauthenticated is disabled, skipping cache lookup", "apiID", apiID)
+		return policy.UpstreamRequestModifications{}
+	}
+
 	// Cosine similarity embedders (e.g. Mistral) have a floor of ~0.6 — even completely
 	// unrelated texts score that high. Map [0.6, 1.0] → [0, 1] so the user-supplied
 	// threshold works across the full semantic range.
@@ -382,7 +452,7 @@ func (p *SemanticCachePolicy) OnRequestBody(ctx context.Context, reqCtx *policy.
 	// Threshold needs to be a string for the vector DB provider
 	cacheFilter := map[string]interface{}{
 		"threshold": fmt.Sprintf("%.4f", effectiveThreshold),
-		"api_id":    apiID,
+		"api_id":    scopeID,
 		"ctx":       context.Background(), // Vector DB providers need context
 	}
 
@@ -477,25 +547,51 @@ func (p *SemanticCachePolicy) processResponseBody(respCtx *policy.ResponseContex
 		apiID = respCtx.RequestID
 	}
 
+	// Never persist a response the upstream marked non-shareable (defense in
+	// depth alongside per-caller scoping below). Best-effort: if headers are
+	// unavailable, the response is treated as cacheable.
+	if isNoStoreResponse(respCtx.ResponseHeaders) {
+		slog.Debug("SemanticCache: Response marked no-store/private/no-cache, skipping cache storage", "apiID", apiID)
+		return policy.DownstreamResponseModifications{}
+	}
+
+	// Bind the stored entry to the caller so it can only ever be served back to
+	// that same caller (F-181: cache poisoning / missing provenance).
+	// Identity-less responses are not stored unless the operator has explicitly
+	// opted in via cacheUnauthenticated.
+	scopeID, cacheable := p.cacheScopeID(respCtx.SharedContext, apiID)
+	if !cacheable {
+		slog.Debug("SemanticCache: No caller identity resolved and cacheUnauthenticated is disabled, skipping cache storage", "apiID", apiID)
+		return policy.DownstreamResponseModifications{}
+	}
+
+	// RequestHash records the resolved caller identity as meaningful provenance
+	// instead of a throwaway random value; falls back to a UUID only in the
+	// identity-less shared-bucket case (cacheUnauthenticated=true).
+	requestHash := uuid.New().String()
+	if identity, ok := callerIdentity(respCtx.SharedContext); ok {
+		requestHash = identity
+	}
+
 	// Store in cache
 	cacheResponse := vectordbproviders.CacheResponse{
 		ResponsePayload:     responseData,
-		RequestHash:         uuid.New().String(),
+		RequestHash:         requestHash,
 		ResponseFetchedTime: time.Now(),
 	}
 
 	cacheFilter := map[string]interface{}{
-		"api_id": apiID,
+		"api_id": scopeID,
 		"ctx":    context.Background(), // Vector DB providers need context
 	}
 
 	if err := p.vectorStoreProvider.Store(embedding, cacheResponse, cacheFilter); err != nil {
-		slog.Debug("SemanticCache: Error storing in cache", "error", err, "apiID", apiID)
+		slog.Debug("SemanticCache: Error storing in cache", "error", err, "apiID", scopeID)
 		// Log error but don't modify response
 		return policy.DownstreamResponseModifications{}
 	}
 
-	slog.Debug("SemanticCache: Response cached successfully", "apiID", apiID)
+	slog.Debug("SemanticCache: Response cached successfully", "apiID", scopeID)
 	return policy.DownstreamResponseModifications{}
 }
 
