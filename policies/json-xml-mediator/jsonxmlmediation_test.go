@@ -372,3 +372,95 @@ func TestConversionHelpers(t *testing.T) {
 		t.Fatalf("expected valid JSON output: %s", jsonData)
 	}
 }
+
+// ─── amplification / resource-exhaustion regression coverage ──────────────────
+
+// buildNestedJSONArray returns the amplification payload from the json-xml-mediator
+// request-body OOM report: a depth-D array chain whose innermost level holds W
+// integer leaves. Against the pre-fix converter this expanded ~9000x, because
+// xml.MarshalIndent emitted 2*D spaces of indentation on every one of the W
+// leaf lines.
+func buildNestedJSONArray(depth, leaves int) []byte {
+	var b strings.Builder
+	b.WriteString(strings.Repeat("[", depth))
+	b.WriteString("1")
+	b.WriteString(strings.Repeat(",1", leaves-1))
+	b.WriteString(strings.Repeat("]", depth))
+	return []byte(b.String())
+}
+
+// TestOnRequest_JSONToXML_RejectsAmplificationPayload pins the actual reported
+// attack: a ~41 KB body that produced a 361 MB XML document and OOM-killed the
+// shared gateway-runtime. It must now be rejected outright.
+func TestOnRequest_JSONToXML_RejectsAmplificationPayload(t *testing.T) {
+	p := newConfiguredPolicy(t, configuredParams("xml", "json"))
+	ctx := &policy.RequestContext{
+		Body:    &policy.Body{Content: buildNestedJSONArray(9000, 12000), Present: true},
+		Headers: createHeaders("content-type", "application/json"),
+	}
+
+	result := p.OnRequestBody(context.Background(), ctx, nil)
+	res, ok := result.(policy.ImmediateResponse)
+	if !ok {
+		t.Fatalf("expected the amplification payload to be rejected, got %T", result)
+	}
+	if res.StatusCode != 500 {
+		t.Fatalf("expected status 500, got %d", res.StatusCode)
+	}
+	if msg, _ := parseErrorJSON(t, res.Body)["message"].(string); !strings.Contains(msg, "too complex") {
+		t.Fatalf("expected a complexity rejection, got %q", msg)
+	}
+}
+
+// TestConvertJSONToXML_OutputIsNotAmplified asserts the property the fix rests
+// on: output size stays proportional to input size instead of scaling with
+// depth*width. Pre-fix this input produced ~3.8 MB from 3.9 KB (1007x).
+func TestConvertJSONToXML_OutputIsNotAmplified(t *testing.T) {
+	p := &JSONXMLMediationPolicy{}
+	input := buildNestedJSONArray(200, 1000) // within budget, deep enough to amplify
+
+	out, err := p.convertJSONBytesToXML(input)
+	if err != nil {
+		t.Fatalf("conversion of an in-budget payload should succeed: %v", err)
+	}
+	if ratio := float64(len(out)) / float64(len(input)); ratio > 20 {
+		t.Fatalf("output amplified %.0fx (%d -> %d bytes); indentation likely reintroduced",
+			ratio, len(input), len(out))
+	}
+}
+
+// TestConvertJSONToXML_RejectsExcessDepth covers the depth budget independently
+// of the element budget — a single deep chain spends almost no elements.
+func TestConvertJSONToXML_RejectsExcessDepth(t *testing.T) {
+	p := &JSONXMLMediationPolicy{}
+	if _, err := p.convertJSONBytesToXML(buildNestedJSONArray(maxConversionDepth+50, 1)); err == nil {
+		t.Fatal("expected a payload past maxConversionDepth to be rejected")
+	}
+	if _, err := p.convertJSONBytesToXML(buildNestedJSONArray(10, 1)); err != nil {
+		t.Fatalf("a shallow payload must still convert: %v", err)
+	}
+}
+
+// TestConvertJSONToXML_RejectsExcessElements covers the element budget
+// independently of depth — a flat but very wide document.
+func TestConvertJSONToXML_RejectsExcessElements(t *testing.T) {
+	p := &JSONXMLMediationPolicy{}
+	if _, err := p.convertJSONBytesToXML(buildNestedJSONArray(1, maxConversionElements+10)); err == nil {
+		t.Fatal("expected a payload past maxConversionElements to be rejected")
+	}
+}
+
+// TestConvertXMLToJSON_RejectsAmplificationPayload covers the mirror direction,
+// which amplified ~1257x via json.MarshalIndent before the fix.
+func TestConvertXMLToJSON_RejectsAmplificationPayload(t *testing.T) {
+	p := &JSONXMLMediationPolicy{}
+	const depth = 4900
+	body := strings.Repeat("<a>", depth) + strings.Repeat("<v>1</v>", 20000) + strings.Repeat("</a>", depth)
+
+	if _, err := p.convertXMLToJSON([]byte(body)); err == nil {
+		t.Fatal("expected the XML->JSON amplification payload to be rejected")
+	}
+	if _, err := p.convertXMLToJSON([]byte(`<root><name>John</name></root>`)); err != nil {
+		t.Fatalf("an ordinary XML document must still convert: %v", err)
+	}
+}
