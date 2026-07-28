@@ -220,11 +220,11 @@ func (p *SubscriptionValidationPolicy) OnRequestHeaders(ctx context.Context, req
 		return p.forbiddenResponse("subscription store is not available").(policy.ImmediateResponse)
 	}
 
-	if reqCtx.Headers != nil {
-		// Extract the subscription credential from the downstream snapshot
-		// so the entitlement decision is made against what the client
-		// actually sent, not a value a peer policy rewrote in the header phase.
-		ds := getDownstreamHeaders(reqCtx.Downstream, reqCtx.Headers)
+	// Select the downstream snapshot first so the entitlement decision is made
+	// against what the client actually sent, not a value a peer policy rewrote in
+	// the header phase. reqCtx.Headers may be nil even when a downstream snapshot
+	// is available, so gate on the selected view rather than the live headers.
+	if ds := getDownstreamHeaders(reqCtx.Downstream, reqCtx.Headers); ds != nil {
 		headerValues := ds.Get(p.cfg.SubscriptionKeyHeader)
 		if len(headerValues) > 0 {
 			token := strings.TrimSpace(headerValues[0])
