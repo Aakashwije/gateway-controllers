@@ -78,7 +78,7 @@ type Rule struct {
 	Claims ClaimConstraints
 }
 
-// ScopeConstraints defines required scopes: allOf (all), anyOf (any), or both. 
+// ScopeConstraints defines required scopes: allOf (all), anyOf (any), or both.
 // Empty means no requirement. Replaces deprecated requiredScopes (anyOf).
 type ScopeConstraints struct {
 	AllOf []string
@@ -97,7 +97,7 @@ type ClaimMatcher struct {
 	legacyExactString bool
 }
 
-// ClaimConstraints defines required claims: allOf (all match), anyOf (any match), or both. 
+// ClaimConstraints defines required claims: allOf (all match), anyOf (any match), or both.
 // Empty means no requirement. Replaces deprecated requiredClaims (allOf).
 type ClaimConstraints struct {
 	AllOf []ClaimMatcher
@@ -438,11 +438,16 @@ func (p *McpAuthzPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Reque
 		return nil
 	}
 
-	// Check AuthContext populated by an upstream auth policy
-	authCtx := reqCtx.SharedContext.AuthContext
-	if authCtx == nil || !authCtx.Authenticated {
-		slog.Debug("MCP Authorization Policy: No authenticated context found")
-		return p.handleAuthFailure(reqCtx, http.StatusUnauthorized, ErrorInvalidToken, "Unauthorized: scope/claim validation failed", nil)
+	// SharedContext is embedded in RequestContext, so a nil one makes every reqCtx.Metadata and
+	// reqCtx.AuthContext access panic. Mirrors ensureRequestMetadata in the MCP authentication policy.
+	if reqCtx.SharedContext == nil {
+		reqCtx.SharedContext = &policy.SharedContext{}
+	}
+
+	// A body is required to identify the invoked capability; without one there is nothing to authorize.
+	if reqCtx.Body == nil || !reqCtx.Body.Present {
+		slog.Debug("MCP Authorization Policy: No request body present; nothing to authorize")
+		return nil
 	}
 
 	// Parse MCP request to extract method and name
@@ -467,7 +472,8 @@ func (p *McpAuthzPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Reque
 	// Extract attribute name/identifier based on method type
 	attributeName := p.getAttributeNameFromParams(mcpReq.Method, mcpReq.Params)
 
-	// Set MCP metadata in context for other policies
+	// Set MCP metadata in context for other policies. This is published for every parsed MCP
+	// capability request, whether or not this policy goes on to govern it.
 	if reqCtx.Metadata == nil {
 		reqCtx.Metadata = make(map[string]any)
 	}
@@ -475,8 +481,30 @@ func (p *McpAuthzPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Reque
 	reqCtx.Metadata[MetadataMcpCapabilityType] = attributeType
 	reqCtx.Metadata[MetadataMcpCapabilityName] = attributeName
 
+	// Rule matching decides governance before any identity is consulted. An invocation that no rule
+	// targets is not governed by this policy and passes through untouched — notably a capability the
+	// MCP authentication policy excluded, which legitimately arrives with no AuthContext at all.
+	matchingRules := p.findMatchingRules(attributeType, attributeName, mcpReq.Method)
+	if len(matchingRules) == 0 {
+		slog.Debug("MCP Authorization Policy: No matching rules; invocation is not governed by this policy",
+			"attributeType", attributeType,
+			"attributeName", attributeName,
+			"method", mcpReq.Method)
+		return nil
+	}
+
+	// The capability is governed, so an authenticated identity is required. Fail closed when the
+	// AuthContext an upstream auth policy should have populated is missing or unauthenticated.
+	authCtx := reqCtx.SharedContext.AuthContext
+	if authCtx == nil || !authCtx.Authenticated {
+		slog.Debug("MCP Authorization Policy: No authenticated context found for a governed capability",
+			"attributeType", attributeType,
+			"attributeName", attributeName)
+		return p.handleAuthFailure(reqCtx, http.StatusUnauthorized, ErrorInvalidToken, "Unauthorized: authentication required for this MCP capability", nil)
+	}
+
 	// Check authorization rules
-	authorized, missingScopes := p.checkAuthorization(attributeType, attributeName, mcpReq.Method, authCtx)
+	authorized, missingScopes := p.evaluateRules(matchingRules, attributeType, attributeName, authCtx)
 	if !authorized {
 		slog.Debug("MCP Authorization Policy: Authorization check failed",
 			"attributeName", mcpReq.Params.Name,
@@ -562,13 +590,10 @@ func (p *McpAuthzPolicy) getAttributeNameFromParams(method string, params MCPReq
 	}
 }
 
-// checkAuthorization validates whether the request should be authorized
+// checkAuthorization validates whether the request should be authorized. It reports true when no
+// rule targets the attribute, so callers that need to distinguish "not governed" from "authorized"
+// should use findMatchingRules and evaluateRules directly, as OnRequestBody does.
 func (p *McpAuthzPolicy) checkAuthorization(attributeType, attributeName, method string, authCtx *policy.AuthContext) (bool, map[string]struct{}) {
-	if len(p.Rules) == 0 {
-		slog.Debug("MCP Authorization Policy: No rules configured")
-		return true, nil
-	}
-
 	// Find matching rules (most specific first)
 	matchingRules := p.findMatchingRules(attributeType, attributeName, method)
 	if len(matchingRules) == 0 {
@@ -576,6 +601,12 @@ func (p *McpAuthzPolicy) checkAuthorization(attributeType, attributeName, method
 		return true, nil
 	}
 
+	return p.evaluateRules(matchingRules, attributeType, attributeName, authCtx)
+}
+
+// evaluateRules checks a pre-matched rule set against the AuthContext. Every matching rule must
+// grant access; the union of the unmet scopes is returned for the WWW-Authenticate challenge.
+func (p *McpAuthzPolicy) evaluateRules(matchingRules []Rule, attributeType, attributeName string, authCtx *policy.AuthContext) (bool, map[string]struct{}) {
 	var missingScopes = make(map[string]struct{})
 	// Check if any matching rule grants access
 	isAuthorized := true
