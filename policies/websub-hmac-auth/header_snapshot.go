@@ -15,7 +15,7 @@
  *
  */
 
-package jwtauth
+package websubhmacauth
 
 import policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 

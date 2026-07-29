@@ -15,7 +15,7 @@
  *
  */
 
-package jwtauth
+package mcpacllist
 
 import policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 
@@ -37,6 +37,18 @@ import policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 func getDownstreamHeaders(ds *policy.DownstreamContext, live *policy.Headers) *policy.Headers {
 	if ds != nil && ds.Request != nil {
 		return ds.Request.Headers // may be nil; Headers reads (Get/Has/Iterate) are nil-safe
+	}
+	return live
+}
+
+// getUpstreamHeaders is the response-side counterpart of getDownstreamHeaders: it
+// returns the snapshot of the original upstream backend response headers when
+// available, falling back to the live (possibly peer-mutated) response headers on
+// older gateways. Upstream (and its Response) is only populated on response-phase
+// contexts and is nil on gateways that predate the feature.
+func getUpstreamHeaders(us *policy.UpstreamResponseContext, live *policy.Headers) *policy.Headers {
+	if us != nil && us.Response != nil {
+		return us.Response.Headers // may be nil; Headers reads (Get/Has/Iterate) are nil-safe
 	}
 	return live
 }

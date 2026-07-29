@@ -15,7 +15,7 @@
  *
  */
 
-package jwtauth
+package cors
 
 import policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 
@@ -30,10 +30,6 @@ import policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 // that reads the live headers can observe a value another policy rewrote —
 // regardless of policy order. The Downstream snapshot always holds what the
 // client actually sent.
-//
-// The nil-checks are required, not optional: Downstream (and its Request) is
-// nil on gateways built before the snapshot-header-context feature, and the
-// fallback preserves the pre-feature behaviour on those runtimes.
 func getDownstreamHeaders(ds *policy.DownstreamContext, live *policy.Headers) *policy.Headers {
 	if ds != nil && ds.Request != nil {
 		return ds.Request.Headers // may be nil; Headers reads (Get/Has/Iterate) are nil-safe

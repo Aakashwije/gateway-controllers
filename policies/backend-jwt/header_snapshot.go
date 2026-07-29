@@ -15,7 +15,7 @@
  *
  */
 
-package jwtauth
+package backendjwt
 
 import policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 

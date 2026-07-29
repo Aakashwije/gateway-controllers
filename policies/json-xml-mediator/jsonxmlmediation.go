@@ -492,6 +492,10 @@ func (p *JSONXMLMediationPolicy) OnRequestBody(ctx context.Context, reqCtx *poli
 		return policy.UpstreamRequestModifications{}
 	}
 
+	// Read Content-Type from the live headers (not the downstream snapshot):
+	// we parse the current request body here, so the parse/convert decision must
+	// match the body as it stands now, including any Content-Type a peer policy
+	// rewrote alongside the body during the header phase.
 	contentType := getFirstHeader(reqCtx.Headers, "content-type")
 	if !matchesContentType(contentType, p.downstreamPayloadFormat) {
 		return p.handleInternalServerError(fmt.Sprintf(
@@ -536,7 +540,10 @@ func (p *JSONXMLMediationPolicy) OnResponseBody(ctx context.Context, respCtx *po
 		return policy.DownstreamResponseModifications{}
 	}
 
-	contentType := getFirstHeader(respCtx.ResponseHeaders, "content-type")
+	// Read Content-Type from the upstream snapshot so the parse/convert decision
+	// reflects what the upstream actually returned, not a value a peer policy
+	// rewrote during the response header phase.
+	contentType := getFirstHeader(getUpstreamHeaders(respCtx.Upstream, respCtx.ResponseHeaders), "content-type")
 	if !matchesContentType(contentType, p.upstreamPayloadFormat) {
 		return p.handleInternalServerErrorResponse(fmt.Sprintf(
 			"Content-Type must be %s in response for upstream payload format %s",
