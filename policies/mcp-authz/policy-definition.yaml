@@ -53,6 +53,7 @@ parameters:
           requiredClaims:
             type: object
             x-wso2-policy-advanced-param: false
+            x-wso2-policy-deprecated-param: true
             description: "DEPRECATED — use `claims` (allOf/anyOf) instead. Require JWT claims as `claimName: expectedValue`; all listed claims must exist and match exactly. Ignored when `claims` is set."
             default: {}
             additionalProperties:
@@ -61,6 +62,7 @@ parameters:
           requiredScopes:
             type: array
             x-wso2-policy-advanced-param: false
+            x-wso2-policy-deprecated-param: true
             description: DEPRECATED — use `scopes` (allOf/anyOf) instead. Require OAuth scopes for this rule; at least one of the listed scopes must be present. Ignored when `scopes` is set.
             default: []
             items:
@@ -167,6 +169,7 @@ parameters:
           requiredClaims:
             type: object
             x-wso2-policy-advanced-param: false
+            x-wso2-policy-deprecated-param: true
             description: "DEPRECATED — use `claims` (allOf/anyOf) instead. Require JWT claims as `claimName: expectedValue`; all listed claims must exist and match exactly. Ignored when `claims` is set."
             default: {}
             additionalProperties:
@@ -175,6 +178,7 @@ parameters:
           requiredScopes:
             type: array
             x-wso2-policy-advanced-param: false
+            x-wso2-policy-deprecated-param: true
             description: DEPRECATED — use `scopes` (allOf/anyOf) instead. Require OAuth scopes for this rule; at least one of the listed scopes must be present. Ignored when `scopes` is set.
             default: []
             items:
@@ -281,6 +285,7 @@ parameters:
           requiredClaims:
             type: object
             x-wso2-policy-advanced-param: false
+            x-wso2-policy-deprecated-param: true
             description: "DEPRECATED — use `claims` (allOf/anyOf) instead. Require JWT claims as `claimName: expectedValue`; all listed claims must exist and match exactly. Ignored when `claims` is set."
             default: {}
             additionalProperties:
@@ -289,6 +294,7 @@ parameters:
           requiredScopes:
             type: array
             x-wso2-policy-advanced-param: false
+            x-wso2-policy-deprecated-param: true
             description: DEPRECATED — use `scopes` (allOf/anyOf) instead. Require OAuth scopes for this rule; at least one of the listed scopes must be present. Ignored when `scopes` is set.
             default: []
             items:
@@ -395,6 +401,7 @@ parameters:
           requiredClaims:
             type: object
             x-wso2-policy-advanced-param: false
+            x-wso2-policy-deprecated-param: true
             description: "DEPRECATED — use `claims` (allOf/anyOf) instead. Require JWT claims as `claimName: expectedValue`; all listed claims must exist and match exactly. Ignored when `claims` is set."
             default: {}
             additionalProperties:
@@ -403,6 +410,7 @@ parameters:
           requiredScopes:
             type: array
             x-wso2-policy-advanced-param: false
+            x-wso2-policy-deprecated-param: true
             description: DEPRECATED — use `scopes` (allOf/anyOf) instead. Require OAuth scopes for this rule; at least one of the listed scopes must be present. Ignored when `scopes` is set.
             default: []
             items:

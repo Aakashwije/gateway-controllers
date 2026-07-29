@@ -7,7 +7,9 @@ title: "Overview"
 
 The MCP Authorization policy provides fine-grained access control for Model Context Protocol (MCP) server resources. It enables API administrators to define authorization rules based on user claims and scopes extracted from validated JWT tokens, controlling access to specific MCP tools, resources, prompts, and JSON-RPC methods.
 
-> **Prerequisite**: The MCP Authorization policy requires the [MCP Authentication policy](./mcp-authentication.md) to be applied first. The MCP Authentication policy validates and extracts JWT claims that are used by the authorization policy for access control decisions.
+The policy governs only the capabilities that at least one rule targets. An invocation that no rule matches is not governed and passes through untouched, without requiring authentication. An invocation that *is* matched requires an authenticated caller and must satisfy every rule that matched it.
+
+> **Prerequisite**: The MCP Authorization policy requires the [MCP Authentication policy](../../../mcp-auth/v1.2/docs/mcp-authentication.md) to be applied first. The MCP Authentication policy validates and extracts JWT claims that are used by the authorization policy for access control decisions.
 
 ## Features
 
@@ -21,6 +23,7 @@ The MCP Authorization policy provides fine-grained access control for Model Cont
 - **Boolean Composition (`allOf` / `anyOf`)**: Express scope and claim requirements with `allOf` (all) and/or `anyOf` (at least one) via the `scopes` and `claims` fields
 - **Wildcard Matching**: Use wildcard patterns (`*`) to create default rules for all resources of a type
 - **Rule Specificity**: Exact-name rules are evaluated before wildcards, and all matching rules must pass
+- **Pass-Through for Ungoverned Capabilities**: Capabilities that no rule targets — including those excluded from authentication by the MCP Authentication policy, and auth-exempt methods such as `initialize` and `ping` — are left untouched
 
 ## Configuration
 
@@ -30,12 +33,14 @@ The MCP Authorization policy uses a single-level configuration model where all p
 
 These parameters are configured per MCP Proxy by the API developer:
 
+> At least one of `tools`, `resources`, `prompts`, or `methods` must be provided, and any array that is provided must contain at least one rule. A policy attached with none of them configured is rejected — applying the policy with no rules would govern nothing and silently do nothing.
+
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `tools` | `AuthzRule` array | No | `[]` | Authorization rules for MCP tools. |
-| `resources` | `AuthzRule` array | No | `[]` | Authorization rules for MCP resources. |
-| `prompts` | `AuthzRule` array | No | `[]` | Authorization rules for MCP prompts. |
-| `methods` | `AuthzRule` array | No | `[]` | Authorization rules for MCP (JSON-RPC) methods. |
+| `tools` | `AuthzRule` array | Conditional | - | Authorization rules for MCP tools. Minimum 1 item when present. |
+| `resources` | `AuthzRule` array | Conditional | - | Authorization rules for MCP resources. Minimum 1 item when present. |
+| `prompts` | `AuthzRule` array | Conditional | - | Authorization rules for MCP prompts. Minimum 1 item when present. |
+| `methods` | `AuthzRule` array | Conditional | - | Authorization rules for MCP (JSON-RPC) methods. Minimum 1 item when present. |
 
 ### AuthzRule Configuration
 
@@ -89,33 +94,39 @@ spec:
       params:
         tools:
           - name: list_files
-            requiredScopes:
-              - mcp:tool:read
+            scopes:
+              anyOf:
+                - mcp:tool:read
           - name: create_file
-            requiredScopes:
-              - mcp:tool:write
+            scopes:
+              anyOf:
+                - mcp:tool:write
           - name: "*"
-            requiredScopes:
-              - mcp:tool:execute
+            scopes:
+              anyOf:
+                - mcp:tool:execute
   tools:
     ...
 ```
 
 **Authorization decision examples:**
 
-**Scenario 1**: User with scope `mcp:tool:read` attempts to call `list_files` tool
-- Rule: `name="list_files", requiredScopes=["mcp:tool:read"]`
-- Result: ✅ Access Granted
+**Scenario 1**: User with scopes `mcp:tool:read` and `mcp:tool:execute` attempts to call `list_files` tool
+- Matching rules:
+  - `name="list_files", scopes.anyOf=["mcp:tool:read"]`
+  - `name="*", scopes.anyOf=["mcp:tool:execute"]`
+- Result: ✅ Access Granted (both matching rules pass)
 
 **Scenario 2**: User with scope `mcp:tool:execute` (no write scope) attempts to call `create_file` tool
-- Rule: `name="create_file", requiredScopes=["mcp:tool:write"]`
-- Result: ❌ Access Denied (insufficient scopes)
+- Rule: `name="create_file", scopes.anyOf=["mcp:tool:write"]`
+- Result: ❌ `403` (insufficient scopes)
 
-**Scenario 3**: User with scopes `mcp:tool:write` and `mcp:tool:execute` attempts to call `create_file` tool
-- Matching rules:
-  - `name="create_file", requiredScopes=["mcp:tool:write"]`
-  - `name="*", requiredScopes=["mcp:tool:execute"]`
-- Result: ✅ Access Granted (both matching rules pass)
+**Scenario 3**: User with scope `mcp:tool:read` only attempts to call `list_files` tool
+- The exact rule passes, but the `*` rule requiring `mcp:tool:execute` also matches and fails
+- Result: ❌ `403` — remember that a wildcard rule applies *in addition to* the exact rule, not instead of it
+
+**Scenario 4**: An unauthenticated caller attempts to call `list_files`
+- Result: ❌ `401` — the tool is governed by a rule, so an authenticated identity is required
 
 ### Example 2: Claim-Based Resource Access
 
@@ -144,30 +155,37 @@ spec:
       params:
         resources:
           - name: "file:///private/main"
-            requiredClaims:
-              department: "engineering"
-            requiredScopes:
-              - mcp:resource:read
+            claims:
+              allOf:
+                - claim: department
+                  values: ["engineering"]
+            scopes:
+              anyOf:
+                - mcp:resource:read
           - name: "file:///public/main"
-            requiredScopes:
-              - mcp:resource:read
+            scopes:
+              anyOf:
+                - mcp:resource:read
   tools:
     ...
 ```
 
+Note that the resource rule name is matched against the `params.uri` of the `resources/read` request.
+
 **Authorization decision examples:**
 
-**Scenario 4**: User with claim `department="engineering"` and scope `mcp:resource:read` attempts to read resource `file:///private/main`
-- Rule: `name="file:///private/main", requiredClaims={department="engineering"}, requiredScopes=["mcp:resource:read"]`
+**Scenario 5**: User with claim `department="engineering"` and scope `mcp:resource:read` attempts to read resource `file:///private/main`
+- Rule: `name="file:///private/main", claims.allOf=[department ∈ {engineering}], scopes.anyOf=["mcp:resource:read"]`
 - Result: ✅ Access Granted
 
-**Scenario 5**: User with claim `department="finance"` (no engineering) and scope `mcp:resource:read` attempts to read resource `file:///private/main`
-- Rule: `name="file:///private/main", requiredClaims={department="engineering"}, requiredScopes=["mcp:resource:read"]`
-- Result: ❌ Access Denied (claim mismatch)
+**Scenario 6**: User with claim `department="finance"` and scope `mcp:resource:read` attempts to read resource `file:///private/main`
+- Result: ❌ `403` (claim mismatch)
 
-**Scenario 6**: User with claim `department="engineering"` but no `mcp:resource:read` scope attempts to read resource `file:///private/main`
-- Rule: `name="file:///private/main", requiredClaims={department="engineering"}, requiredScopes=["mcp:resource:read"]`
-- Result: ❌ Access Denied (scope mismatch)
+**Scenario 7**: User with claim `department="engineering"` but no `mcp:resource:read` scope attempts to read resource `file:///private/main`
+- Result: ❌ `403` (scope mismatch)
+
+**Scenario 8**: Any caller attempts to read `file:///other/doc`
+- Result: ✅ Access Granted — no rule names it and there is no `*` resource rule, so it is ungoverned
 
 ### Example 3: Role-Based Prompt Access
 
@@ -196,20 +214,26 @@ spec:
       params:
         prompts:
           - name: "admin_summary"
-            requiredClaims:
-              role: "admin"
-            requiredScopes:
-              - mcp:prompt:admin
+            claims:
+              allOf:
+                - claim: role
+                  values: ["admin"]
+            scopes:
+              anyOf:
+                - mcp:prompt:admin
           - name: "*"
-            requiredScopes:
-              - mcp:prompt:read
+            scopes:
+              anyOf:
+                - mcp:prompt:read
   tools:
     ...
 ```
 
+Because `role` is matched through the typed claim value, this rule also works when the token carries `role` as an array (for example `["admin", "auditor"]`). The deprecated `requiredClaims` form would not match such a token.
+
 ### Example 4: Method-Level Authorization
 
-Apply authorization at the JSON-RPC method level:
+Apply authorization at the JSON-RPC method level. Method rules are the way to govern the listing methods (`tools/list`, `resources/list`, `prompts/list`), which carry no capability name and therefore never match a tool, resource, or prompt rule:
 
 ```yaml
 apiVersion: gateway.api-platform.wso2.com/v1
@@ -233,20 +257,29 @@ spec:
       version: v1
       params:
         methods:
+          - name: "tools/list"
+            scopes:
+              anyOf:
+                - mcp:method:tools:list
           - name: "tools/call"
-            requiredScopes:
-              - mcp:method:tools:call
+            scopes:
+              anyOf:
+                - mcp:method:tools:call
           - name: "resources/write"
-            requiredClaims:
-              role: "admin"
-            requiredScopes:
-              - mcp:method:resources:write
-          - name: "*"
-            requiredScopes:
-              - mcp:method:general
+            claims:
+              allOf:
+                - claim: role
+                  values: ["admin"]
+            scopes:
+              anyOf:
+                - mcp:method:resources:write
   tools:
     ...
 ```
+
+> **Limitation**: A `methods` rule only takes effect for method names of the form `tools/…`, `resources/…`, or `prompts/…`. Bare methods such as `initialize` and `ping`, and other namespaces such as `notifications/initialized` or `completion/complete`, are skipped before rule matching runs — a rule naming one of them is dead configuration. Use the MCP Authentication policy's `methods` configuration to control authentication for those.
+>
+> A `methods` rule with `name: "*"` matches every `tools/…`, `resources/…`, and `prompts/…` invocation, which makes the whole MCP surface (except the bare methods above) require authentication. Use it deliberately.
 
 ### Example 5: Multi-Level Authorization
 
@@ -278,34 +311,48 @@ spec:
         # Restrictive tool access
         tools:
           - name: "execute_command"
-            requiredClaims:
-              department: "platform"
-              role: "admin"
-            requiredScopes:
-              - mcp:tool:execute:admin
+            claims:
+              allOf:
+                - claim: department
+                  values: ["platform"]
+                - claim: role
+                  values: ["admin"]
+            scopes:
+              anyOf:
+                - mcp:tool:execute:admin
           - name: "*"
-            requiredScopes:
-              - mcp:tool:execute
+            scopes:
+              anyOf:
+                - mcp:tool:execute
         # Resource access for a finance document (rule names are matched exactly, or a standalone "*")
         resources:
           - name: "file:///finance/report.pdf"
-            requiredClaims:
-              department: "finance"
-            requiredScopes:
-              - mcp:resource:read:finance
+            claims:
+              allOf:
+                - claim: department
+                  values: ["finance"]
+            scopes:
+              anyOf:
+                - mcp:resource:read:finance
           - name: "*"
-            requiredScopes:
-              - mcp:resource:read
+            scopes:
+              anyOf:
+                - mcp:resource:read
         # Prompt access
         prompts:
           - name: "admin_dashboard"
-            requiredClaims:
-              role: "admin"
-            requiredScopes:
-              - mcp:prompt:admin
+            claims:
+              allOf:
+                - claim: role
+                  values: ["admin"]
+            scopes:
+              anyOf:
+                - mcp:prompt:admin
   tools:
     ...
 ```
+
+Calling `execute_command` here requires **both** matching rules to pass: the exact rule (`department=platform` and `role=admin`, plus `mcp:tool:execute:admin`) and the `*` rule (`mcp:tool:execute`).
 
 ### Example 6: Scopes and Claims, each with `allOf` + `anyOf`
 
@@ -364,35 +411,80 @@ CLAIMS = (department = engineering)         AND  (role ∈ {lead, staff})
 | `mcp:tool:read mcp:tool:list mcp:tool:admin` | `sales` | `lead` | 403 | claim `allOf` unmet — `department` is not `engineering` |
 | `mcp:tool:read mcp:tool:list mcp:tool:admin` | `engineering` | `intern` | 403 | claim `anyOf` unmet — `role` not in `{lead, staff}` |
 
-**Precedence and deprecation:** New `scopes`/`claims` fields take precedence over their deprecated counterparts (`requiredScopes`/`requiredClaims`) per dimension; legacy fields remain supported with deprecation warnings at policy load. Any malformed `scopes` or `claims` value fails the policy at load.
+### Example 7: Migrating from `requiredScopes` / `requiredClaims`
 
-## Authorization Logic
+`requiredScopes` and `requiredClaims` remain supported for backward compatibility and are flagged as deprecated in the policy definition. Each is superseded by its structured counterpart:
 
-The MCP Authorization policy evaluates rules using the following logic:
+| Deprecated | Equivalent |
+|------------|------------|
+| `requiredScopes: [a, b]` | `scopes: { anyOf: [a, b] }` |
+| `requiredClaims: { department: engineering, role: admin }` | `claims: { allOf: [{ claim: department, values: [engineering] }, { claim: role, values: [admin] }] }` |
 
-1. **Specificity Ordering**: Exact-name rules are evaluated before wildcard (`*`) rules
-2. **Match All**: All rules that match the resource name are evaluated
-3. **All Must Pass**: For access to be granted, all matching rules must pass (both claims and scopes)
-4. **Default Allow**: If no rules match the resource, access is allowed (default permit)
+```yaml
+# Before
+tools:
+  - name: deploy
+    requiredClaims:
+      department: engineering
+    requiredScopes:
+      - mcp:tool:write
+      - mcp:tool:admin
 
-### Examples
+# After
+tools:
+  - name: deploy
+    claims:
+      allOf:
+        - claim: department
+          values: ["engineering"]
+    scopes:
+      anyOf:
+        - mcp:tool:write
+        - mcp:tool:admin
+```
 
-| Resource | Rules Defined | User Token | Result |
+**Precedence:** the new fields take precedence over the deprecated ones **per dimension**. A rule that sets both `scopes` and `requiredScopes` ignores `requiredScopes` entirely; a rule that sets `scopes` and `requiredClaims` uses `scopes` for the scope check and still honours `requiredClaims` for the claim check. Deprecation warnings are logged once at policy load when a deprecated field is actually in use. Any malformed `scopes` or `claims` value fails the policy at load.
+
+The migration is not purely cosmetic: `requiredClaims` compares the flattened string value exactly, so it never matches an array-valued claim, while `claims` matches array-valued claims as a set.
+
+### Authorization Logic
+
+The MCP Authorization policy processes each POST to the MCP path as follows:
+
+1. **The JSON-RPC method determines the type**: — `tools/*` → `tool`, `resources/*` → `resource`, `prompts/*` → `prompt`. Methods that do not carry one of those three prefixes (Ex: initialize) are skipped entirely.
+
+2. **Match applicable rules**: Match rules by the full method or capability name (including wildcard `*`) before checking user identity.
+
+3. **Allow ungoverned requests**: If no rule matches, forward the request without requiring authentication.
+
+4. **Require authentication**: If any rule matches, the request must be authenticated; otherwise, return `401 Unauthorized`.
+
+5. **Apply rule precedence**: Evaluate exact capability rules before wildcard (`*`) rules.
+
+6. **Enforce all matching rules**: Every matched rule must pass. If any fail, deny access and include the missing scopes in the `WWW-Authenticate` challenge.
+
+
+#### Examples
+
+Given the tool rule set `A` = `[{name:"list_files", scopes:{anyOf:["read"]}}, {name:"*", scopes:{anyOf:["execute"]}}]`
+and `B` = `[{name:"admin_tool", claims:{allOf:[{claim:"role", values:["admin"]}]}, scopes:{anyOf:["write"]}}]`:
+
+The Result column reflects only the authorization decision. Authentication is checked first, so a ✅ for "No token" does not guarantee access. It is allowed only if the authentication policy permits unauthenticated requests.
+
+| Capability | Rule set | User Token | Result (MCP Authorization only) |
 |----------|--------------|------------|--------|
-| `list_files` | `[{name:"list_files", scopes:["read"]}, {name:"*", scopes:["execute"]}]` | Scopes: `["read", "execute"]` | ✅ Allowed |
-| `list_files` | `[{name:"list_files", scopes:["read"]}, {name:"*", scopes:["execute"]}]` | Scopes: `["execute"]` | ❌ Denied (exact rule fails) |
-| `delete_file` | `[{name:"list_files", scopes:["read"]}, {name:"*", scopes:["execute"]}]` | Scopes: `["execute"]` | ✅ Allowed (only wildcard matches) |
-| `admin_tool` | `[{name:"admin_tool", claims:{role:"admin"}, scopes:["write"]}]` | Claims: `{role:"admin"}`, Scopes: `["write"]` | ✅ Allowed |
-| `admin_tool` | `[{name:"admin_tool", claims:{role:"admin"}, scopes:["write"]}]` | Claims: `{role:"user"}`, Scopes: `["write"]` | ❌ Denied (claim mismatch) |
+| `list_files` | `A` | Scopes: `["read", "execute"]` | ✅ Allowed |
+| `list_files` | `A` | Scopes: `["execute"]` | ❌ `403` (exact rule fails) |
+| `list_files` | `A` | Scopes: `["read"]` | ❌ `403` (wildcard rule fails) |
+| `delete_file` | `A` | Scopes: `["execute"]` | ✅ Allowed (only the wildcard matches) |
+| `list_files` | `A` | No token | ❌ `401` (governed but unauthenticated) |
+| `admin_tool` | `B` | Claims: `{role:"admin"}`, Scopes: `["write"]` | ✅ Allowed |
+| `admin_tool` | `B` | Claims: `{role:"user"}`, Scopes: `["write"]` | ❌ `403` (claim mismatch) |
+| `public_tool` | `B` | No token | ✅ Ungoverned — no rule matches. Reaches the upstream only if `public_tool` is in the MCP Authentication policy's `tools.exceptions`; otherwise that policy returns `401` first. |
+| `tools/list` | `A` or `B` | No token | ✅ Ungoverned — no capability name, so no tool rule matches. Reaches the upstream only if the MCP Authentication policy sets `methods.enabled: false` or lists `tools/list` in `methods.exceptions`; otherwise that policy returns `401` first. |
 
-## Notes
-
-When authorization fails, the policy returns:
-- **HTTP Status**: `403 Forbidden`
-- **Response Body**: JSON error response with a reason message
-- **WWW-Authenticate Header**: Contains information about required scopes for the denied resource
 
 ## Related Policies
 
-- [MCP Authentication Policy](./mcp-authentication.md) - Validates JWT tokens and is a prerequisite for MCP Authorization
-- [JWT Authentication Policy](../../../gateway/policies/jwt-authentication.md) - Base JWT token validation mechanism
+- [MCP Authentication Policy](../../../mcp-auth/v1.2/docs/mcp-authentication.md) - Validates JWT tokens and is a prerequisite for MCP Authorization
+- [JWT Authentication Policy](../../../jwt-auth/v1.3/docs/jwt-authentication.md) - Base JWT token validation mechanism
