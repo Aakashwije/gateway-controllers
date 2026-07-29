@@ -432,7 +432,15 @@ func (p *McpAuthzPolicy) Mode() policy.ProcessingMode {
 
 func (p *McpAuthzPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.RequestContext, _ map[string]any) policy.RequestAction {
 	ds := reqCtx.DownstreamRequest()
-	if strings.EqualFold(ds.Method, "POST") && strings.Contains(ds.Path, "/mcp") {
+	// Match the MCP route on the immutable OperationPath (the API-definition path),
+	// consistent with the mcp-auth and mcp-acl-list policies. OperationPath is carried
+	// on SharedContext, which is nil on the defensive fail-closed path (see below), so
+	// fall back to the downstream request path there to still recognise the route.
+	routePath := ds.Path
+	if reqCtx.SharedContext != nil {
+		routePath = reqCtx.OperationPath
+	}
+	if strings.EqualFold(ds.Method, "POST") && strings.Contains(routePath, "/mcp") {
 		slog.Debug("MCP Authorization Policy: Processing MCP request for authorization")
 	} else {
 		slog.Debug("MCP Authorization Policy: Skipping authz...")

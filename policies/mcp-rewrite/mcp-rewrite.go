@@ -446,7 +446,7 @@ func (p *McpRewritePolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Req
 
 func (p *McpRewritePolicy) processRequestBody(reqCtx *policy.RequestContext) policy.RequestAction {
 	dsReq := reqCtx.DownstreamRequest()
-	if !isMcpPostRequest(dsReq.Method, dsReq.Path) {
+	if !isMcpPostRequest(dsReq.Method, reqCtx.OperationPath) {
 		return policy.UpstreamRequestModifications{}
 	}
 	slog.Debug("MCP Rewrite Policy: OnRequest started")
@@ -617,7 +617,7 @@ func (p *McpRewritePolicy) buildEventStreamErrorResponse(statusCode int, jsonRpc
 // OnResponseBody applies rewrite rules to the MCP response body.
 func (p *McpRewritePolicy) OnResponseBody(ctx context.Context, respCtx *policy.ResponseContext, _ map[string]any) policy.ResponseAction {
 	dsReq := respCtx.DownstreamRequest()
-	if !isMcpPostRequest(dsReq.Method, dsReq.Path) {
+	if !isMcpPostRequest(dsReq.Method, respCtx.OperationPath) {
 		return nil
 	}
 	slog.Debug("MCP Rewrite Policy: OnResponseBody started")
