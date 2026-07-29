@@ -491,7 +491,7 @@ func synthesizeHeaderContext(reqCtx *policy.RequestContext) *policy.RequestHeade
 	ds := reqCtx.DownstreamRequest()
 	return &policy.RequestHeaderContext{
 		SharedContext: reqCtx.SharedContext,
-		Headers:       reqCtx.Headers,
+		Headers:       ds.Headers,
 		Path:          ds.Path,
 		Method:        ds.Method,
 		Authority:     ds.Authority,
