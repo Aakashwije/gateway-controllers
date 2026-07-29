@@ -451,7 +451,7 @@ The migration is not purely cosmetic: `requiredClaims` compares the flattened st
 
 The MCP Authorization policy processes each POST to the MCP path as follows:
 
-1. **Identify the capability**: The JSON-RPC method determines the `type — tools/*` → `tool`, `resources/*` → `resource`, `prompts/*` → `prompt`. Methods that do not carry one of those three prefixes (Ex: initialize) are skipped entirely.
+1. **The JSON-RPC method determines the type**: — `tools/*` → `tool`, `resources/*` → `resource`, `prompts/*` → `prompt`. Methods that do not carry one of those three prefixes (Ex: initialize) are skipped entirely.
 
 2. **Match applicable rules**: Match rules by the full method or capability name (including wildcard `*`) before checking user identity.
 
@@ -469,7 +469,9 @@ The MCP Authorization policy processes each POST to the MCP path as follows:
 Given the tool rule set `A` = `[{name:"list_files", scopes:{anyOf:["read"]}}, {name:"*", scopes:{anyOf:["execute"]}}]`
 and `B` = `[{name:"admin_tool", claims:{allOf:[{claim:"role", values:["admin"]}]}, scopes:{anyOf:["write"]}}]`:
 
-| Capability | Rule set | User Token | Result |
+The Result column reflects only the authorization decision. Authentication is checked first, so a ✅ for "No token" does not guarantee access. It is allowed only if the authentication policy permits unauthenticated requests.
+
+| Capability | Rule set | User Token | Result (MCP Authorization only) |
 |----------|--------------|------------|--------|
 | `list_files` | `A` | Scopes: `["read", "execute"]` | ✅ Allowed |
 | `list_files` | `A` | Scopes: `["execute"]` | ❌ `403` (exact rule fails) |
@@ -478,8 +480,8 @@ and `B` = `[{name:"admin_tool", claims:{allOf:[{claim:"role", values:["admin"]}]
 | `list_files` | `A` | No token | ❌ `401` (governed but unauthenticated) |
 | `admin_tool` | `B` | Claims: `{role:"admin"}`, Scopes: `["write"]` | ✅ Allowed |
 | `admin_tool` | `B` | Claims: `{role:"user"}`, Scopes: `["write"]` | ❌ `403` (claim mismatch) |
-| `public_tool` | `B` | No token | ✅ Allowed (no rule matches) |
-| `tools/list` | `A` or `B` | No token | ✅ Allowed (no capability name, so no tool rule matches) |
+| `public_tool` | `B` | No token | ✅ Ungoverned — no rule matches. Reaches the upstream only if `public_tool` is in the MCP Authentication policy's `tools.exceptions`; otherwise that policy returns `401` first. |
+| `tools/list` | `A` or `B` | No token | ✅ Ungoverned — no capability name, so no tool rule matches. Reaches the upstream only if the MCP Authentication policy sets `methods.enabled: false` or lists `tools/list` in `methods.exceptions`; otherwise that policy returns `401` first. |
 
 
 ## Related Policies

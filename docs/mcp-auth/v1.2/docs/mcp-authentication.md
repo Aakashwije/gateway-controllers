@@ -110,7 +110,7 @@ These parameters are configured per-API/route by the API developer:
 | `prompts` | `SecurityConfig` object | No | `{"enabled": true}` | Security configuration for MCP prompts. |
 | `methods` | `SecurityConfig` object | No | `{"enabled": true}` | Security configuration for MCP (JSON-RPC) methods. |
 | `issuers` | string array | No | `[]` | List of issuer names from `system.keyManagers` to publish in protected resource metadata and use for token validation. If empty, runtime uses all configured key managers. |
-| `requiredScopes` | string array | No | `[]` | List of scopes that should be included in the token generated through MCP auth flow. These are advertised in the protected resource metadata but **not enforced** by this policy. Use the MCP Authorization policy to enforce scopes. |
+| `requiredScopes` | string array | No | `[]` | Scopes to advertise in protected-resource metadata for the MCP authorization flow. They are **not enforced** by this policy; use the MCP Authorization policy to enforce scopes. |
 | `claimMappings` | object | No | `{}` | Map of claimName → downstream header or context key to expose claims for downstream services. |
 | `userIdClaim` | string | No | `"sub"` | Claim name used to extract the user ID for analytics. |
 | `forwardToken` | boolean | No | `false` | If `true`, the validated token is forwarded to the upstream under `forwardedTokenHeader`. If `false` (default), the token is not forwarded at all and the MCP server never sees the client credential. See [Token Forwarding](#token-forwarding). |
