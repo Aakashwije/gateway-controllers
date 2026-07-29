@@ -31,8 +31,8 @@ import policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 // regardless of policy order. The Downstream snapshot always holds what the
 // client actually sent.
 func getDownstreamHeaders(ds *policy.DownstreamContext, live *policy.Headers) *policy.Headers {
-	if ds != nil && ds.Request != nil && ds.Request.Headers != nil {
-		return ds.Request.Headers
+	if ds != nil && ds.Request != nil {
+		return ds.Request.Headers // may be nil; Headers reads (Get/Has/Iterate) are nil-safe
 	}
 	return live
 }
