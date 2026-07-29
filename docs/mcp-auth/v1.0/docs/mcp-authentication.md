@@ -12,6 +12,7 @@ The MCP Authentication policy is designed to secure traffic to Model Context Pro
 - **Access Token Validation**: Validates JWT access tokens using configured key managers. Please refer to the [JWT Authentication Policy](../../../gateway/policies/jwt-authentication.md) for more information on how the key validation works.
 - **Resource-Specific Security**: Configure authentication independently for tools, resources, prompts, and JSON-RPC methods.
 - **Exception Lists**: Exclude specific resources from authentication using exception lists.
+- **Full Endpoint Coverage**: Validates tokens on every generated MCP endpoint — `POST /mcp` (JSON-RPC), `GET /mcp` (server-to-client SSE stream) and `DELETE /mcp` (session termination).
 - **Protected Resource Metadata**: Intercepts `GET /.well-known/oauth-protected-resource` requests to return resource metadata, including authorization servers and supported scopes.
 - **Standardized Error Handling**: Returns `WWW-Authenticate` headers with `resource_metadata` on authentication failures.
 - **Claim Mapping**: Maps token claims to downstream headers for use by backend services.
@@ -106,7 +107,7 @@ These parameters are configured per-API/route by the API developer:
 | `prompts` | `SecurityConfig` object | No | `{"enabled": true}` | Security configuration for MCP prompts. |
 | `methods` | `SecurityConfig` object | No | `{"enabled": true}` | Security configuration for MCP (JSON-RPC) methods. |
 | `issuers` | string array | No | `[]` | List of issuer names from `system.keyManagers` to publish in protected resource metadata and use for token validation. If empty, runtime uses all configured key managers. |
-| `requiredScopes` | string array | No | `[]` | List of scopes that should be included in the token generated through MCP auth flow. These are advertised in the protected resource metadata but **not enforced** by this policy. Use the MCP Authorization policy to enforce scopes. |
+| `requiredScopes` | string array | No | `[]` | List of scopes that should be included in the token generated through MCP auth flow. These are advertised in the protected resource metadata but **not enforced** by this policy. Use the MCP Authorization policy to enforce scopes. If empty, `scopes_supported` is omitted from the metadata document (it is OPTIONAL per RFC 9728). |
 | `claimMappings` | object | No | `{}` | Map of claimName → downstream header or context key to expose claims for downstream services. |
 
 #### SecurityConfig Object
@@ -117,6 +118,14 @@ Each resource type configuration supports the following structure:
 |-----------|------|----------|---------|-------------|
 | `enabled` | boolean | No | `true` | Whether security is enabled for this resource type. |
 | `exceptions` | string array | No | `[]` | List of resource names to exclude from security checks. |
+
+#### Endpoint Coverage
+
+An MCP API exposes three endpoints on `/mcp`. Only `POST /mcp` carries a JSON-RPC payload, so only that request can be matched against the `tools`, `resources`, `prompts` and `methods` configuration above.
+
+`GET /mcp` (server-to-client SSE stream) and `DELETE /mcp` (session termination) act on live session state without naming a tool, resource, prompt or method, so they cannot be matched against an exception list. The policy therefore requires a valid access token on both, unless `tools`, `resources`, `prompts` and `methods` are all disabled with no exceptions — an MCP server that is public by configuration, where no request is authenticated.
+
+CORS preflights (`OPTIONS /mcp`) and the protected resource metadata endpoint (`GET /.well-known/oauth-protected-resource`) are never authenticated: browsers send preflights without credentials, and the metadata endpoint must be publicly readable for MCP clients to discover the authorization server.
 
 **Note:**
 
