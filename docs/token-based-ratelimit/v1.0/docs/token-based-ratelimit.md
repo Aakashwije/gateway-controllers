@@ -43,6 +43,8 @@ These parameters are configured per LLM provider path by the API developer:
 
 > **Note:** At least one of `promptTokenLimits`, `completionTokenLimits`, or `totalTokenLimits` should be configured for the policy to enforce any limits.
 
+> **Note:** `totalTokenLimits` is charged from the LLM provider template's `totalTokens` field when one is defined. If the template has no `totalTokens` field (for example, the built-in Anthropic template, whose Messages API response has no total-token field), the policy instead sums `promptTokens` + `completionTokens` so the quota is still charged the actual token count.
+
 #### Limit Configuration
 
 Each limit entry defines a quota for a specific time window:
@@ -132,6 +134,8 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 ## Reference Scenarios
 
 This policy is designed to be attached to an `LlmProvider`. Before attaching the policy, you must create an `LlmProviderTemplate` that defines the token extraction paths for your LLM backend.
+
+Attaching the policy provider-wide (`globalPolicies`) shares one token bucket across every resource of the provider, the same way `basic-ratelimit` shares one request bucket at that level. Attaching it per operation (`operationPolicies` on a specific path) gives that resource its own independent bucket.
 
 ### LLM Provider Template
 
