@@ -430,8 +430,28 @@ func (p *McpAuthzPolicy) Mode() policy.ProcessingMode {
 	}
 }
 
+// isMcpPath reports whether path targets the MCP endpoint using segment-exact
+// matching: only "/mcp" itself or a subpath under "/mcp/". This avoids matching
+// unrelated paths such as "/resource/mcp". Mirrors the mcp-acl-list policy.
+func isMcpPath(path string) bool {
+	cleanPath := strings.TrimSpace(path)
+	if idx := strings.Index(cleanPath, "?"); idx >= 0 {
+		cleanPath = cleanPath[:idx]
+	}
+	return cleanPath == "/mcp" || strings.HasPrefix(cleanPath, "/mcp/")
+}
+
 func (p *McpAuthzPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.RequestContext, _ map[string]any) policy.RequestAction {
-	if strings.EqualFold(reqCtx.Method, "POST") && strings.Contains(reqCtx.Path, "/mcp") {
+	ds := reqCtx.DownstreamRequest()
+	// Match the MCP route on the immutable OperationPath (the API-definition path),
+	// consistent with the mcp-auth and mcp-acl-list policies. OperationPath is carried
+	// on SharedContext, which is nil on the defensive fail-closed path (see below), so
+	// fall back to the downstream request path there to still recognise the route.
+	routePath := ds.Path
+	if reqCtx.SharedContext != nil {
+		routePath = reqCtx.OperationPath
+	}
+	if strings.EqualFold(ds.Method, "POST") && isMcpPath(routePath) {
 		slog.Debug("MCP Authorization Policy: Processing MCP request for authorization")
 	} else {
 		slog.Debug("MCP Authorization Policy: Skipping authz...")
@@ -530,7 +550,8 @@ func (p *McpAuthzPolicy) handleAuthFailure(reqCtx *policy.RequestContext, status
 		missingScopes = append(missingScopes, s)
 	}
 
-	wwwAuthHeader := generateWwwAuthenticateHeader(reqCtx.Scheme, reqCtx.Authority, reqCtx.Vhost, reqCtx.APIContext, reqCtx.Metadata, missingScopes, errorCode, errorMessage)
+	ds := reqCtx.DownstreamRequest()
+	wwwAuthHeader := generateWwwAuthenticateHeader(ds.Scheme, ds.Authority, reqCtx.Vhost, reqCtx.APIContext, reqCtx.Metadata, missingScopes, errorCode, errorMessage)
 
 	headers := map[string]string{
 		"content-type":        "application/json",

@@ -152,11 +152,12 @@ func (p *LogMessagePolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.
 		return policy.UpstreamRequestHeaderModifications{}
 	}
 
+	ds := reqCtx.DownstreamRequest()
 	logRecord := LogRecord{
 		MediationFlow: MediationFlowRequest,
 		RequestID:     p.getRequestID(reqCtx.Headers),
-		HTTPMethod:    reqCtx.Method,
-		ResourcePath:  reqCtx.Path,
+		HTTPMethod:    ds.Method,
+		ResourcePath:  ds.Path,
 		Headers:       p.buildHeadersMap(reqCtx.Headers, config.excludedHeaders),
 	}
 
@@ -173,11 +174,12 @@ func (p *LogMessagePolicy) OnResponseHeaders(ctx context.Context, respCtx *polic
 		return policy.DownstreamResponseHeaderModifications{}
 	}
 
+	ds := respCtx.DownstreamRequest()
 	logRecord := LogRecord{
 		MediationFlow: MediationFlowResponse,
 		RequestID:     p.getResponseRequestIDv2(respCtx.ResponseHeaders),
-		HTTPMethod:    respCtx.RequestMethod,
-		ResourcePath:  respCtx.RequestPath,
+		HTTPMethod:    ds.Method,
+		ResourcePath:  ds.Path,
 		Headers:       p.buildHeadersMap(respCtx.ResponseHeaders, config.excludedHeaders),
 	}
 
@@ -197,11 +199,12 @@ func (p *LogMessagePolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Req
 	}
 
 	// Create log record
+	ds := reqCtx.DownstreamRequest()
 	logRecord := LogRecord{
 		MediationFlow: MediationFlowRequest,
 		RequestID:     p.getRequestID(reqCtx.Headers),
-		HTTPMethod:    reqCtx.Method,
-		ResourcePath:  reqCtx.Path,
+		HTTPMethod:    ds.Method,
+		ResourcePath:  ds.Path,
 	}
 
 	// Log payload if present.
@@ -227,11 +230,12 @@ func (p *LogMessagePolicy) OnResponseBody(ctx context.Context, respCtx *policy.R
 	}
 
 	// Create log record
+	ds := respCtx.DownstreamRequest()
 	logRecord := LogRecord{
 		MediationFlow: MediationFlowResponse,
 		RequestID:     p.getResponseRequestIDv2(respCtx.ResponseHeaders),
-		HTTPMethod:    respCtx.RequestMethod,
-		ResourcePath:  respCtx.RequestPath,
+		HTTPMethod:    ds.Method,
+		ResourcePath:  ds.Path,
 	}
 
 	// Log payload if present.
@@ -273,11 +277,12 @@ func (p *LogMessagePolicy) OnRequestBodyChunk(ctx context.Context, reqCtx *polic
 		return policy.ForwardRequestChunk{}
 	}
 
+	ds := reqCtx.DownstreamRequest()
 	logRecord := LogRecord{
 		MediationFlow: MediationFlowRequest,
 		RequestID:     p.getRequestID(reqCtx.Headers),
-		HTTPMethod:    reqCtx.Method,
-		ResourcePath:  reqCtx.Path,
+		HTTPMethod:    ds.Method,
+		ResourcePath:  ds.Path,
 		Payload:       string(chunk.Chunk),
 	}
 	p.logMessage(logRecord)
@@ -300,11 +305,12 @@ func (p *LogMessagePolicy) OnResponseBodyChunk(ctx context.Context, respCtx *pol
 		return policy.ForwardResponseChunk{}
 	}
 
+	ds := respCtx.DownstreamRequest()
 	logRecord := LogRecord{
 		MediationFlow: MediationFlowResponse,
 		RequestID:     p.getResponseRequestIDv2(respCtx.ResponseHeaders),
-		HTTPMethod:    respCtx.RequestMethod,
-		ResourcePath:  respCtx.RequestPath,
+		HTTPMethod:    ds.Method,
+		ResourcePath:  ds.Path,
 		Payload:       string(chunk.Chunk),
 	}
 	p.logMessage(logRecord)

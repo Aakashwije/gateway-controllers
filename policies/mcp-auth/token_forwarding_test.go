@@ -85,8 +85,17 @@ func runTokenForwardingRaw(t *testing.T, tc tokenForwardingCase) (policy.Request
 	ctx.Path = "/mcp"
 	ctx.OperationPath = "/mcp"
 	if !tc.noSnapshot {
+		// The snapshot mirrors the client request the gateway froze before any
+		// policy ran: the same method/path/authority/scheme the live context
+		// carries, but the client's original (un-peer-mutated) headers.
 		ctx.Downstream = &policy.DownstreamContext{
-			Request: &policy.DownstreamRequest{Headers: policy.NewHeaders(snapshot)},
+			Request: &policy.DownstreamRequest{
+				Headers:   policy.NewHeaders(snapshot),
+				Path:      ctx.Path,
+				Method:    ctx.Method,
+				Authority: ctx.Authority,
+				Scheme:    ctx.Scheme,
+			},
 		}
 	}
 

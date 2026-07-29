@@ -176,18 +176,18 @@ func (p *CorsPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.Reques
 	// Base the Origin / preflight decision on the downstream snapshot so
 	// a peer policy that rewrites Origin during the header phase cannot change the
 	// CORS verdict for what the client actually sent.
-	ds := getDownstreamHeaders(reqCtx.Downstream, reqCtx.Headers)
-	if strings.EqualFold(reqCtx.Method, "options") {
+	ds := reqCtx.DownstreamRequest()
+	if strings.EqualFold(ds.Method, "options") {
 		slog.Debug("CORS: Preflight request detected in header phase; handling preflight")
-		return p.handlePreflightHeaders(ds)
+		return p.handlePreflightHeaders(ds.Headers)
 	}
-	corsHeaders, ok := p.handleNonPreflightHeaders(ds)
+	corsHeaders, ok := p.handleNonPreflightHeaders(ds.Headers)
 	if ok {
 		slog.Debug("CORS: Adding CORS headers to non-preflight request")
 		reqCtx.Metadata["cors_headers"] = corsHeaders
 	} else {
 		slog.Debug("CORS: No CORS headers to add for non-preflight request")
-		if ds.Has("Origin") {
+		if ds.Headers.Has("Origin") {
 			reqCtx.Metadata["cors_strip"] = true
 		}
 	}

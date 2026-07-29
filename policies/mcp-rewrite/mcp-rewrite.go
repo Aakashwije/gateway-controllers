@@ -427,7 +427,16 @@ func parseRequestPayload(body []byte, isSse bool) (map[string]any, []sseEvent, i
 
 // isMcpPostRequest reports whether the request targets the MCP endpoint.
 func isMcpPostRequest(method, path string) bool {
-	return strings.EqualFold(method, "POST") && strings.Contains(path, mcpPathSegment)
+	if !strings.EqualFold(method, "POST") {
+		return false
+	}
+	// Segment-exact match: only "/mcp" itself or a subpath under "/mcp/", never a
+	// substring such as "/resource/mcp". Mirrors the mcp-acl-list policy.
+	cleanPath := strings.TrimSpace(path)
+	if idx := strings.Index(cleanPath, "?"); idx >= 0 {
+		cleanPath = cleanPath[:idx]
+	}
+	return cleanPath == mcpPathSegment || strings.HasPrefix(cleanPath, mcpPathSegment+"/")
 }
 
 func (p *McpRewritePolicy) Mode() policy.ProcessingMode {
@@ -445,7 +454,8 @@ func (p *McpRewritePolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Req
 }
 
 func (p *McpRewritePolicy) processRequestBody(reqCtx *policy.RequestContext) policy.RequestAction {
-	if !isMcpPostRequest(reqCtx.Method, reqCtx.Path) {
+	dsReq := reqCtx.DownstreamRequest()
+	if !isMcpPostRequest(dsReq.Method, reqCtx.OperationPath) {
 		return policy.UpstreamRequestModifications{}
 	}
 	slog.Debug("MCP Rewrite Policy: OnRequest started")
@@ -455,10 +465,10 @@ func (p *McpRewritePolicy) processRequestBody(reqCtx *policy.RequestContext) pol
 	}
 
 	// Read Content-Type and the session id (used for error responses) from the downstream snapshot.
-	ds := getDownstreamHeaders(reqCtx.Downstream, reqCtx.Headers)
+	ds := dsReq.Headers
 	requestPayload, requestEvents, requestEventIndex, err := parseRequestPayload(reqCtx.Body.Content, isEventStream(ds))
 	if err != nil {
-		slog.Debug("MCP Rewrite Policy: Failed to parse MCP request", "error", err, "path", reqCtx.Path)
+		slog.Debug("MCP Rewrite Policy: Failed to parse MCP request", "error", err, "path", dsReq.Path)
 		return p.buildRequestErrorResponse(ds, 400, -32700, "Invalid JSON", nil)
 	}
 
@@ -615,7 +625,8 @@ func (p *McpRewritePolicy) buildEventStreamErrorResponse(statusCode int, jsonRpc
 
 // OnResponseBody applies rewrite rules to the MCP response body.
 func (p *McpRewritePolicy) OnResponseBody(ctx context.Context, respCtx *policy.ResponseContext, _ map[string]any) policy.ResponseAction {
-	if !isMcpPostRequest(respCtx.RequestMethod, respCtx.RequestPath) {
+	dsReq := respCtx.DownstreamRequest()
+	if !isMcpPostRequest(dsReq.Method, respCtx.OperationPath) {
 		return nil
 	}
 	slog.Debug("MCP Rewrite Policy: OnResponseBody started")
@@ -642,7 +653,7 @@ func (p *McpRewritePolicy) OnResponseBody(ctx context.Context, respCtx *policy.R
 
 	// Detect SSE from the upstream snapshot so response-body rewriting
 	// parses the response the way the upstream actually framed it.
-	if isEventStream(getUpstreamHeaders(respCtx.Upstream, respCtx.ResponseHeaders)) {
+	if isEventStream(respCtx.UpstreamHeaders()) {
 		events := parseEventStream(respCtx.ResponseBody.Content)
 		updated := false
 		for i, event := range events {

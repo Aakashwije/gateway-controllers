@@ -34,9 +34,10 @@ import (
 func createMockContext(method, path string, body []byte, authCtx *policy.AuthContext) *policy.RequestContext {
 	return &policy.RequestContext{
 		SharedContext: &policy.SharedContext{
-			RequestID:   "test-request-id",
-			Metadata:    make(map[string]any),
-			AuthContext: authCtx,
+			RequestID:     "test-request-id",
+			Metadata:      make(map[string]any),
+			AuthContext:   authCtx,
+			OperationPath: path,
 		},
 		Headers: policy.NewHeaders(nil),
 		Body: &policy.Body{

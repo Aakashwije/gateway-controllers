@@ -1468,7 +1468,7 @@ func (p *RateLimitPolicy) extractQuotaKeyFromHeaderCtx(reqCtx *policy.RequestHea
 func (p *RateLimitPolicy) extractKeyComponentFromHeaderCtx(reqCtx *policy.RequestHeaderContext, comp KeyComponent) string {
 	switch comp.Type {
 	case "header":
-		values := getDownstreamHeaders(reqCtx.Downstream, reqCtx.Headers).Get(strings.ToLower(comp.Key))
+		values := reqCtx.DownstreamHeaders().Get(strings.ToLower(comp.Key))
 		if len(values) > 0 && values[0] != "" {
 			return values[0]
 		}
@@ -1493,7 +1493,7 @@ func (p *RateLimitPolicy) extractKeyComponentFromHeaderCtx(reqCtx *policy.Reques
 		return placeholder
 
 	case "ip":
-		return p.extractIPAddress(getDownstreamHeaders(reqCtx.Downstream, reqCtx.Headers))
+		return p.extractIPAddress(reqCtx.DownstreamHeaders())
 
 	case "apiname":
 		if reqCtx.APIName != "" {
@@ -1784,7 +1784,10 @@ func (p *RateLimitPolicy) OnResponseHeaders(ctx context.Context, respCtx *policy
 	// Read from the upstream snapshot so the streaming-mode decision
 	// reflects the content-type/transfer-encoding the upstream actually returned,
 	// not a value a peer policy rewrote during the response header phase.
-	isStreaming := isStreamingResponse(getUpstreamHeaders(respCtx.Upstream, respCtx.ResponseHeaders))
+	isStreaming := isStreamingResponse(respCtx.UpstreamHeaders())
+
+	// Client request snapshot for path/method used by response-phase cost extraction.
+	ds := respCtx.DownstreamRequest()
 
 	// Retrieve stored results from request phase
 	resultsRaw, hasResults := respCtx.Metadata[p.metaKey(rateLimitResultKey)]
@@ -1833,8 +1836,8 @@ func (p *RateLimitPolicy) OnResponseHeaders(ctx context.Context, respCtx *policy
 				SharedContext:   respCtx.SharedContext,
 				RequestHeaders:  respCtx.RequestHeaders,
 				RequestBody:     respCtx.RequestBody,
-				RequestPath:     respCtx.RequestPath,
-				RequestMethod:   respCtx.RequestMethod,
+				RequestPath:     ds.Path,
+				RequestMethod:   ds.Method,
 				ResponseHeaders: respCtx.ResponseHeaders,
 				ResponseStatus:  respCtx.ResponseStatus,
 				// Propagate the snapshots so header-based cost extraction
@@ -2191,7 +2194,7 @@ func (p *RateLimitPolicy) extractQuotaKey(reqCtx *policy.RequestContext, q *Quot
 func (p *RateLimitPolicy) extractKeyComponent(reqCtx *policy.RequestContext, comp KeyComponent) string {
 	switch comp.Type {
 	case "header":
-		values := getDownstreamHeaders(reqCtx.Downstream, reqCtx.Headers).Get(strings.ToLower(comp.Key))
+		values := reqCtx.DownstreamHeaders().Get(strings.ToLower(comp.Key))
 		if len(values) > 0 && values[0] != "" {
 			return values[0]
 		}
@@ -2216,7 +2219,7 @@ func (p *RateLimitPolicy) extractKeyComponent(reqCtx *policy.RequestContext, com
 		return placeholder
 
 	case "ip":
-		return p.extractIPAddress(getDownstreamHeaders(reqCtx.Downstream, reqCtx.Headers))
+		return p.extractIPAddress(reqCtx.DownstreamHeaders())
 
 	case "apiname":
 		if reqCtx.APIName != "" {
@@ -2412,12 +2415,13 @@ func (p *RateLimitPolicy) finalizeAndConsumeStreamingCosts(
 		if qs != nil {
 			bodyBytes = qs.accumulated
 		}
+		ds := respCtx.DownstreamRequest()
 		synthCtx := &policy.ResponseContext{
 			SharedContext:   respCtx.SharedContext,
 			RequestHeaders:  respCtx.RequestHeaders,
 			RequestBody:     respCtx.RequestBody,
-			RequestPath:     respCtx.RequestPath,
-			RequestMethod:   respCtx.RequestMethod,
+			RequestPath:     ds.Path,
+			RequestMethod:   ds.Method,
 			ResponseHeaders: respCtx.ResponseHeaders,
 			ResponseStatus:  respCtx.ResponseStatus,
 			// Propagate the snapshots so header-based cost extraction
