@@ -427,7 +427,16 @@ func parseRequestPayload(body []byte, isSse bool) (map[string]any, []sseEvent, i
 
 // isMcpPostRequest reports whether the request targets the MCP endpoint.
 func isMcpPostRequest(method, path string) bool {
-	return strings.EqualFold(method, "POST") && strings.Contains(path, mcpPathSegment)
+	if !strings.EqualFold(method, "POST") {
+		return false
+	}
+	// Segment-exact match: only "/mcp" itself or a subpath under "/mcp/", never a
+	// substring such as "/resource/mcp". Mirrors the mcp-acl-list policy.
+	cleanPath := strings.TrimSpace(path)
+	if idx := strings.Index(cleanPath, "?"); idx >= 0 {
+		cleanPath = cleanPath[:idx]
+	}
+	return cleanPath == mcpPathSegment || strings.HasPrefix(cleanPath, mcpPathSegment+"/")
 }
 
 func (p *McpRewritePolicy) Mode() policy.ProcessingMode {

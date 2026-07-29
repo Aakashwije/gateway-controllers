@@ -430,6 +430,17 @@ func (p *McpAuthzPolicy) Mode() policy.ProcessingMode {
 	}
 }
 
+// isMcpPath reports whether path targets the MCP endpoint using segment-exact
+// matching: only "/mcp" itself or a subpath under "/mcp/". This avoids matching
+// unrelated paths such as "/resource/mcp". Mirrors the mcp-acl-list policy.
+func isMcpPath(path string) bool {
+	cleanPath := strings.TrimSpace(path)
+	if idx := strings.Index(cleanPath, "?"); idx >= 0 {
+		cleanPath = cleanPath[:idx]
+	}
+	return cleanPath == "/mcp" || strings.HasPrefix(cleanPath, "/mcp/")
+}
+
 func (p *McpAuthzPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.RequestContext, _ map[string]any) policy.RequestAction {
 	ds := reqCtx.DownstreamRequest()
 	// Match the MCP route on the immutable OperationPath (the API-definition path),
@@ -440,7 +451,7 @@ func (p *McpAuthzPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Reque
 	if reqCtx.SharedContext != nil {
 		routePath = reqCtx.OperationPath
 	}
-	if strings.EqualFold(ds.Method, "POST") && strings.Contains(routePath, "/mcp") {
+	if strings.EqualFold(ds.Method, "POST") && isMcpPath(routePath) {
 		slog.Debug("MCP Authorization Policy: Processing MCP request for authorization")
 	} else {
 		slog.Debug("MCP Authorization Policy: Skipping authz...")
