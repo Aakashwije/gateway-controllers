@@ -1831,7 +1831,7 @@ func (p *JwtAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.Req
 		authHeaderScheme = userAuthHeaderPrefix
 	}
 
-	authHeaders := getDownstreamHeaders(reqCtx.Downstream, reqCtx.Headers).Get(strings.ToLower(headerName))
+	authHeaders := reqCtx.DownstreamHeaders().Get(strings.ToLower(headerName))
 	if len(authHeaders) == 0 {
 		slog.Debug("JWT Auth Policy: Missing authorization header",
 			"headerName", headerName,

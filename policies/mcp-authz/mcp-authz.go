@@ -431,7 +431,8 @@ func (p *McpAuthzPolicy) Mode() policy.ProcessingMode {
 }
 
 func (p *McpAuthzPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.RequestContext, _ map[string]any) policy.RequestAction {
-	if strings.EqualFold(reqCtx.Method, "POST") && strings.Contains(reqCtx.Path, "/mcp") {
+	ds := reqCtx.DownstreamRequest()
+	if strings.EqualFold(ds.Method, "POST") && strings.Contains(ds.Path, "/mcp") {
 		slog.Debug("MCP Authorization Policy: Processing MCP request for authorization")
 	} else {
 		slog.Debug("MCP Authorization Policy: Skipping authz...")
@@ -530,7 +531,8 @@ func (p *McpAuthzPolicy) handleAuthFailure(reqCtx *policy.RequestContext, status
 		missingScopes = append(missingScopes, s)
 	}
 
-	wwwAuthHeader := generateWwwAuthenticateHeader(reqCtx.Scheme, reqCtx.Authority, reqCtx.Vhost, reqCtx.APIContext, reqCtx.Metadata, missingScopes, errorCode, errorMessage)
+	ds := reqCtx.DownstreamRequest()
+	wwwAuthHeader := generateWwwAuthenticateHeader(ds.Scheme, ds.Authority, reqCtx.Vhost, reqCtx.APIContext, reqCtx.Metadata, missingScopes, errorCode, errorMessage)
 
 	headers := map[string]string{
 		"content-type":        "application/json",

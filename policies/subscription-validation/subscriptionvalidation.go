@@ -224,7 +224,7 @@ func (p *SubscriptionValidationPolicy) OnRequestHeaders(ctx context.Context, req
 	// against what the client actually sent, not a value a peer policy rewrote in
 	// the header phase. reqCtx.Headers may be nil even when a downstream snapshot
 	// is available, so gate on the selected view rather than the live headers.
-	if ds := getDownstreamHeaders(reqCtx.Downstream, reqCtx.Headers); ds != nil {
+	if ds := reqCtx.DownstreamHeaders(); ds != nil {
 		headerValues := ds.Get(p.cfg.SubscriptionKeyHeader)
 		if len(headerValues) > 0 {
 			token := strings.TrimSpace(headerValues[0])

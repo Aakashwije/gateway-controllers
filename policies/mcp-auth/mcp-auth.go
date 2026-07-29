@@ -406,10 +406,11 @@ func (p *McpAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.Req
 		v1r := buildInvalidConfigResponse(err.Error()).(policy.ImmediateResponse)
 		return policy.ImmediateResponse{StatusCode: v1r.StatusCode, Headers: v1r.Headers, Body: v1r.Body}
 	}
+	ds := reqCtx.DownstreamRequest()
 	// Check for GET /.well-known/oauth-protected-resource
-	if reqCtx.Method == "GET" && isWellKnownEndpointRequest(reqCtx.OperationPath) {
+	if ds.Method == "GET" && isWellKnownEndpointRequest(reqCtx.OperationPath) {
 		slog.Debug("MCP Auth Policy: Handling well-known protected resource metadata request")
-		sessionIds := getDownstreamHeaders(reqCtx.Downstream, reqCtx.Headers).Get(McpSessionHeader)
+		sessionIds := reqCtx.DownstreamHeaders().Get(McpSessionHeader)
 		sessionId := ""
 		if len(sessionIds) > 0 {
 			sessionId = sessionIds[0]
@@ -447,7 +448,7 @@ func (p *McpAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.Req
 		}
 
 		prm := ProtectedResourceMetadata{
-			Resource:             generateResourcePathFromFields(reqCtx.Scheme, reqCtx.Authority, reqCtx.Vhost, reqCtx.APIContext, params, "mcp"),
+			Resource:             generateResourcePathFromFields(ds.Scheme, ds.Authority, reqCtx.Vhost, reqCtx.APIContext, params, "mcp"),
 			AuthorizationServers: issuers,
 			ScopesSupported:      p.RequiredScopes,
 		}
@@ -463,9 +464,9 @@ func (p *McpAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.Req
 	}
 
 	// GET /mcp and DELETE /mcp carry no body, so gate them here instead of the body phase.
-	if p.requiresTransportAuth(reqCtx.Method, reqCtx.OperationPath) {
+	if p.requiresTransportAuth(ds.Method, reqCtx.OperationPath) {
 		slog.Debug("MCP Auth Policy: Authenticating MCP transport request",
-			"method", reqCtx.Method,
+			"method", ds.Method,
 			"operationPath", reqCtx.OperationPath)
 		return p.authenticate(ctx, reqCtx, params, p.RequiredScopes)
 	}
@@ -485,7 +486,8 @@ func (p *McpAuthPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Reques
 		reqCtx.Metadata["gatewayHost"] = p.GatewayHost
 	}
 
-	if isMcpPostRequest(reqCtx.Method, reqCtx.OperationPath) {
+	ds := reqCtx.DownstreamRequest()
+	if isMcpPostRequest(ds.Method, reqCtx.OperationPath) {
 		if reqCtx.Body == nil || !reqCtx.Body.Present {
 			return p.handleAuth(ctx, reqCtx, params, p.RequiredScopes)
 		}
@@ -587,7 +589,8 @@ func (p *McpAuthPolicy) authenticate(ctx context.Context, headerCtx *policy.Requ
 		OnRequestHeaders(context.Context, *policy.RequestHeaderContext, map[string]interface{}) policy.RequestHeaderAction
 	}
 
-	sessionIds := getDownstreamHeaders(headerCtx.Downstream, headerCtx.Headers).Get(McpSessionHeader)
+	ds := headerCtx.DownstreamRequest()
+	sessionIds := headerCtx.DownstreamHeaders().Get(McpSessionHeader)
 	sessionId := ""
 	if len(sessionIds) > 0 {
 		sessionId = sessionIds[0]
@@ -644,7 +647,7 @@ func (p *McpAuthPolicy) authenticate(ctx context.Context, headerCtx *policy.Requ
 				}
 			}
 		}
-		wwwAuthHeader := generateWwwAuthenticateHeaderFromFields(headerCtx.Scheme, headerCtx.Authority, headerCtx.Vhost, headerCtx.APIContext, params, scopes, escapedDesc)
+		wwwAuthHeader := generateWwwAuthenticateHeaderFromFields(ds.Scheme, ds.Authority, headerCtx.Vhost, headerCtx.APIContext, params, scopes, escapedDesc)
 		headers[WWWAuthenticateHeader] = wwwAuthHeader
 		headers[McpSessionHeader] = sessionId
 		return policy.ImmediateResponse{
@@ -663,13 +666,14 @@ func (p *McpAuthPolicy) authenticate(ctx context.Context, headerCtx *policy.Requ
 // handleAuth performs MCP authentication in the request body phase, translating the
 // shared delegation's header-phase action into a body-phase one.
 func (p *McpAuthPolicy) handleAuth(ctx context.Context, reqCtx *policy.RequestContext, params map[string]any, scopes []string) policy.RequestAction {
+	ds := reqCtx.DownstreamRequest()
 	headerCtx := &policy.RequestHeaderContext{
 		SharedContext: reqCtx.SharedContext,
 		Headers:       reqCtx.Headers,
-		Path:          reqCtx.Path,
-		Method:        reqCtx.Method,
-		Authority:     reqCtx.Authority,
-		Scheme:        reqCtx.Scheme,
+		Path:          ds.Path,
+		Method:        ds.Method,
+		Authority:     ds.Authority,
+		Scheme:        ds.Scheme,
 		Vhost:         reqCtx.Vhost,
 		// Propagate the downstream snapshot so the delegated JWT auth
 		// policy validates the Authorization header the client actually sent,

@@ -406,7 +406,7 @@ func (p *ModelWeightedRoundRobinPolicy) OnRequestHeaders(ctx context.Context, re
 		// so metadata records what the client actually sent, not a value a peer
 		// policy rewrote during the header phase (the rewrite itself is emitted
 		// separately via HeadersToSet).
-		if h := getDownstreamHeaders(reqCtx.Downstream, reqCtx.Headers); h != nil {
+		if h := reqCtx.DownstreamHeaders(); h != nil {
 			values := h.Get(identifier)
 			if len(values) > 0 && values[0] != "" {
 				reqCtx.Metadata[MetadataKeyOriginalModel] = values[0]

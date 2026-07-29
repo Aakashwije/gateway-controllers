@@ -370,7 +370,8 @@ func isMcpPostRequest(method, path string) bool {
 
 // OnRequestBody enforces ACL rules on the MCP request body.
 func (p *McpAclListPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.RequestContext, _ map[string]any) policy.RequestAction {
-	if !isMcpPostRequest(reqCtx.Method, reqCtx.OperationPath) {
+	ds := reqCtx.DownstreamRequest()
+	if !isMcpPostRequest(ds.Method, reqCtx.OperationPath) {
 		return policy.UpstreamRequestModifications{}
 	}
 	slog.Debug("MCP ACL List Policy: OnRequest started")
@@ -383,11 +384,10 @@ func (p *McpAclListPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Req
 	// downstream snapshot so gating and its diagnostics reflect what
 	// the client actually sent, not a value a peer policy rewrote during the
 	// header phase.
-	ds := getDownstreamHeaders(reqCtx.Downstream, reqCtx.Headers)
-	requestPayload, _, _, err := parseRequestPayload(reqCtx.Body.Content, isEventStream(ds))
+	requestPayload, _, _, err := parseRequestPayload(reqCtx.Body.Content, isEventStream(ds.Headers))
 	if err != nil {
-		slog.Debug("MCP ACL List Policy: Failed to parse MCP request", "error", err, "path", reqCtx.Path)
-		return p.buildRequestErrorResponse(ds, 400, -32700, "Invalid JSON", nil)
+		slog.Debug("MCP ACL List Policy: Failed to parse MCP request", "error", err, "path", ds.Path)
+		return p.buildRequestErrorResponse(ds.Headers, 400, -32700, "Invalid JSON", nil)
 	}
 
 	requestID := requestPayload["id"]
@@ -416,19 +416,19 @@ func (p *McpAclListPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Req
 	paramsRaw, ok := requestPayload["params"].(map[string]any)
 	if !ok {
 		slog.Debug("MCP ACL List Policy: Invalid request params", "capabilityType", capabilityType, "requestID", requestID, "error", "params not a map")
-		return p.buildRequestErrorResponse(ds, 400, -32602, "Invalid MCP request params", requestID)
+		return p.buildRequestErrorResponse(ds.Headers, 400, -32602, "Invalid MCP request params", requestID)
 	}
 
 	paramKey := getParamKey(capabilityType)
 	capabilityName, _ := paramsRaw[paramKey].(string)
 	if strings.TrimSpace(capabilityName) == "" {
 		slog.Debug("MCP ACL List Policy: Missing capability name", "capabilityType", capabilityType, "requestID", requestID, "paramKey", paramKey)
-		return p.buildRequestErrorResponse(ds, 400, -32602, fmt.Sprintf("Missing MCP %s name", capabilityType), requestID)
+		return p.buildRequestErrorResponse(ds.Headers, 400, -32602, fmt.Sprintf("Missing MCP %s name", capabilityType), requestID)
 	}
 
 	if !isAllowedByAcl(config, capabilityName) {
 		slog.Debug("MCP ACL List Policy: Capability denied by policy", "capabilityType", capabilityType, "capabilityName", capabilityName, "requestID", requestID)
-		return p.buildRequestErrorResponse(ds, 400, -32000, "MCP capability not allowed", requestID)
+		return p.buildRequestErrorResponse(ds.Headers, 400, -32000, "MCP capability not allowed", requestID)
 	}
 
 	return policy.UpstreamRequestModifications{}
@@ -436,7 +436,8 @@ func (p *McpAclListPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Req
 
 // OnResponseBody enforces ACL rules on the MCP response body.
 func (p *McpAclListPolicy) OnResponseBody(ctx context.Context, respCtx *policy.ResponseContext, _ map[string]any) policy.ResponseAction {
-	if !isMcpPostRequest(respCtx.RequestMethod, respCtx.OperationPath) {
+	ds := respCtx.DownstreamRequest()
+	if !isMcpPostRequest(ds.Method, respCtx.OperationPath) {
 		return nil
 	}
 	slog.Debug("MCP ACL List Policy: OnResponseBody started")
@@ -461,7 +462,7 @@ func (p *McpAclListPolicy) OnResponseBody(ctx context.Context, respCtx *policy.R
 		return nil
 	}
 
-	if isEventStream(getUpstreamHeaders(respCtx.Upstream, respCtx.ResponseHeaders)) {
+	if isEventStream(respCtx.UpstreamHeaders()) {
 		events := parseEventStream(respCtx.ResponseBody.Content)
 		updated := false
 		for i, event := range events {
