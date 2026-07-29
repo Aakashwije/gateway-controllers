@@ -360,6 +360,16 @@ func transformToRatelimitParams(params map[string]interface{}, template map[stri
 						}
 					}
 					if len(groupSources) > 0 {
+						if len(group) > 1 && len(groupSources) < len(group) {
+							// A multi-field fallback group (e.g. promptTokens+completionTokens)
+							// resolved only some of its fields — the quota will still use what
+							// resolved, but the "total" it charges is incomplete and will
+							// undercount actual usage.
+							slog.Warn("addQuota: template defines only part of a multi-field cost fallback group; total will undercount actual usage",
+								"name", name,
+								"expectedFields", group,
+								"resolvedCount", len(groupSources))
+						}
 						sources = groupSources
 						break
 					}

@@ -19,12 +19,26 @@
 package tokenbasedratelimit
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
+
+// captureSlog temporarily redirects the default slog logger to a buffer for the
+// duration of the calling test, restoring the previous logger on cleanup.
+func captureSlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
 
 // stubChunkPolicer is a minimal delegate stub that records chunk calls.
 type stubChunkPolicer struct {
@@ -536,6 +550,50 @@ func TestTransformToRatelimitParams_TotalTokensNoFieldsAtAll(t *testing.T) {
 
 	if sources := getQuotaSources(t, quotas, "total_tokens"); sources != nil {
 		t.Fatalf("Expected no costExtraction sources when template defines no token fields, got %v", sources)
+	}
+}
+
+// TestTransformToRatelimitParams_TotalTokensPartialFallbackWarns verifies that when the
+// promptTokens+completionTokens fallback group resolves only one of its two fields, the
+// quota still uses the single resolved source (existing behavior is preserved) but a
+// warning is logged identifying the incomplete configuration, since the resulting
+// total_tokens charge will silently undercount actual usage.
+func TestTransformToRatelimitParams_TotalTokensPartialFallbackWarns(t *testing.T) {
+	buf := captureSlog(t)
+
+	params := map[string]interface{}{
+		"totalTokenLimits": []interface{}{
+			map[string]interface{}{"count": float64(30), "duration": "1h"},
+		},
+	}
+	template := map[string]interface{}{
+		"spec": map[string]interface{}{
+			"promptTokens": map[string]interface{}{
+				"location":   "payload",
+				"identifier": "$.usage.input_tokens",
+			},
+			// completionTokens intentionally omitted — partial fallback group.
+		},
+	}
+
+	result := transformToRatelimitParams(params, template, policy.LevelRoute)
+	quotas, ok := result["quotas"].([]interface{})
+	if !ok {
+		t.Fatalf("Expected quotas to be []interface{}, got %T", result["quotas"])
+	}
+
+	sources := getQuotaSources(t, quotas, "total_tokens")
+	if len(sources) != 1 {
+		t.Fatalf("Expected the single resolved source to still be used, got %d: %v", len(sources), sources)
+	}
+	source := sources[0].(map[string]interface{})
+	if source["type"] != "response_body" || source["jsonPath"] != "$.usage.input_tokens" {
+		t.Fatalf("Unexpected source for partial fallback: %v", source)
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "only part of a multi-field cost fallback group") {
+		t.Fatalf("Expected a warning about the incomplete fallback group, got log output: %s", logOutput)
 	}
 }
 
