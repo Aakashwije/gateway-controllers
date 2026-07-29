@@ -6,11 +6,21 @@ description: |
 parameters:
   type: object
   additionalProperties: false
+  anyOf:
+    - required:
+        - tools
+    - required:
+        - resources
+    - required:
+        - prompts
+    - required:
+        - methods
   properties:
     tools:
       type: array
       x-wso2-policy-advanced-param: false
       description: Define authorization rules for MCP tools by setting the tool name plus required claims and/or scopes; exact-name rules are evaluated before wildcards, and all matching rules must pass.
+      minItems: 1
       items:
         type: object
         additionalProperties: false
@@ -124,6 +134,7 @@ parameters:
       type: array
       x-wso2-policy-advanced-param: false
       description: Define authorization rules for MCP resources by setting the resource URI plus required claims and/or scopes; exact-name rules are evaluated before wildcards, and all matching rules must pass.
+      minItems: 1
       items:
         type: object
         additionalProperties: false
@@ -237,6 +248,7 @@ parameters:
       type: array
       x-wso2-policy-advanced-param: false
       description: Define authorization rules for MCP prompts by setting the prompt name plus required claims and/or scopes; exact-name rules are evaluated before wildcards, and all matching rules must pass.
+      minItems: 1
       items:
         type: object
         additionalProperties: false
@@ -350,6 +362,7 @@ parameters:
       type: array
       x-wso2-policy-advanced-param: false
       description: Define authorization rules for MCP methods by setting the method name plus required claims and/or scopes; exact-name rules are evaluated before wildcards, and all matching rules must pass.
+      minItems: 1
       items:
         type: object
         additionalProperties: false
