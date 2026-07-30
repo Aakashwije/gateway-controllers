@@ -161,7 +161,11 @@ func (p *McpRateLimitPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.R
 	method, capType, capName, requestID, err := p.identifyCapability(reqCtx)
 	if err != nil {
 		slog.Debug("MCP RateLimit Policy: failed to parse MCP request", "error", err)
-		return p.buildJsonRpcError(reqCtx.DownstreamHeaders(), 400, -32700, "Invalid MCP request body", nil)
+		jsonRpcCode := -32700
+		if isAmbiguousMemberError(err) {
+			jsonRpcCode = -32600
+		}
+		return p.buildJsonRpcError(reqCtx.DownstreamHeaders(), 400, jsonRpcCode, "Invalid MCP request body", nil)
 	}
 	if method == "" {
 		return policy.UpstreamRequestModifications{}
@@ -285,6 +289,9 @@ func (p *McpRateLimitPolicy) identifyCapability(reqCtx *policy.RequestContext) (
 
 	var req mcpRequest
 	if err = json.Unmarshal(body, &req); err != nil {
+		return "", "", "", nil, err
+	}
+	if err = validateUnambiguousRequestMembers(body, req.Method); err != nil {
 		return "", "", "", nil, err
 	}
 

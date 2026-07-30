@@ -59,9 +59,8 @@ type MCPRequest struct {
 // - resources/read: uses "uri" (resource URI)
 // - prompts/get: uses "name" (prompt name)
 type MCPRequestParams struct {
-	Name      string         `json:"name"` // For tools/call, prompts/get
-	Arguments map[string]any `json:"arguments"`
-	URI       string         `json:"uri"` // For resources/read
+	Name string `json:"name"` // For tools/call, prompts/get
+	URI  string `json:"uri"`  // For resources/read
 }
 
 // Rule represents a single authorization rule
@@ -474,6 +473,10 @@ func (p *McpAuthzPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Reque
 	var mcpReq MCPRequest
 	if err := json.Unmarshal(reqCtx.Body.Content, &mcpReq); err != nil {
 		slog.Debug("MCP Authorization Policy: Failed to parse MCP request", "error", err)
+		return p.handleAuthFailure(reqCtx, http.StatusBadRequest, ErrorInvalidRequest, "Invalid MCP request format", nil)
+	}
+	if err := validateUnambiguousMembers(reqCtx.Body.Content, mcpReq.Method); err != nil {
+		slog.Debug("MCP Authorization Policy: Rejecting MCP request with ambiguous member names", "error", err)
 		return p.handleAuthFailure(reqCtx, http.StatusBadRequest, ErrorInvalidRequest, "Invalid MCP request format", nil)
 	}
 

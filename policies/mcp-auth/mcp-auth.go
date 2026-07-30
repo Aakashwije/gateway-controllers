@@ -92,9 +92,8 @@ type MCPRequest struct {
 // - resources/read: uses "uri" (resource URI)
 // - prompts/get: uses "name" (prompt name)
 type MCPRequestParams struct {
-	Name      string         `json:"name"` // For tools/call, prompts/get
-	Arguments map[string]any `json:"arguments"`
-	URI       string         `json:"uri"` // For resources/read
+	Name string `json:"name"` // For tools/call, prompts/get
+	URI  string `json:"uri"`  // For resources/read
 }
 
 // GetPolicy is the v1alpha2 factory entry point (loaded by v1alpha2 kernels).
@@ -496,6 +495,10 @@ func (p *McpAuthPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Reques
 			slog.Debug("MCP Auth Policy: Failed to parse MCP request", "error", err)
 			return p.handleBadRequest(err)
 		}
+		if err := validateUnambiguousMembers(reqCtx.Body.Content, mcpReq.Method); err != nil {
+			slog.Debug("MCP Auth Policy: Rejecting MCP request with ambiguous member names", "error", err)
+			return p.handleBadRequest(err)
+		}
 
 		slog.Debug("MCP Auth Policy: Extracted MCP attributes",
 			"method", mcpReq.Method,
@@ -557,10 +560,14 @@ func (p *McpAuthPolicy) handleAuthFailure(shared *policy.SharedContext, statusCo
 // The id is null because it cannot be recovered from an unparseable request. This
 // response is not subject to errorMessageFormat, which governs auth failures only.
 func (p *McpAuthPolicy) handleBadRequest(parseErr error) policy.ImmediateResponse {
-	code, message := JSONRPCInvalidRequest, "Invalid Request"
+	code, message, data := JSONRPCInvalidRequest, "Invalid Request", "Invalid MCP request format"
 	var syntaxErr *json.SyntaxError
-	if errors.As(parseErr, &syntaxErr) {
+	var ambiguousErr *ambiguousMemberError
+	switch {
+	case errors.As(parseErr, &syntaxErr):
 		code, message = JSONRPCParseError, "Parse error"
+	case errors.As(parseErr, &ambiguousErr):
+		data = fmt.Sprintf("Ambiguous MCP request: %s", ambiguousErr)
 	}
 
 	body, _ := json.Marshal(map[string]any{
@@ -569,7 +576,7 @@ func (p *McpAuthPolicy) handleBadRequest(parseErr error) policy.ImmediateRespons
 		"error": map[string]any{
 			"code":    code,
 			"message": message,
-			"data":    "Invalid MCP request format",
+			"data":    data,
 		},
 	})
 
