@@ -30,17 +30,26 @@ to Google Sheets (File → Import → Upload) to slice/filter further.
 | Column | Meaning |
 |---|---|
 | `policy_name` | Policy name (= folder name) |
+| `policy_type` | `go` (has `go.mod`) / `python` (has `pyproject.toml`) / `unknown` |
 | `latest_released_version` | Latest `policies/<name>/vX.Y.Z` tag on upstream (no `v` prefix) |
 | `yaml_version` | `version:` from `policy-definition.yaml` (no `v` prefix) |
 | `yaml_version_bumped` | `yes` if `yaml_version` is strictly **ahead** of the latest release |
+| `version_files_consistent` | python: `yes` if `pyproject.toml` version == yaml; go: `n/a` |
 | `needs_release` | `yes` if own commits exist **or** a dependency is being released |
 | `release_reason` | `own-changes` / `dependency-update` / `both` / `none` |
-| `release_ready` | `yes` when own commits landed **and** yaml is bumped ahead (safe to tag) |
+| `release_ready` | `yes` when own commits landed **and** yaml is bumped ahead (python also requires pyproject == yaml) |
 | `release_wave` | Topological wave — release ascending (`0` first) |
-| `depends_on` | Intra-repo deps as `name@pinnedVersion` |
-| `dependents` | Policies that depend on this one |
-| `dep_pin_stale` | `yes` if a pinned dep version ≠ that dep's yaml version (go.mod bump needed) |
+| `depends_on` | **Go only.** Intra-repo deps as `name@pinnedVersion` |
+| `dependents` | **Go only.** Policies that depend on this one |
+| `dep_pin_stale` | **Go only.** `yes` if a pinned dep version ≠ that dep's yaml version (go.mod bump needed) |
 | `num_changes` / `changes` | Count and subjects of unreleased commits |
+
+> **Policy types.** Go policies (`go.mod`) can depend on other policies in this
+> repo, so they carry the dependency columns and wave ordering. Python policies
+> (`pyproject.toml`) have no inter-policy dependencies — their dependency columns
+> are empty and they always land in wave 0. Python policies have a second version
+> file (`pyproject.toml`) that must match `policy-definition.yaml`; this is what
+> `version_files_consistent` tracks.
 
 > **Versions are stored without the `v` prefix** so they pass straight to the
 > release workflow (which rejects `v`).
@@ -52,6 +61,8 @@ to Google Sheets (File → Import → Upload) to slice/filter further.
   releasing; bump this policy's go.mod pin + yaml version + commit, then it becomes ready.
 - **`⚠ ANOMALY: yaml version is BEHIND latest release`** → the yaml `version:` is
   lower than an already-released tag. Fix the yaml before releasing.
+- **`⚠ ANOMALY: pyproject.toml version != yaml version`** (python only) → bump both
+  version files to the same value before releasing; the workflow rejects a mismatch.
 
 ---
 

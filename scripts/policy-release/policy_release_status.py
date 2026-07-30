@@ -32,16 +32,18 @@ DEP_RE = re.compile(
 
 CSV_FIELDS = [
     "policy_name",
+    "policy_type",        # go | python | unknown
     "latest_released_version",
     "yaml_version",
     "yaml_version_bumped",
+    "version_files_consistent",  # python: pyproject == yaml; go: n/a
     "needs_release",
     "release_reason",     # own-changes | dependency-update | both | none
     "release_ready",
     "release_wave",       # topological wave; release ascending (0 first)
-    "depends_on",         # intra-repo deps: name@pinnedVersion; ...
-    "dependents",         # policies that depend on this one
-    "dep_pin_stale",      # yes if a pinned dep version != that dep's yaml version
+    "depends_on",         # go only: intra-repo deps: name@pinnedVersion; ...
+    "dependents",         # go only: policies that depend on this one
+    "dep_pin_stale",      # go only: yes if a pinned dep version != dep's yaml version
     "num_changes",
     "changes",
 ]
@@ -135,6 +137,28 @@ def read_gomod_deps(policy_dir: Path):
     return deps
 
 
+def detect_policy_type(policy_dir: Path) -> str:
+    """Mirror release-policy.yml: go.mod -> go, pyproject.toml -> python."""
+    if (policy_dir / "go.mod").exists():
+        return "go"
+    if (policy_dir / "pyproject.toml").exists():
+        return "python"
+    return "unknown"
+
+
+def read_pyproject_version(policy_dir: Path):
+    """Return the [project] version from pyproject.toml, or None."""
+    pyproject = policy_dir / "pyproject.toml"
+    if not pyproject.exists():
+        return None
+    with open(pyproject) as f:
+        for line in f:
+            m = re.match(r'^\s*version\s*=\s*["\']([^"\']+)["\']', line)
+            if m:
+                return m.group(1)
+    return None
+
+
 def commits_since_tag(policy_name: str, latest_tag_version: str | None) -> list[str]:
     """Return list of commit subjects since the given tag on the policy's path."""
     policy_path = f"policies/{policy_name}/"
@@ -226,6 +250,21 @@ def main():
         yaml_name, yaml_version = read_yaml_name_version(yaml_path)
         policy_name = yaml_name or policy_dir.name
 
+        policy_type = detect_policy_type(policy_dir)
+
+        # Python policies carry a second version source (pyproject.toml) that the
+        # release workflow also validates. Consistency is n/a for go policies.
+        if policy_type == "python":
+            pyproject_version = read_pyproject_version(policy_dir)
+            version_files_consistent = (
+                pyproject_version is not None
+                and yaml_version is not None
+                and strip_v(pyproject_version) == strip_v(yaml_version)
+            )
+        else:
+            pyproject_version = None
+            version_files_consistent = None  # -> "n/a"
+
         tag_versions = all_tags.get(policy_name, [])
         latest_released_raw = tag_versions[-1] if tag_versions else None  # with 'v'
 
@@ -246,13 +285,17 @@ def main():
 
         records[policy_name] = {
             "policy_name": policy_name,
+            "policy_type": policy_type,
+            "pyproject_version": pyproject_version,
+            "version_files_consistent": version_files_consistent,
             "latest_released_raw": latest_released_raw,
             "yaml_version": yaml_version,
             "yaml_version_bumped": yaml_version_bumped,
             "yaml_version_behind": yaml_version_behind,
             "own_needs": own_needs,
             "needs_release": own_needs,  # augmented by propagation below
-            "deps": read_gomod_deps(policy_dir),  # name -> pinned version (with v)
+            # Dependency graph is go-only; python policies have no go.mod deps.
+            "deps": read_gomod_deps(policy_dir) if policy_type == "go" else {},
             "changes": changes,
         }
 
@@ -288,7 +331,10 @@ def main():
 
         # release_ready: only when the human step is done — own commits landed
         # (which includes the go.mod pin bump + yaml bump) AND yaml is bumped.
+        # For python, the workflow also requires pyproject == yaml, so gate on it.
         release_ready = rec["own_needs"] and rec["yaml_version_bumped"]
+        if rec["policy_type"] == "python" and not rec["version_files_consistent"]:
+            release_ready = False
 
         # dep_pin_stale: a pinned dep version differs from that dep's yaml version
         dep_pin_stale = False
@@ -303,13 +349,20 @@ def main():
         )
         dependents_str = "; ".join(sorted(dependents[name]))
 
+        if rec["version_files_consistent"] is None:
+            vfc = "n/a"
+        else:
+            vfc = "yes" if rec["version_files_consistent"] else "no"
+
         rows.append(
             {
                 "policy_name": name,
+                "policy_type": rec["policy_type"],
                 "latest_released_version": strip_v(rec["latest_released_raw"])
                 or "(none)",
                 "yaml_version": strip_v(rec["yaml_version"]) or "(missing)",
                 "yaml_version_bumped": "yes" if rec["yaml_version_bumped"] else "no",
+                "version_files_consistent": vfc,
                 "needs_release": "yes" if rec["needs_release"] else "no",
                 "release_reason": reason,
                 "release_ready": "yes" if release_ready else "no",
@@ -329,8 +382,11 @@ def main():
 
     # ---- Console summary ----
     for row in rows:
-        if records[row["policy_name"]]["yaml_version_behind"]:
+        rec = records[row["policy_name"]]
+        if rec["yaml_version_behind"]:
             status = "⚠ ANOMALY: yaml version is BEHIND latest release"
+        elif row["policy_type"] == "python" and row["version_files_consistent"] == "no":
+            status = "⚠ ANOMALY: pyproject.toml version != yaml version"
         elif row["release_ready"] == "yes":
             status = "READY TO TAG"
         elif row["needs_release"] == "yes":
@@ -339,19 +395,25 @@ def main():
             status = "up-to-date"
         dep_note = f"  deps=[{row['depends_on']}]" if row["depends_on"] else ""
         print(
-            f"  wave{row['release_wave']}  {row['policy_name']:<42} "
+            f"  wave{row['release_wave']}  {row['policy_type']:<6} "
+            f"{row['policy_name']:<42} "
             f"released={row['latest_released_version']:<9} "
             f"yaml={row['yaml_version']:<9} chg={row['num_changes']:<2} "
             f"[{status}]{dep_note}"
         )
 
+    go_count = sum(1 for r in rows if r["policy_type"] == "go")
+    py_count = sum(1 for r in rows if r["policy_type"] == "python")
+    unknown = sum(1 for r in rows if r["policy_type"] == "unknown")
     needs = sum(1 for r in rows if r["needs_release"] == "yes")
     ready = sum(1 for r in rows if r["release_ready"] == "yes")
     dep_only = sum(1 for r in rows if r["release_reason"] == "dependency-update")
     stale = sum(1 for r in rows if r["dep_pin_stale"] == "yes")
 
     print(f"\nWrote: {OUTPUT_CSV}")
-    print(f"Total policies          : {len(rows)}")
+    print(f"Total policies          : {len(rows)}  "
+          f"(go={go_count}, python={py_count}"
+          + (f", unknown={unknown}" if unknown else "") + ")")
     print(f"Needs release           : {needs}")
     print(f"  Ready to tag          : {ready}  (own commits + yaml bumped)")
     print(f"  Dependency-update only : {dep_only}  (needs go.mod pin + yaml bump first)")
