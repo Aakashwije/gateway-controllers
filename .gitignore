@@ -29,3 +29,10 @@ replay_pid*
 *.DS_Store
 
 scripts/policy-description-count/
+
+# Generated policy release report (local artifact, not committed)
+policy-release-status.csv
+
+# Python caches
+__pycache__/
+*.pyc
