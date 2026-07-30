@@ -311,6 +311,62 @@ func TestIdentifyCapability_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestIdentifyCapability_AmbiguousMembers(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "case variant method shadows protected method",
+			body: `{"method":"tools/call","Method":"ping","params":{"name":"toolA"}}`,
+		},
+		{
+			name: "duplicate method shadows protected method",
+			body: `{"method":"tools/call","method":"ping","params":{"name":"toolA"}}`,
+		},
+		{
+			name: "case variant params shadows protected capability",
+			body: `{"method":"tools/call","params":{"name":"toolA"},"Params":{"name":"toolB"}}`,
+		},
+		{
+			name: "case variant name shadows protected capability",
+			body: `{"method":"tools/call","params":{"name":"toolA","Name":"toolB"}}`,
+		},
+		{
+			name: "duplicate uri shadows protected capability",
+			body: `{"method":"resources/read","params":{"uri":"file:///a","uri":"file:///b"}}`,
+		},
+		{
+			name: "Unicode case-folded params shadows protected capability",
+			body: `{"method":"tools/call","params":{"name":"toolA"},"param\u017f":{"name":"toolB"}}`,
+		},
+	}
+
+	p := &McpRateLimitPolicy{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reqCtx := newRequestCtx(t, "POST", nil, []byte(tt.body))
+			if _, _, _, _, err := p.identifyCapability(reqCtx); !isAmbiguousMemberError(err) {
+				t.Fatalf("expected ambiguous-member error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestIdentifyCapability_ExtensionMethodParametersUntouched(t *testing.T) {
+	p := &McpRateLimitPolicy{}
+	body := []byte(`{"method":"vendor/run","params":{"Name":"case-sensitive","URI":"custom"}}`)
+	reqCtx := newRequestCtx(t, "POST", nil, body)
+
+	method, capType, capName, _, err := p.identifyCapability(reqCtx)
+	if err != nil {
+		t.Fatalf("expected extension method parameters to pass through, got %v", err)
+	}
+	if method != "vendor/run" || capType != "" || capName != "" {
+		t.Fatalf("got (%q,%q,%q), want (vendor/run,\"\",\"\")", method, capType, capName)
+	}
+}
+
 func TestIdentifyCapability_EventStream(t *testing.T) {
 	p := &McpRateLimitPolicy{}
 	payload, _ := json.Marshal(map[string]any{"method": "tools/call", "params": map[string]any{"name": "toolA"}})
@@ -323,6 +379,17 @@ func TestIdentifyCapability_EventStream(t *testing.T) {
 	}
 	if method != "tools/call" || capType != "tool" || capName != "toolA" {
 		t.Fatalf("event-stream parse failed: got (%q,%q,%q)", method, capType, capName)
+	}
+}
+
+func TestIdentifyCapability_AmbiguousEventStream(t *testing.T) {
+	p := &McpRateLimitPolicy{}
+	payload := `{"method":"tools/call","Method":"ping","params":{"name":"toolA"}}`
+	body := []byte("event: message\ndata: " + payload + "\n\n")
+	reqCtx := newRequestCtx(t, "POST", map[string][]string{"content-type": {"text/event-stream"}}, body)
+
+	if _, _, _, _, err := p.identifyCapability(reqCtx); !isAmbiguousMemberError(err) {
+		t.Fatalf("expected ambiguous-member error, got %v", err)
 	}
 }
 
@@ -590,6 +657,29 @@ func TestOnRequestBody_InvalidBodyReturnsJsonRpcError(t *testing.T) {
 	errObj := parsed["error"].(map[string]any)
 	if errObj["code"] != float64(-32700) {
 		t.Fatalf("expected parse-error code -32700, got %v", errObj["code"])
+	}
+}
+
+func TestOnRequestBody_AmbiguousMemberReturnsInvalidRequest(t *testing.T) {
+	p := newToolPolicy(t, "toolA", 5)
+	body := []byte(`{"method":"tools/call","Method":"ping","params":{"name":"toolA"}}`)
+	reqCtx := newRequestCtx(t, "POST", nil, body)
+
+	action := p.OnRequestBody(context.Background(), reqCtx, nil)
+	resp, ok := action.(policy.ImmediateResponse)
+	if !ok {
+		t.Fatalf("expected ImmediateResponse, got %T", action)
+	}
+	if resp.StatusCode != 400 {
+		t.Fatalf("expected status 400, got %d", resp.StatusCode)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(resp.Body, &parsed); err != nil {
+		t.Fatalf("expected JSON-RPC error body: %v", err)
+	}
+	errObj := parsed["error"].(map[string]any)
+	if errObj["code"] != float64(-32600) {
+		t.Fatalf("expected invalid-request code -32600, got %v", errObj["code"])
 	}
 }
 

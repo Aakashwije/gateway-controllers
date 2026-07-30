@@ -1184,7 +1184,7 @@ func TestMalformedInput_Variants(t *testing.T) {
 		want int // 0 means passthrough
 	}{
 		{"empty body content", []byte(``), 400},
-		{"json null", []byte(`null`), 0},
+		{"json null", []byte(`null`), 400},
 		{"empty method", []byte(`{"method":""}`), 0},
 		{"method without slash", []byte(`{"method":"tools"}`), 0},
 		{"method with two slashes", []byte(`{"method":"a/b/c"}`), 0},
@@ -1220,13 +1220,52 @@ func TestUnicodeToolName_MatchesByteExactly(t *testing.T) {
 		"a near-miss unicode tool name")
 }
 
-// encoding/json takes the last occurrence of a duplicated key. mcp-auth parses the same body with
-// the same library and struct shape, so both policies resolve the invoked tool identically. If that
-// ever diverged, a caller could authenticate as one tool and be authorized as another.
-func TestDuplicateJSONKeys_LastValueWins(t *testing.T) {
+// Authentication- and authorization-driving members must be unambiguous across
+// this policy's case-insensitive decoder and a case-sensitive MCP backend.
+func TestAmbiguousAuthorizationMembers_AreBadRequest(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "case variant method shadows governed call",
+			body: `{"method":"tools/call","Method":"ping","params":{"name":"toolA"}}`,
+		},
+		{
+			name: "case variant params shadows governed params",
+			body: `{"method":"tools/call","params":{"name":"toolA"},"Params":{"name":"toolB"}}`,
+		},
+		{
+			name: "Unicode case-folded params shadows governed params",
+			body: `{"method":"tools/call","params":{"name":"toolA"},"param\u017f":{"name":"toolB"}}`,
+		},
+		{
+			name: "case variant name shadows governed tool",
+			body: `{"method":"tools/call","params":{"name":"toolA","Name":"toolB"}}`,
+		},
+		{
+			name: "case variant uri shadows resource",
+			body: `{"method":"resources/read","params":{"uri":"file:///protected","URI":"file:///public"}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := assertStatus(t, runBody(toolAOnlyPolicy(), []byte(tt.body), nil), 400, tt.name)
+			assertWwwAuthContains(t, resp, `error="invalid_request"`)
+		})
+	}
+}
+
+func TestDuplicateAuthorizationMember_IsBadRequest(t *testing.T) {
 	body := []byte(`{"method":"tools/call","params":{"name":"toolB","name":"toolA"}}`)
-	assertStatus(t, runBody(toolAOnlyPolicy(), body, nil), 401,
-		"duplicate params.name resolving to the governed toolA")
+	resp := assertStatus(t, runBody(toolAOnlyPolicy(), body, nil), 400, "duplicate params.name")
+	assertWwwAuthContains(t, resp, `error="invalid_request"`)
+}
+
+func TestExtensionMethodParameters_AreUntouched(t *testing.T) {
+	body := []byte(`{"method":"vendor/run","params":{"Name":"case-sensitive","URI":"custom"}}`)
+	assertPassthrough(t, runBody(toolAOnlyPolicy(), body, nil), "extension-method parameters")
 }
 
 // ---- request gating ----

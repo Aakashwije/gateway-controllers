@@ -469,6 +469,164 @@ func TestOnRequestBody_InvalidStructure_ReturnsInvalidRequest(t *testing.T) {
 	assertJSONRPCError(t, resp, JSONRPCInvalidRequest, "Invalid Request")
 }
 
+// TestOnRequestBody_ShadowedMember_DoesNotBypassAuth checks that with "ping" exempt,
+// an unauthenticated POST carrying both "method":"tools/call" and "Method":"ping"
+// does not reach the backend.
+func TestOnRequestBody_ShadowedMember_DoesNotBypassAuth(t *testing.T) {
+	p := &McpAuthPolicy{
+		OnFailureStatusCode: 401,
+		ErrorMessageFormat:  "json",
+		AuthConfig: GetMcpAuthConfig(map[string]any{
+			"tools":   map[string]any{"enabled": true},
+			"methods": map[string]any{"enabled": true, "exceptions": []any{"ping"}},
+		}),
+	}
+	ctx := createMockRequestBodyContext(nil)
+	ctx.Method = "POST"
+	ctx.Path = "/mcp"
+	ctx.OperationPath = "/mcp"
+	ctx.Body = &policy.Body{
+		Content: []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","Method":"ping","params":{"name":"delete_everything"}}`),
+		Present: true,
+	}
+
+	action := p.OnRequestBody(context.Background(), ctx, map[string]any{})
+
+	// A nil action forwards the request upstream, which is exactly the bypass.
+	if action == nil {
+		t.Fatal("Request with a shadowed \"method\" member was forwarded upstream without authentication")
+	}
+	resp, ok := action.(policy.ImmediateResponse)
+	if !ok {
+		t.Fatalf("Expected ImmediateResponse, got %T", action)
+	}
+	assertJSONRPCError(t, resp, JSONRPCInvalidRequest, "Invalid Request")
+}
+
+// TestOnRequestBody_AmbiguousMembers covers member-name spellings this policy and a
+// case-sensitive MCP backend would resolve differently, plus legitimate bodies that
+// must keep flowing. Bodies are exempt, so acceptance shows up as a nil action.
+func TestOnRequestBody_AmbiguousMembers(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantReject bool
+	}{
+		{
+			name:       "case variant method shadows exempt method",
+			body:       `{"method":"tools/call","Method":"ping"}`,
+			wantReject: true,
+		},
+		{
+			name:       "shadow member declared before the canonical one",
+			body:       `{"Method":"ping","method":"tools/call"}`,
+			wantReject: true,
+		},
+		{
+			name:       "upper case shadow member",
+			body:       `{"method":"tools/call","METHOD":"ping"}`,
+			wantReject: true,
+		},
+		{
+			name:       "method present only under a non-canonical spelling",
+			body:       `{"Method":"ping"}`,
+			wantReject: true,
+		},
+		{
+			name:       "exact duplicate method members",
+			body:       `{"method":"ping","method":"tools/call"}`,
+			wantReject: true,
+		},
+		{
+			name:       "case variant params shadows the canonical params",
+			body:       `{"method":"tools/call","params":{"name":"protected"},"Params":{"name":"safe_tool"}}`,
+			wantReject: true,
+		},
+		{
+			name:       "Unicode case-folded params shadows the canonical params",
+			body:       `{"method":"tools/call","params":{"name":"protected"},"param\u017f":{"name":"safe_tool"}}`,
+			wantReject: true,
+		},
+		{
+			name:       "case variant name inside params",
+			body:       `{"method":"tools/call","params":{"name":"protected","Name":"safe_tool"}}`,
+			wantReject: true,
+		},
+		{
+			name:       "case variant uri inside params",
+			body:       `{"method":"resources/read","params":{"uri":"file:///protected","URI":"file:///safe"}}`,
+			wantReject: true,
+		},
+		{
+			name:       "canonical exempt method",
+			body:       `{"jsonrpc":"2.0","id":1,"method":"ping"}`,
+			wantReject: false,
+		},
+		{
+			name:       "unrelated extra member is tolerated",
+			body:       `{"jsonrpc":"2.0","id":1,"method":"ping","_meta":{"Trace":"abc"}}`,
+			wantReject: false,
+		},
+		{
+			name: "mixed case tool arguments are untouched",
+			body: `{"jsonrpc":"2.0","id":1,"method":"tools/call",` +
+				`"params":{"name":"safe_tool","arguments":{"UserID":1,"Nested":{"Key":"v"}}}}`,
+			wantReject: false,
+		},
+		{
+			name:       "extension method parameters are untouched",
+			body:       `{"jsonrpc":"2.0","id":1,"method":"vendor/run","params":{"Name":"case-sensitive","URI":"custom"}}`,
+			wantReject: false,
+		},
+		{
+			name:       "non-object params is not inspected",
+			body:       `{"jsonrpc":"2.0","id":1,"method":"ping","params":null}`,
+			wantReject: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &McpAuthPolicy{
+				OnFailureStatusCode: 401,
+				ErrorMessageFormat:  "json",
+				AuthConfig: GetMcpAuthConfig(map[string]any{
+					"tools":     map[string]any{"enabled": true, "exceptions": []any{"safe_tool"}},
+					"resources": map[string]any{"enabled": true, "exceptions": []any{"file:///safe"}},
+					"methods":   map[string]any{"enabled": true, "exceptions": []any{"ping", "vendor/run"}},
+				}),
+			}
+			ctx := createMockRequestBodyContext(nil)
+			ctx.Method = "POST"
+			ctx.Path = "/mcp"
+			ctx.OperationPath = "/mcp"
+			ctx.Body = &policy.Body{Content: []byte(tt.body), Present: true}
+
+			action := p.OnRequestBody(context.Background(), ctx, map[string]any{})
+
+			if !tt.wantReject {
+				if action != nil {
+					t.Fatalf("Expected the request to be accepted as exempt, got %T: %+v", action, action)
+				}
+				return
+			}
+			resp, ok := action.(policy.ImmediateResponse)
+			if !ok {
+				t.Fatalf("Expected ImmediateResponse rejecting the request, got %T", action)
+			}
+			assertJSONRPCError(t, resp, JSONRPCInvalidRequest, "Invalid Request")
+
+			var parsed jsonRPCErrorResponse
+			if err := json.Unmarshal(resp.Body, &parsed); err != nil {
+				t.Fatalf("Failed to decode error body: %v", err)
+			}
+			if !strings.HasPrefix(parsed.Error.Data, "Ambiguous MCP request:") {
+				t.Errorf("Expected the error data to explain the ambiguity, got %q", parsed.Error.Data)
+			}
+		})
+	}
+}
+
 func TestOnRequestBody_InvalidOnFailureStatusCode(t *testing.T) {
 	p := &McpAuthPolicy{}
 	ctx := createMockRequestBodyContext(nil)
