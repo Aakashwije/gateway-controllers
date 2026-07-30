@@ -28,6 +28,7 @@ Requires: gh CLI authenticated with workflow dispatch permission on the repo.
 
 import argparse
 import csv
+import re
 import subprocess
 import sys
 import time
@@ -42,11 +43,20 @@ WORKFLOW_FILE = "release-policy.yml"
 
 
 def gh(args, capture=True):
-    """Run a gh command; return (returncode, stdout)."""
+    """Run a gh command; return (returncode, stdout, stderr)."""
     result = subprocess.run(
         ["gh", *args], capture_output=capture, text=True
     )
-    return result.returncode, (result.stdout or "").strip()
+    return (
+        result.returncode,
+        (result.stdout or "").strip(),
+        (result.stderr or "").strip(),
+    )
+
+
+# Matches the run URL gh prints on dispatch (gh >= 2.87.0), e.g.
+#   https://github.com/wso2/gateway-controllers/actions/runs/1234567890
+RUN_URL_RE = re.compile(r"/actions/runs/(\d+)")
 
 
 def load_ready_rows(csv_path: Path, only: set[str] | None):
@@ -63,7 +73,7 @@ def load_ready_rows(csv_path: Path, only: set[str] | None):
 
 def latest_run_id(repo, ref):
     """Return the databaseId of the most recent Release Policy run, or None."""
-    rc, out = gh(
+    rc, out, _ = gh(
         [
             "run", "list",
             "--repo", repo,
@@ -80,9 +90,9 @@ def latest_run_id(repo, ref):
 
 
 def dispatch(policy, version, repo, ref):
-    """Dispatch one workflow run; return the new run id (best effort)."""
+    """Dispatch one workflow run; return the created run id (best effort)."""
     before = latest_run_id(repo, ref)
-    rc, out = gh(
+    rc, out, err = gh(
         [
             "workflow", "run", WORKFLOW_FILE,
             "--repo", repo,
@@ -92,10 +102,17 @@ def dispatch(policy, version, repo, ref):
         ]
     )
     if rc != 0:
-        print(f"    ✗ dispatch failed for {policy}: {out}")
+        print(f"    ✗ dispatch failed for {policy}: {err or out}")
         return None
 
-    # Poll for a new run id to appear (workflow_dispatch is async).
+    # Preferred (gh >= 2.87.0): gh prints the created run URL — parse the id
+    # directly. This is exact, with no risk of picking up a concurrent run.
+    m = RUN_URL_RE.search(f"{out}\n{err}")
+    if m:
+        return m.group(1)
+
+    # Fallback for older gh: poll until a new run id appears. Racy if another
+    # Release Policy run starts on the same ref during this window.
     for _ in range(20):
         time.sleep(1.5)
         rid = latest_run_id(repo, ref)
@@ -106,13 +123,29 @@ def dispatch(policy, version, repo, ref):
 
 
 def watch(run_id, repo):
-    """Block until the run finishes; return (run_id, conclusion)."""
-    rc, _ = gh(
+    """Block until the run finishes; return (run_id, conclusion).
+
+    `gh run watch --exit-status` exits non-zero both for a failed run and for
+    transient CLI/network errors, so on non-zero we query the authoritative
+    conclusion. Only an actual failing conclusion is reported as "failure";
+    an unreadable conclusion is "unknown" (still treated as non-success, but
+    distinguishable from a real workflow failure).
+    """
+    rc, _, _ = gh(
         ["run", "watch", run_id, "--repo", repo, "--exit-status", "--interval", "10"],
         capture=False,
     )
-    conclusion = "success" if rc == 0 else "failure"
-    return run_id, conclusion
+    if rc == 0:
+        return run_id, "success"
+
+    rc2, out, _ = gh(
+        ["run", "view", run_id, "--repo", repo, "--json", "conclusion",
+         "-q", ".conclusion"]
+    )
+    if rc2 == 0 and out:
+        # e.g. failure, cancelled, timed_out, success (if watch hiccupped)
+        return run_id, out.strip()
+    return run_id, "unknown"
 
 
 def run_url(run_id, repo):

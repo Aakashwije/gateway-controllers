@@ -49,10 +49,20 @@ CSV_FIELDS = [
 ]
 
 
-def run(cmd, cwd=None):
+def run(cmd, cwd=None, check=False):
+    """Run a command. On non-zero exit, print stderr; raise if check=True.
+
+    Without check, callers still see a warning instead of silently getting ""
+    (which downstream code would misread as "no tags"/"no commits").
+    """
     result = subprocess.run(
         cmd, cwd=str(cwd or REPO_ROOT), capture_output=True, text=True
     )
+    if result.returncode != 0:
+        msg = result.stderr.strip() or f"exit code {result.returncode}"
+        if check:
+            raise RuntimeError(f"command failed: {' '.join(cmd)}\n  {msg}")
+        print(f"  ⚠ command failed: {' '.join(cmd)}\n    {msg}")
     return result.stdout.strip()
 
 
@@ -77,7 +87,9 @@ def semver_key(version_str):
 
 def fetch_upstream_tags():
     print(f"Fetching tags from remote '{UPSTREAM_REMOTE}'...", flush=True)
-    out = run(["git", "fetch", UPSTREAM_REMOTE, "--tags", "--force"])
+    # Hard failure: proceeding on stale local tags would silently produce a
+    # wrong report (e.g. policies flagged as needing release when they don't).
+    out = run(["git", "fetch", UPSTREAM_REMOTE, "--tags", "--force"], check=True)
     if out:
         print(out)
 
