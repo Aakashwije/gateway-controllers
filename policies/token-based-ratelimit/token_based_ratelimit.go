@@ -212,7 +212,7 @@ func (p *TokenBasedRateLimitPolicy) resolveDelegate(providerName string, params 
 // This avoids double-fetching the template when called from resolveDelegate.
 func (p *TokenBasedRateLimitPolicy) createDelegateWithTemplate(providerName string, params map[string]interface{}, template map[string]interface{}) (policy.Policy, error) {
 	// Transform LLM limits into advanced-ratelimit parameters
-	rlParams := transformToRatelimitParams(params, template)
+	rlParams := transformToRatelimitParams(params, template, p.metadata.AttachedTo)
 
 	slog.Debug("createDelegateWithTemplate: parameters transformed",
 		"route", p.metadata.RouteName,
@@ -263,27 +263,69 @@ func randomString(length int) string {
 }
 
 // transformToRatelimitParams converts LLM-specific parameters to the advanced-ratelimit structure.
-func transformToRatelimitParams(params map[string]interface{}, template map[string]interface{}) map[string]interface{} {
+func transformToRatelimitParams(params map[string]interface{}, template map[string]interface{}, attachedTo policy.Level) map[string]interface{} {
 	slog.Debug("transformToRatelimitParams: starting parameter transformation",
 		"params", params,
-		"template", template)
+		"template", template,
+		"attachedTo", attachedTo)
 
 	var quotas []interface{}
+
+	// Provider-wide (API-level) quotas must share one bucket across every resource of the
+	// provider, mirroring basic-ratelimit's apiname switch for the same attachment level.
+	keyType := "routename"
+	if attachedTo == policy.LevelAPI {
+		keyType = "apiname"
+	}
 
 	consumerBased, _ := params["consumerBased"].(bool)
 	var keyExtraction []interface{}
 	if consumerBased {
 		keyExtraction = []interface{}{
-			map[string]interface{}{"type": "routename"},
+			map[string]interface{}{"type": keyType},
 			map[string]interface{}{"type": "metadata", "key": "x-wso2-application-id", "fallback": "default"},
 		}
 	} else {
 		keyExtraction = []interface{}{
-			map[string]interface{}{"type": "routename"},
+			map[string]interface{}{"type": keyType},
 		}
 	}
 
-	addQuota := func(name string, limitsKey string, templateKey string) {
+	// resolveCostSource maps a single template field to an advanced-ratelimit cost source,
+	// or returns nil if the field isn't defined on the template.
+	resolveCostSource := func(spec map[string]interface{}, templateKey string) map[string]interface{} {
+		usage, ok := spec[templateKey].(map[string]interface{})
+		if !ok {
+			return nil
+		}
+		path, ok := usage["identifier"].(string)
+		if !ok || path == "" {
+			return nil
+		}
+
+		location, _ := usage["location"].(string)
+		sourceConfig := map[string]interface{}{}
+		switch location {
+		case "header":
+			sourceConfig["type"] = "request_header"
+			sourceConfig["key"] = path
+		case "metadata":
+			sourceConfig["type"] = "metadata"
+			sourceConfig["key"] = path
+		default:
+			// "payload" or any other/unspecified location: response_body + jsonPath.
+			sourceConfig["type"] = "response_body"
+			sourceConfig["jsonPath"] = path
+		}
+		return sourceConfig
+	}
+
+	// addQuota builds a quota whose cost is extracted from the first templateKeyGroup that
+	// resolves at least one source. Groups are tried in order and are mutually exclusive —
+	// this lets total_tokens fall back to summing promptTokens+completionTokens when the
+	// template has no totalTokens field (e.g. Anthropic), without ever combining a resolved
+	// totalTokens source with prompt/completion sources and double-counting.
+	addQuota := func(name string, limitsKey string, templateKeyGroups ...[]string) {
 		limits := params[limitsKey]
 		if limits == nil {
 			slog.Debug("addQuota: no limits found, skipping",
@@ -306,55 +348,58 @@ func transformToRatelimitParams(params map[string]interface{}, template map[stri
 			"keyExtraction": keyExtraction,
 		}
 
+		var sources []interface{}
 		if template != nil {
 			// The template structure has spec directly: template["spec"]
 			if spec, ok := template["spec"].(map[string]interface{}); ok {
-				if usage, ok := spec[templateKey].(map[string]interface{}); ok {
-					if path, ok := usage["identifier"].(string); ok && path != "" {
-						// Map template location to cost extraction type
-						location, _ := usage["location"].(string)
-						sourceType := "response_body" // default
-						sourceConfig := map[string]interface{}{
-							"type": sourceType,
+				for _, group := range templateKeyGroups {
+					var groupSources []interface{}
+					for _, templateKey := range group {
+						if source := resolveCostSource(spec, templateKey); source != nil {
+							groupSources = append(groupSources, source)
 						}
-
-						switch location {
-						case "header":
-							sourceType = "request_header"
-							sourceConfig["type"] = sourceType
-							sourceConfig["key"] = path
-						case "metadata":
-							sourceType = "metadata"
-							sourceConfig["type"] = sourceType
-							sourceConfig["key"] = path
-						case "payload":
-							// payload location uses response_body type with jsonPath
-							sourceConfig["jsonPath"] = path
-						default:
-							// For any other location, assume payload/response_body
-							sourceConfig["jsonPath"] = path
+					}
+					if len(groupSources) > 0 {
+						if len(group) > 1 && len(groupSources) < len(group) {
+							// A multi-field fallback group (e.g. promptTokens+completionTokens)
+							// resolved only some of its fields — the quota will still use what
+							// resolved, but the "total" it charges is incomplete and will
+							// undercount actual usage.
+							slog.Warn("addQuota: template defines only part of a multi-field cost fallback group; total will undercount actual usage",
+								"name", name,
+								"expectedFields", group,
+								"resolvedCount", len(groupSources))
 						}
-
-						slog.Debug("addQuota: configured cost extraction",
-							"name", name,
-							"location", location,
-							"sourceType", sourceType,
-							"path", path)
-
-						quota["costExtraction"] = map[string]interface{}{
-							"enabled": true,
-							"sources": []interface{}{sourceConfig},
-						}
+						sources = groupSources
+						break
 					}
 				}
 			}
 		}
+
+		if len(sources) > 0 {
+			slog.Debug("addQuota: configured cost extraction",
+				"name", name,
+				"sourceCount", len(sources))
+			quota["costExtraction"] = map[string]interface{}{
+				"enabled": true,
+				"sources": sources,
+			}
+		} else {
+			// Without costExtraction, advanced-ratelimit charges its flat default cost of 1
+			// per request instead of the actual token count — surface this loudly so a
+			// template gap doesn't silently degrade a token quota into a request quota.
+			slog.Warn("addQuota: no cost extraction source resolved from template; quota will charge 1 per request instead of actual token usage",
+				"name", name,
+				"limitsKey", limitsKey)
+		}
+
 		quotas = append(quotas, quota)
 	}
 
-	addQuota("prompt_tokens", "promptTokenLimits", "promptTokens")
-	addQuota("completion_tokens", "completionTokenLimits", "completionTokens")
-	addQuota("total_tokens", "totalTokenLimits", "totalTokens")
+	addQuota("prompt_tokens", "promptTokenLimits", []string{"promptTokens"})
+	addQuota("completion_tokens", "completionTokenLimits", []string{"completionTokens"})
+	addQuota("total_tokens", "totalTokenLimits", []string{"totalTokens"}, []string{"promptTokens", "completionTokens"})
 
 	rlParams := map[string]interface{}{
 		"quotas": quotas,
