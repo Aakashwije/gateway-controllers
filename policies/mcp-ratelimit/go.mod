@@ -4,7 +4,7 @@ go 1.26.2
 
 require (
 	github.com/wso2/api-platform/sdk/core v0.3.4
-	github.com/wso2/gateway-controllers/policies/advanced-ratelimit v1.1.0
+	github.com/wso2/gateway-controllers/policies/advanced-ratelimit v1.1.2
 )
 
 require (
