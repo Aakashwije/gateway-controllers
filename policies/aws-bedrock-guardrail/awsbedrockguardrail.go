@@ -95,10 +95,22 @@ func GetPolicy(
 		return nil, fmt.Errorf("invalid params: %w", err)
 	}
 
+	// guardrailID/guardrailVersion can each be set directly on this policy
+	// attachment (localGuardrailID/localGuardrailVersion), or left unset to
+	// use the gateway-wide systemParameters value of the same setting.
+	guardrailID, err := resolveGuardrailParam(params, "localGuardrailID", "guardrailID")
+	if err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	guardrailVersion, err := resolveGuardrailParam(params, "localGuardrailVersion", "guardrailVersion")
+	if err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+
 	p := &AWSBedrockGuardrailPolicy{
 		region:           getStringParam(params, "region"),
-		guardrailID:      getStringParam(params, "guardrailID"),
-		guardrailVersion: getStringParam(params, "guardrailVersion"),
+		guardrailID:      guardrailID,
+		guardrailVersion: guardrailVersion,
 	}
 	p.loadAWSConfigFunc = p.loadAWSConfig
 	p.newBedrockClientFunc = func(cfg aws.Config) bedrockGuardrailClient {
@@ -249,6 +261,36 @@ func getStringParam(params map[string]interface{}, key string) string {
 	return ""
 }
 
+// resolveGuardrailParam returns the value for a guardrail identity setting
+// (guardrailID/guardrailVersion) that can be supplied directly on this policy
+// attachment (attachmentKey, from "parameters") or via the gateway-wide
+// systemParameters value of the same setting (systemKey, resolved from
+// config.toml into the same flat params map). At least one must resolve to a
+// non-empty string.
+func resolveGuardrailParam(params map[string]interface{}, attachmentKey, systemKey string) (string, error) {
+	if val, ok := params[attachmentKey]; ok {
+		str, ok := val.(string)
+		if !ok {
+			return "", fmt.Errorf("'%s' must be a string", attachmentKey)
+		}
+		if str == "" {
+			return "", fmt.Errorf("'%s' cannot be empty", attachmentKey)
+		}
+		return str, nil
+	}
+	if val, ok := params[systemKey]; ok {
+		str, ok := val.(string)
+		if !ok {
+			return "", fmt.Errorf("'%s' must be a string", systemKey)
+		}
+		if str == "" {
+			return "", fmt.Errorf("'%s' cannot be empty", systemKey)
+		}
+		return str, nil
+	}
+	return "", fmt.Errorf("one of '%s' or '%s' parameter is required", attachmentKey, systemKey)
+}
+
 // validateAWSConfigParams validates AWS configuration parameters (from params)
 func validateAWSConfigParams(params map[string]interface{}) error {
 	// Validate region (required)
@@ -262,32 +304,6 @@ func validateAWSConfigParams(params map[string]interface{}) error {
 	}
 	if region == "" {
 		return fmt.Errorf("'region' cannot be empty")
-	}
-
-	// Validate guardrailID (required)
-	guardrailIDRaw, ok := params["guardrailID"]
-	if !ok {
-		return fmt.Errorf("'guardrailID' parameter is required")
-	}
-	guardrailID, ok := guardrailIDRaw.(string)
-	if !ok {
-		return fmt.Errorf("'guardrailID' must be a string")
-	}
-	if guardrailID == "" {
-		return fmt.Errorf("'guardrailID' cannot be empty")
-	}
-
-	// Validate guardrailVersion (required)
-	guardrailVersionRaw, ok := params["guardrailVersion"]
-	if !ok {
-		return fmt.Errorf("'guardrailVersion' parameter is required")
-	}
-	guardrailVersion, ok := guardrailVersionRaw.(string)
-	if !ok {
-		return fmt.Errorf("'guardrailVersion' must be a string")
-	}
-	if guardrailVersion == "" {
-		return fmt.Errorf("'guardrailVersion' cannot be empty")
 	}
 
 	// Validate optional AWS credential parameters
