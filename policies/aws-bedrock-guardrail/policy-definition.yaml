@@ -1,11 +1,25 @@
 name: aws-bedrock-guardrail
-version: v1.0.2
+version: v1.1.0
 description: |
   Validate request or response content with AWS Bedrock Guardrails.
 
 parameters:
   type: object
   properties:
+    localGuardrailID:
+      type: string
+      x-wso2-policy-advanced-param: false
+      description: |
+        AWS Bedrock Guardrail identifier for this policy attachment. Leave
+        unset to use the gateway-wide system parameter instead.
+      minLength: 1
+    localGuardrailVersion:
+      type: string
+      x-wso2-policy-advanced-param: false
+      description: |
+        AWS Bedrock Guardrail version (e.g., "DRAFT", "1") for this policy
+        attachment. Leave unset to use the gateway-wide system parameter instead.
+      minLength: 1
     request:
       type: object
       description: Configuration for request phase validation
@@ -73,6 +87,9 @@ parameters:
             If true, includes detailed assessment information from AWS Bedrock Guardrail in error responses.
             If false, returns minimal error information.
           default: false
+  anyOf:
+    - required: [ request ]
+    - required: [ response ]
 
 systemParameters:
   type: object
@@ -123,5 +140,3 @@ systemParameters:
       "wso2/defaultValue": "${config.awsbedrock_role_external_id}"
   required:
     - region
-    - guardrailID
-    - guardrailVersion
