@@ -452,13 +452,19 @@ func (p *TranslatorPolicy) streamStateFor(
 	respCtx *policy.ResponseStreamContext, chunk *policy.StreamBody,
 ) *streamState {
 	shared := respCtx.SharedContext
-	if shared != nil {
-		if shared.Metadata == nil {
-			shared.Metadata = map[string]interface{}{}
-		}
-		if existing, ok := shared.Metadata[streamStateMetadataKey].(*streamState); ok {
-			return existing
-		}
+	if shared == nil {
+		// Without a per-request store the residual buffer and the once-only
+		// role / finish_reason / usage / [DONE] flags cannot survive between
+		// chunks, so a multi-chunk stream would be translated into duplicated
+		// and truncated events. Forwarding the provider bytes unchanged is the
+		// safer degradation.
+		return nil
+	}
+	if shared.Metadata == nil {
+		shared.Metadata = map[string]interface{}{}
+	}
+	if existing, ok := shared.Metadata[streamStateMetadataKey].(*streamState); ok {
+		return existing
 	}
 
 	if !isSSEResponse(headerValue(respCtx.ResponseHeaders, "content-type"), chunk.Chunk) {
@@ -466,9 +472,7 @@ func (p *TranslatorPolicy) streamStateFor(
 	}
 
 	state := newStreamState(p.params.Model, requestID(shared), respCtx.ResponseStatus)
-	if shared != nil {
-		shared.Metadata[streamStateMetadataKey] = state
-	}
+	shared.Metadata[streamStateMetadataKey] = state
 	return state
 }
 

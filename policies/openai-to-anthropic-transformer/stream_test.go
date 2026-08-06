@@ -21,6 +21,7 @@ package openaitoanthropic
 import (
 	"context"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -62,6 +63,17 @@ func anthropicToolStream() string {
 		sseFrame("content_block_delta", `{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{}"}}`) +
 		sseFrame("message_delta", `{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":40}}`) +
 		sseFrame("message_stop", `{"type":"message_stop"}`)
+}
+
+// createdField matches the time-derived "created" value in an emitted chunk.
+var createdField = regexp.MustCompile(`"created":\d+`)
+
+// normalizeCreated rewrites "created" to a constant. streamState stamps it from
+// time.Now().Unix() once per stream, so two streams generated either side of a
+// second boundary differ by that field alone. Byte-exact comparisons between
+// separately generated streams normalize it first.
+func normalizeCreated(s string) string {
+	return createdField.ReplaceAllString(s, `"created":0`)
 }
 
 func sseHeaders() *policy.Headers {
@@ -252,7 +264,7 @@ func TestStream_SplitAcrossTransportChunks(t *testing.T) {
 		if terminated {
 			t.Fatalf("chunk size %d terminated the stream unexpectedly", size)
 		}
-		if got != want {
+		if normalizeCreated(got) != normalizeCreated(want) {
 			t.Errorf("chunk size %d produced different output\ngot:\n%s\nwant:\n%s", size, got, want)
 		}
 		if countDone(got) != 1 {
@@ -271,7 +283,7 @@ func TestStream_MultipleEventsInOneChunk(t *testing.T) {
 	}
 
 	got, _ := feed(t, testPolicy(), []string{stream[:half], stream[half:]})
-	if want := mustFeed(t, stream); got != want {
+	if want := mustFeed(t, stream); normalizeCreated(got) != normalizeCreated(want) {
 		t.Errorf("two-flush output differs from single-flush output\ngot:\n%s\nwant:\n%s", got, want)
 	}
 }
@@ -370,7 +382,7 @@ func TestStream_ToolIndicesStableAcrossTransportSplits(t *testing.T) {
 	want := mustFeed(t, stream)
 	for _, size := range []int{1, 5, 31, 256} {
 		got, _ := feed(t, testPolicy(), splitEvery(stream, size))
-		if got != want {
+		if normalizeCreated(got) != normalizeCreated(want) {
 			t.Errorf("tool stream at chunk size %d differs\ngot:\n%s\nwant:\n%s", size, got, want)
 		}
 	}
@@ -401,7 +413,7 @@ func TestStream_FinishReasonMapping(t *testing.T) {
 				got = reason
 			}
 		}
-		if got != want {
+		if normalizeCreated(got) != normalizeCreated(want) {
 			t.Errorf("stop_reason %q → finish_reason %q, want %q", stopReason, got, want)
 		}
 	}
@@ -751,7 +763,7 @@ func TestStream_StateIsolatedPerRequest(t *testing.T) {
 	wg.Wait()
 
 	for i, got := range results {
-		if got != want {
+		if normalizeCreated(got) != normalizeCreated(want) {
 			t.Fatalf("concurrent stream %d differs from the sequential result\ngot:\n%s\nwant:\n%s", i, got, want)
 		}
 	}
@@ -931,11 +943,45 @@ func TestStream_MultibyteContentSurvivesByteSplits(t *testing.T) {
 	// One byte at a time tears every multi-byte code point across callbacks.
 	for _, size := range []int{1, 2, 3} {
 		got, _ := feed(t, testPolicy(), splitEvery(stream, size))
-		if got != whole {
+		if normalizeCreated(got) != normalizeCreated(whole) {
 			t.Errorf("chunk size %d corrupted multibyte content\ngot:\n%s\nwant:\n%s", size, got, whole)
 		}
 		if decoded := collectContent(t, parseChunks(t, got)); decoded != text {
 			t.Errorf("chunk size %d decoded content = %q, want %q", size, decoded, text)
 		}
+	}
+}
+
+// TestStream_NilSharedContextForwardsUnchanged guards the degradation path: with
+// no per-request store the residual buffer and once-only flags cannot survive
+// between chunks, so the policy must forward provider bytes untouched rather
+// than emit duplicated role events and multiple [DONE] markers.
+func TestStream_NilSharedContextForwardsUnchanged(t *testing.T) {
+	p := testPolicy()
+	respCtx := &policy.ResponseStreamContext{ResponseHeaders: sseHeaders(), ResponseStatus: 200}
+
+	stream := anthropicTextStream()
+	chunks := splitEvery(stream, 9)
+	var out strings.Builder
+	for i, chunk := range chunks {
+		action := p.OnResponseBodyChunk(context.Background(), respCtx, &policy.StreamBody{
+			Chunk:       []byte(chunk),
+			EndOfStream: i == len(chunks)-1,
+			Index:       uint64(i),
+		}, nil)
+		forward, ok := action.(policy.ForwardResponseChunk)
+		if !ok {
+			t.Fatalf("chunk %d: expected ForwardResponseChunk, got %T", i, action)
+		}
+		if forward.Body != nil {
+			t.Fatalf("chunk %d: expected passthrough (nil body), got %q", i, forward.Body)
+		}
+		out.WriteString(chunk)
+	}
+	if out.String() != stream {
+		t.Error("passthrough must not alter the provider bytes")
+	}
+	if n := strings.Count(out.String(), "data: [DONE]"); n != 0 {
+		t.Errorf("passthrough must not synthesise [DONE], got %d", n)
 	}
 }
