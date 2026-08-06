@@ -36,6 +36,16 @@ const (
 	MetadataKeySelectedProvider = "selected_provider"
 )
 
+// Compile-time proof that this policy participates in every phase it declares
+// in Mode(), including chunk-by-chunk response streaming.
+var (
+	_ policy.Policy                  = (*TranslatorPolicy)(nil)
+	_ policy.RequestPolicy           = (*TranslatorPolicy)(nil)
+	_ policy.ResponseHeaderPolicy    = (*TranslatorPolicy)(nil)
+	_ policy.ResponsePolicy          = (*TranslatorPolicy)(nil)
+	_ policy.StreamingResponsePolicy = (*TranslatorPolicy)(nil)
+)
+
 type PolicyParams struct {
 	Model            string
 	AnthropicVersion string
@@ -54,12 +64,17 @@ func GetPolicy(_ policy.PolicyMetadata, rawParams map[string]interface{}) (polic
 	return &TranslatorPolicy{params: parsed}, nil
 }
 
+// Mode buffers the (small) request body for translation, processes response
+// headers so the streaming content-type can be corrected, and asks for STREAM
+// mode on the response body so Anthropic's SSE events can be translated
+// chunk-by-chunk. The kernel falls back to the buffered OnResponseBody path
+// automatically when the upstream response is not a stream.
 func (p *TranslatorPolicy) Mode() policy.ProcessingMode {
 	return policy.ProcessingMode{
 		RequestHeaderMode:  policy.HeaderModeSkip,
 		RequestBodyMode:    policy.BodyModeBuffer,
-		ResponseHeaderMode: policy.HeaderModeSkip,
-		ResponseBodyMode:   policy.BodyModeBuffer,
+		ResponseHeaderMode: policy.HeaderModeProcess,
+		ResponseBodyMode:   policy.BodyModeStream,
 	}
 }
 
@@ -100,15 +115,37 @@ func (p *TranslatorPolicy) OnRequestBody(
 	return mods
 }
 
-// OnResponseBody translates the Anthropic Messages response into an OpenAI
-// ChatCompletion-shaped body. Streaming SSE responses are passed through
-// untouched — translating SSE requires a stateful chunk-level policy.
+// OnResponseHeaders marks a translated Anthropic event stream as
+// text/event-stream for downstream OpenAI clients and drops the now-stale
+// content-length. Buffered JSON responses are left untouched.
+func (p *TranslatorPolicy) OnResponseHeaders(
+	_ context.Context,
+	respCtx *policy.ResponseHeaderContext,
+	_ map[string]interface{},
+) policy.ResponseHeaderAction {
+	if !p.shouldRunForSelected(selectedProvider(respCtx.SharedContext)) {
+		return policy.DownstreamResponseHeaderModifications{}
+	}
+	if !isSSEContentType(headerValue(respCtx.ResponseHeaders, "content-type")) {
+		return policy.DownstreamResponseHeaderModifications{}
+	}
+	return policy.DownstreamResponseHeaderModifications{
+		HeadersToSet:    map[string]string{"content-type": "text/event-stream"},
+		HeadersToRemove: []string{"content-length"},
+	}
+}
+
+// OnResponseBody is the buffered fallback used when the chain cannot stream
+// (some other response policy is not streaming-capable) or the upstream response
+// was not chunked. A fully buffered Anthropic event stream is run through the
+// same converter as the chunked path, so the downstream client sees identical
+// OpenAI SSE either way.
 func (p *TranslatorPolicy) OnResponseBody(
 	_ context.Context,
 	respCtx *policy.ResponseContext,
 	_ map[string]interface{},
 ) policy.ResponseAction {
-	if !p.shouldRunResponse(respCtx) {
+	if !p.shouldRunForSelected(selectedProvider(respCtx.SharedContext)) {
 		return policy.DownstreamResponseModifications{}
 	}
 
@@ -117,21 +154,78 @@ func (p *TranslatorPolicy) OnResponseBody(
 	}
 
 	body := respCtx.ResponseBody.Content
-	if looksLikeSSE(body) {
-		slog.Debug(PolicyName+": SSE response passthrough", "status", respCtx.ResponseStatus)
-		return policy.DownstreamResponseModifications{}
+	if isSSEResponse(headerValue(respCtx.ResponseHeaders, "content-type"), body) {
+		slog.Debug(PolicyName+": translating buffered SSE response", "status", respCtx.ResponseStatus)
+		state := newStreamState(p.params.Model, requestID(respCtx.SharedContext), respCtx.ResponseStatus)
+		sse, _ := translateSSEChunk(state, body, true)
+		return policy.DownstreamResponseModifications{
+			Body:            sse,
+			HeadersToSet:    map[string]string{"content-type": "text/event-stream"},
+			HeadersToRemove: []string{"content-length"},
+		}
 	}
 
 	slog.Debug(PolicyName+": translating response", "status", respCtx.ResponseStatus)
 	return translateResponse(body, respCtx.ResponseStatus, p.params.Model)
 }
 
-func (p *TranslatorPolicy) shouldRun(reqCtx *policy.RequestContext) bool {
-	return p.shouldRunForSelected(selectedProviderFromMetadata(reqCtx.SharedContext, reqCtx.Metadata))
+// ─── Streaming response phase ─────────────────────────────────────────────────
+
+// NeedsMoreResponseData keeps the kernel accumulating until its buffer ends on an
+// SSE frame boundary, so OnResponseBodyChunk normally receives whole events. The
+// per-request residual buffer still covers the cases where the kernel flushes
+// early (accumulator cap, end of stream).
+func (p *TranslatorPolicy) NeedsMoreResponseData(accumulated []byte) bool {
+	if len(accumulated) == 0 {
+		return false
+	}
+	if !looksLikeSSE(accumulated) {
+		// Not SSE (e.g. a JSON error body streamed through) — don't stall the
+		// stream waiting for a boundary that will never come.
+		return false
+	}
+	return !endsOnSSEBoundary(accumulated)
 }
 
-func (p *TranslatorPolicy) shouldRunResponse(respCtx *policy.ResponseContext) bool {
-	return p.shouldRunForSelected(selectedProviderFromMetadata(respCtx.SharedContext, respCtx.Metadata))
+// OnResponseBodyChunk translates the Anthropic SSE events delivered in this
+// flush into OpenAI chat.completion.chunk events, replacing the native bytes. On
+// the final chunk it appends the usage chunk and the terminating [DONE].
+func (p *TranslatorPolicy) OnResponseBodyChunk(
+	_ context.Context,
+	respCtx *policy.ResponseStreamContext,
+	chunk *policy.StreamBody,
+	_ map[string]interface{},
+) policy.StreamingResponseAction {
+	if !p.shouldRunForSelected(selectedProvider(respCtx.SharedContext)) {
+		return policy.ForwardResponseChunk{}
+	}
+
+	state := p.streamStateFor(respCtx, chunk)
+	if state == nil {
+		// Not an event stream — the buffered OnResponseBody path owns this
+		// response; forward the bytes untouched.
+		return policy.ForwardResponseChunk{}
+	}
+
+	sse, terminate := translateSSEChunk(state, chunk.Chunk, chunk.EndOfStream)
+	// Always return a non-nil body so the native Anthropic bytes are replaced
+	// (nil would pass them through untranslated). An empty slice emits nothing
+	// for this flush, which is correct when a frame carried no delta.
+	if sse == nil {
+		sse = []byte{}
+	}
+	if terminate {
+		// Response headers are already committed, so a provider error can only be
+		// delivered as a final SSE event before the stream is closed.
+		return policy.TerminateResponseChunk{Body: sse}
+	}
+	return policy.ForwardResponseChunk{Body: sse}
+}
+
+// ─── Routing / selection ──────────────────────────────────────────────────────
+
+func (p *TranslatorPolicy) shouldRun(reqCtx *policy.RequestContext) bool {
+	return p.shouldRunForSelected(selectedProvider(reqCtx.SharedContext))
 }
 
 func (p *TranslatorPolicy) shouldRunForSelected(selected string) bool {
@@ -142,11 +236,11 @@ func (p *TranslatorPolicy) shouldRunForSelected(selected string) bool {
 	return strings.EqualFold(selected, p.params.ProviderID)
 }
 
-func selectedProviderFromMetadata(shared *policy.SharedContext, metadata map[string]interface{}) string {
-	if shared == nil || metadata == nil {
+func selectedProvider(shared *policy.SharedContext) string {
+	if shared == nil || shared.Metadata == nil {
 		return ""
 	}
-	rawSelectedProvider, hasSelectedProvider := metadata[MetadataKeySelectedProvider]
+	rawSelectedProvider, hasSelectedProvider := shared.Metadata[MetadataKeySelectedProvider]
 	if !hasSelectedProvider {
 		return ""
 	}

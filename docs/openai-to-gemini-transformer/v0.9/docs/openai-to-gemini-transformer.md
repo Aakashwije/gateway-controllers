@@ -5,7 +5,7 @@ title: "Overview"
 
 ## Overview
 
-The OpenAI to Gemini policy lets a client speak the OpenAI Chat Completions API while the request is served by Google's Gemini `generateContent` API. Gemini has one of the most divergent request/response shapes of the major providers, so this policy performs a full body and path rewrite in both directions: OpenAI `messages` become Gemini `contents`, system prompts become `systemInstruction`, tools become `functionDeclarations`, and the response is rewritten back into the OpenAI ChatCompletion shape.
+The OpenAI to Gemini policy lets a client speak the OpenAI Chat Completions API while the request is served by Google's Gemini `generateContent` API. Gemini has one of the most divergent request/response shapes of the major providers, so this policy performs a full body and path rewrite in both directions: OpenAI `messages` become Gemini `contents`, system prompts become `systemInstruction`, tools become `functionDeclarations`, and the response is rewritten back into the OpenAI shape — buffered responses as ChatCompletion JSON and streaming responses as OpenAI Chat Completions Server-Sent Events.
 
 It is designed to run on an LLM proxy that fans one OpenAI-shaped `/chat/completions` endpoint out to several providers. It supports two modes:
 
@@ -26,6 +26,7 @@ Use this policy when you need to:
 - **Multi-modal input**: Converts OpenAI `image_url` content blocks — base64 data URIs become `inlineData`, remote URLs become `fileData`.
 - **Response translation**: Rewrites non-streaming Gemini responses into the OpenAI ChatCompletion shape, including finish-reason and usage mapping.
 - **Streaming path**: When `stream: true`, the path is rewritten to `streamGenerateContent?alt=sse`.
+- **Streaming translation**: Converts Gemini's Server-Sent Events into OpenAI `chat.completion.chunk` events (`data: {chunk}\n\n` … `data: [DONE]\n\n`), including the initial `delta.role`, candidate text, function calls as `delta.tool_calls`, finish reasons, and final usage. Events are parsed incrementally, so provider events split across transport chunks are handled without buffering the whole response.
 
 ## Parameters
 
@@ -70,4 +71,11 @@ policies:
 
 ## Notes
 
+- Streaming (`stream: true`) responses are translated to OpenAI Chat Completions SSE. The downstream `content-type` is set to `text/event-stream` and the stale `content-length` is removed.
+- Finish reasons map exactly as they do for non-streaming responses: `MAX_TOKENS` → `length`; a candidate that produced function calls → `tool_calls`; `SAFETY`, `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII`, `IMAGE_SAFETY`, and `LANGUAGE` → `content_filter`; everything else → `stop`. A prompt rejected via `promptFeedback.blockReason` is reported as `content_filter` on choice 0.
+- Gemini candidate indices are preserved as OpenAI choice indices, so multi-candidate (`n > 1`) streams keep their per-choice content, tool-call indices, and finish reasons separate.
+- Function calls arrive whole rather than as incremental argument deltas, so each becomes a single `tool_calls` chunk with `function.arguments` serialized as a JSON string.
+- Final usage is emitted as a terminal chunk with an empty `choices` array. `completion_tokens` includes thought tokens, with `prompt_tokens_details.cached_tokens` and `completion_tokens_details.reasoning_tokens` populated when Gemini reports them. No usage chunk is emitted when the provider reports no `usageMetadata`.
+- **Unmapped stream events.** Parts flagged `thought: true` are the model's reasoning and have no OpenAI Chat Completions streaming equivalent, so they are excluded from visible assistant content (their token count is still reported as `reasoning_tokens`).
+- A mid-stream Gemini `error` object, or an event that cannot be parsed, is emitted as an OpenAI-style error object and the stream is then closed. Provider bytes are never forwarded as if they were OpenAI chunks, and such a stream is not terminated with `[DONE]`. Because response headers are already committed once streaming has begun, a mid-stream failure cannot be surfaced as an HTTP error status.
 - The upstream must be configured with Gemini authentication (the `x-goog-api-key` header) at the provider level; this policy handles only the request/response body and path translation.

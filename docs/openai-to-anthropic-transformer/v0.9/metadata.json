@@ -6,5 +6,5 @@
   "categories": [
     "AI"
   ],
-  "description": "Translates OpenAI Chat Completions requests into Anthropic Messages API format and rewrites non-streaming Anthropic responses back into the OpenAI response shape. Supports system prompts, multi-modal image input, tool/function calling, and both routed (multi-provider) and unconditional (single-provider) execution modes."
+  "description": "Translates OpenAI Chat Completions requests into Anthropic Messages API format and rewrites non-streaming and streaming Anthropic responses back into OpenAI-compatible JSON or Chat Completions Server-Sent Events. Supports system prompts, multi-modal image input, tool/function calling, and both routed (multi-provider) and unconditional (single-provider) execution modes."
 }

@@ -1,9 +1,16 @@
 name: openai-to-gemini-transformer
-version: v0.9.0
+version: v0.9.1
 description: |
   Translates OpenAI Chat Completions requests to the Gemini generateContent API
-  format and rewrites non-streaming Gemini responses back to the OpenAI shape.
-  Supports routed and unconditional execution modes.
+  format and rewrites Gemini responses back to the OpenAI shape.
+
+  Non-streaming generateContent responses become OpenAI ChatCompletion JSON.
+  Streaming responses (streamGenerateContent?alt=sse) are converted from Gemini's
+  Server-Sent Events into OpenAI Chat Completions SSE (data: {chunk}\n\n ...
+  data: [DONE]), covering candidate text, function calls as tool_calls, per-
+  candidate choice indices, finish reasons, and final usage. Events are parsed
+  incrementally, so it handles the stream in both buffered and chunk-by-chunk
+  (true streaming) modes. Supports routed and unconditional execution modes.
 
 parameters:
   type: object

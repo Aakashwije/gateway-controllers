@@ -6,5 +6,5 @@
   "categories": [
     "AI"
   ],
-  "description": "Translates OpenAI Chat Completions requests into the Google Gemini generateContent API format and rewrites non-streaming Gemini responses back into the OpenAI response shape. Maps messages to contents, system prompts to systemInstruction, tools to functionDeclarations, and multi-modal image input. Supports both routed (multi-provider) and unconditional (single-provider) execution modes."
+  "description": "Translates OpenAI Chat Completions requests into the Google Gemini generateContent API format and rewrites non-streaming and streaming Gemini responses back into OpenAI-compatible JSON or Chat Completions Server-Sent Events. Supports system prompts, multi-modal image input, tool/function calling, and both routed (multi-provider) and unconditional (single-provider) execution modes."
 }

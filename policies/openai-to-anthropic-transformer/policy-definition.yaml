@@ -1,9 +1,16 @@
 name: openai-to-anthropic-transformer
-version: v0.9.0
+version: v0.9.1
 description: |
   Translates OpenAI Chat Completions requests to Anthropic Messages format and
-  rewrites non-streaming Anthropic responses back to the OpenAI response shape.
-  Supports routed and unconditional execution modes.
+  rewrites Anthropic responses back to the OpenAI response shape.
+
+  Non-streaming Messages responses become OpenAI ChatCompletion JSON. Streaming
+  responses are converted from Anthropic's Server-Sent Events into OpenAI Chat
+  Completions SSE (data: {chunk}\n\n ... data: [DONE]), covering the initial
+  delta.role, text and tool-call argument deltas, finish reasons, and final
+  usage. Events are parsed incrementally, so it handles the stream in both
+  buffered and chunk-by-chunk (true streaming) modes. Supports routed and
+  unconditional execution modes.
 
 parameters:
   type: object

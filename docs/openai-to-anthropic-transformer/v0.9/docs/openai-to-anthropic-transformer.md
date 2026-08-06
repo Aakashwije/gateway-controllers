@@ -5,7 +5,7 @@ title: "Overview"
 
 ## Overview
 
-The OpenAI to Anthropic policy lets a client speak the OpenAI Chat Completions API while the request is served by Anthropic's Messages API. It rewrites the request body and path on the way upstream, and rewrites the (non-streaming) response back into the OpenAI ChatCompletion shape on the way down, so the client never has to know which provider answered.
+The OpenAI to Anthropic policy lets a client speak the OpenAI Chat Completions API while the request is served by Anthropic's Messages API. It rewrites the request body and path on the way upstream, and rewrites the response back into the OpenAI shape on the way down — buffered responses as OpenAI ChatCompletion JSON and streaming responses as OpenAI Chat Completions Server-Sent Events — so the client never has to know which provider answered.
 
 It is designed to run on an LLM proxy that fans one OpenAI-shaped `/chat/completions` endpoint out to several providers. It supports two modes:
 
@@ -26,7 +26,7 @@ Use this policy when you need to:
 - **Multi-modal input**: Converts OpenAI `image_url` content blocks (both base64 data URIs and remote URLs) into Anthropic image source blocks.
 - **max_tokens handling**: Anthropic requires `max_tokens`; the policy honours OpenAI's `max_completion_tokens` (preferred) or `max_tokens`, falling back to a default when neither is present.
 - **Response translation**: Rewrites non-streaming Anthropic responses into the OpenAI ChatCompletion shape, including `finish_reason` and tool-call mapping.
-- **Streaming passthrough**: Server-Sent Events responses are passed through untouched (streaming translation requires a stateful chunk-level policy).
+- **Streaming translation**: Converts Anthropic's Server-Sent Events into OpenAI `chat.completion.chunk` events (`data: {chunk}\n\n` … `data: [DONE]\n\n`), including the initial `delta.role`, text and tool-call argument deltas, finish reasons, and final usage. Events are parsed incrementally, so provider events split across transport chunks are handled without buffering the whole response.
 
 ## Parameters
 
@@ -69,5 +69,10 @@ policies:
 
 ## Notes
 
-- Only non-streaming responses are translated back to OpenAI shape. Streaming (`stream: true`) responses are passed through as-is.
+- Streaming (`stream: true`) responses are translated to OpenAI Chat Completions SSE. The downstream `content-type` is set to `text/event-stream` and the stale `content-length` is removed.
+- Stop reasons map to OpenAI finish reasons as `end_turn`/`stop_sequence` → `stop`, `max_tokens` → `length`, `tool_use` → `tool_calls`.
+- Anthropic numbers every content block, including text; the policy renumbers tool-use blocks into the contiguous, zero-based `tool_calls` index OpenAI expects.
+- Final usage is emitted as a terminal chunk with an empty `choices` array, carrying `prompt_tokens_details.cached_tokens` and `cache_creation_tokens` when Anthropic reports cache usage.
+- **Unmapped stream events.** `ping` and `content_block_stop` carry nothing OpenAI represents and are dropped. `thinking_delta` and `signature_delta` (extended thinking) have no OpenAI Chat Completions streaming equivalent and are excluded from visible assistant content.
+- A mid-stream Anthropic `error` event, or an event that cannot be parsed, is emitted as an OpenAI-style error object and the stream is then closed. Provider bytes are never forwarded as if they were OpenAI chunks, and such a stream is not terminated with `[DONE]`. Because response headers are already committed once streaming has begun, a mid-stream failure cannot be surfaced as an HTTP error status.
 - The upstream must be configured with Anthropic authentication (the `x-api-key` header) at the provider level; this policy handles only the request/response body and path translation.
