@@ -1330,6 +1330,175 @@ func TestAnthropicCalculator_Cost_WebSearch_ZeroRequests(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Transformed (OpenAI-shaped) Anthropic and Gemini responses
+//
+// openai-to-anthropic-transformer and openai-to-gemini-transformer rewrite both
+// buffered and streaming responses into the OpenAI Chat Completions shape. When
+// llm-cost runs after a transformer it therefore sees OpenAI token names rather
+// than the provider-native ones, and must still bill correctly.
+// ---------------------------------------------------------------------------
+
+// TestAnthropicCalculator_TransformedMatchesNative is the core guarantee: the
+// same underlying Anthropic token counts must produce identical Usage whether
+// llm-cost sees the native body or the transformer's OpenAI-shaped rewrite.
+func TestAnthropicCalculator_TransformedMatchesNative(t *testing.T) {
+	c := &AnthropicCalculator{}
+
+	native := []byte(`{"model":"claude-sonnet-4-20250514","usage":{
+		"input_tokens":25,"output_tokens":15,
+		"cache_read_input_tokens":10,"cache_creation_input_tokens":5}}`)
+	// What the transformer emits for those same counts.
+	transformed := []byte(`{"model":"claude-sonnet-4-20250514","usage":{
+		"prompt_tokens":25,"completion_tokens":15,"total_tokens":40,
+		"prompt_tokens_details":{"cached_tokens":10,"cache_creation_tokens":5}}}`)
+
+	nativeUsage, err := c.Normalize(native, nil)
+	if err != nil {
+		t.Fatalf("native normalize: %v", err)
+	}
+	transformedUsage, err := c.Normalize(transformed, nil)
+	if err != nil {
+		t.Fatalf("transformed normalize: %v", err)
+	}
+
+	if nativeUsage != transformedUsage {
+		t.Fatalf("transformed usage != native usage\nnative:      %+v\ntransformed: %+v",
+			nativeUsage, transformedUsage)
+	}
+	// Guard the specific trap: prompt_tokens is Anthropic's regular-only count,
+	// so the cache buckets must be added back to keep it cache-inclusive.
+	if transformedUsage.PromptTokens != 40 {
+		t.Errorf("PromptTokens = %d, want 40 (25 regular + 10 cache read + 5 cache write)",
+			transformedUsage.PromptTokens)
+	}
+}
+
+func TestAnthropicCalculator_TransformedCost(t *testing.T) {
+	pricing, ok := lookupPricing(testPricingMap, "claude-opus-4-6")
+	if !ok {
+		t.Skip("claude-opus-4-6 not in pricing map")
+	}
+	usage, err := (&AnthropicCalculator{}).Normalize([]byte(`{"usage":{
+		"prompt_tokens":25,"completion_tokens":15,"total_tokens":40,
+		"prompt_tokens_details":{"cached_tokens":10,"cache_creation_tokens":5}}}`), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := float64(25)*pricing.InputCostPerToken +
+		float64(15)*pricing.OutputCostPerToken +
+		float64(10)*pricing.CacheReadInputTokenCost +
+		float64(5)*pricing.CacheCreationInputTokenCost
+	if got := genericCalculateCost(usage, pricing); !almostEqual(got, want) {
+		t.Fatalf("transformed cost = %.10f, want %.10f", got, want)
+	}
+}
+
+// TestAnthropicCalculator_NativeWinsOverTransformed ensures a real Anthropic
+// body is never routed through the transformed branch.
+func TestAnthropicCalculator_NativeWinsOverTransformed(t *testing.T) {
+	usage, err := (&AnthropicCalculator{}).Normalize([]byte(`{"usage":{
+		"input_tokens":100,"output_tokens":50,
+		"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if usage.PromptTokens != 100 || usage.CompletionTokens != 50 {
+		t.Fatalf("native fields must win, got %+v", usage)
+	}
+}
+
+func TestAnthropicCalculator_TransformedKeepsRequestSideFields(t *testing.T) {
+	usage, err := (&AnthropicCalculator{}).Normalize(
+		[]byte(`{"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`),
+		[]byte(`{"speed":"fast","web_search_options":{"search_context_size":"high"}}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if usage.Speed != "fast" || usage.SearchContextSize != "high" {
+		t.Errorf("request-side fields lost on the transformed path: %+v", usage)
+	}
+}
+
+// TestGeminiCalculator_TransformedMatchesNative mirrors the Anthropic guarantee.
+func TestGeminiCalculator_TransformedMatchesNative(t *testing.T) {
+	c := &GeminiCalculator{}
+
+	// Non-inclusive thinking case: prompt+candidates != total, so the native
+	// path adds thoughts into completion tokens (6 + 8 = 14).
+	native := []byte(`{"modelVersion":"gemini-2.5-pro","usageMetadata":{
+		"promptTokenCount":12,"candidatesTokenCount":6,"totalTokenCount":26,
+		"cachedContentTokenCount":4,"thoughtsTokenCount":8}}`)
+	transformed := []byte(`{"model":"gemini-2.5-pro","usage":{
+		"prompt_tokens":12,"completion_tokens":14,"total_tokens":26,
+		"prompt_tokens_details":{"cached_tokens":4},
+		"completion_tokens_details":{"reasoning_tokens":8}}}`)
+
+	nativeUsage, err := c.Normalize(native, nil)
+	if err != nil {
+		t.Fatalf("native normalize: %v", err)
+	}
+	transformedUsage, err := c.Normalize(transformed, nil)
+	if err != nil {
+		t.Fatalf("transformed normalize: %v", err)
+	}
+	if nativeUsage != transformedUsage {
+		t.Fatalf("transformed usage != native usage\nnative:      %+v\ntransformed: %+v",
+			nativeUsage, transformedUsage)
+	}
+	if transformedUsage.CompletionTokens != 14 || transformedUsage.ReasoningTokens != 8 {
+		t.Errorf("completion tokens must stay inclusive of reasoning: %+v", transformedUsage)
+	}
+}
+
+func TestGeminiCalculator_NativeWinsOverTransformed(t *testing.T) {
+	usage, err := (&GeminiCalculator{}).Normalize([]byte(`{"usageMetadata":{
+		"promptTokenCount":100,"candidatesTokenCount":50,"totalTokenCount":150},
+		"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if usage.PromptTokens != 100 || usage.CompletionTokens != 50 {
+		t.Fatalf("native usageMetadata must win, got %+v", usage)
+	}
+}
+
+// TestOnResponseBodyChunk_SSE_AnthropicTransformed_Calculated drives the whole
+// policy over the SSE stream openai-to-anthropic-transformer now emits.
+func TestOnResponseBodyChunk_SSE_AnthropicTransformed_Calculated(t *testing.T) {
+	const model = "claude-sonnet-4-20250514"
+	p := &LLMCostPolicy{pricingMap: map[string]ModelPricing{
+		model: {Provider: "anthropic", InputCostPerToken: 3e-6, OutputCostPerToken: 15e-6},
+	}}
+	body := []byte(
+		"data: {\"id\":\"chatcmpl-01ABC\",\"model\":\"" + model + "\",\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n" +
+			"data: {\"id\":\"chatcmpl-01ABC\",\"model\":\"" + model + "\",\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n" +
+			"data: {\"id\":\"chatcmpl-01ABC\",\"model\":\"" + model + "\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":4,\"total_tokens\":14}}\n\n" +
+			"data: [DONE]\n\n",
+	)
+	ctx, action := sendChunks(p, [][]byte{body})
+	// 10 * 3e-6 + 4 * 15e-6 = 9e-5.
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000900000")
+}
+
+// TestOnResponseBodyChunk_SSE_GeminiTransformed_Calculated does the same for the
+// Gemini transformer's converted stream.
+func TestOnResponseBodyChunk_SSE_GeminiTransformed_Calculated(t *testing.T) {
+	const model = "gemini-2.5-pro"
+	p := &LLMCostPolicy{pricingMap: map[string]ModelPricing{
+		model: {Provider: "gemini", InputCostPerToken: 1.25e-6, OutputCostPerToken: 1e-5},
+	}}
+	body := []byte(
+		"data: {\"id\":\"chatcmpl-r\",\"model\":\"" + model + "\",\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n" +
+			"data: {\"id\":\"chatcmpl-r\",\"model\":\"" + model + "\",\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":6,\"total_tokens\":18}}\n\n" +
+			"data: [DONE]\n\n",
+	)
+	ctx, action := sendChunks(p, [][]byte{body})
+	// 12 * 1.25e-6 + 6 * 1e-5 = 7.5e-5.
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000750000")
+}
+
 func TestGeminiCalculator_Normalize(t *testing.T) {
 	// INCLUSIVE case: promptTokenCount + candidatesTokenCount == totalTokenCount
 	// meaning candidatesTokenCount already contains thinking tokens.

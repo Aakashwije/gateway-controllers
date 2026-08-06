@@ -22,7 +22,9 @@ import (
 )
 
 // GeminiCalculator handles models with provider "gemini", "vertex_ai", and
-// related subfamilies. Uses the "usageMetadata" response namespace.
+// related subfamilies. Uses the "usageMetadata" response namespace, and also
+// accepts generateContent responses converted to the OpenAI Chat Completions
+// shape by openai-to-gemini-transformer.
 // Grounding cost is applied in Adjust() as a fixed per-query fee.
 type GeminiCalculator struct{}
 
@@ -79,11 +81,41 @@ func (c *GeminiCalculator) Normalize(responseBody []byte, _ []byte) (Usage, erro
 			// Mapped to ServiceTier: "priority" or "flex" (ON_DEMAND → "").
 			TrafficType string `json:"trafficType"`
 		} `json:"usageMetadata"`
+
+		// OpenAI shape emitted by openai-to-gemini-transformer, for both buffered
+		// responses and the converted SSE stream.
+		Usage *struct {
+			PromptTokens        int64 `json:"prompt_tokens"`
+			CompletionTokens    int64 `json:"completion_tokens"`
+			TotalTokens         int64 `json:"total_tokens"`
+			PromptTokensDetails struct {
+				CachedTokens int64 `json:"cached_tokens"`
+			} `json:"prompt_tokens_details"`
+			CompletionTokensDetails struct {
+				ReasoningTokens int64 `json:"reasoning_tokens"`
+			} `json:"completion_tokens_details"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(responseBody, &resp); err != nil {
 		return Usage{}, err
 	}
 	m := resp.UsageMetadata
+
+	// Transformed responses carry OpenAI token names instead of usageMetadata.
+	// The native namespace is checked first so a genuine Gemini response is
+	// never routed here. Gemini's promptTokenCount and the transformer's
+	// prompt_tokens are both cache-inclusive, and completion_tokens already
+	// folds in thought tokens, so the fields map across directly.
+	if m.PromptTokenCount == 0 && m.CandidatesTokenCount == 0 && m.ResponseTokenCount == 0 &&
+		resp.Usage != nil && (resp.Usage.PromptTokens != 0 || resp.Usage.CompletionTokens != 0) {
+		return Usage{
+			PromptTokens:     resp.Usage.PromptTokens,
+			CompletionTokens: resp.Usage.CompletionTokens,
+			TotalTokens:      resp.Usage.TotalTokens,
+			ReasoningTokens:  resp.Usage.CompletionTokensDetails.ReasoningTokens,
+			CachedReadTokens: resp.Usage.PromptTokensDetails.CachedTokens,
+		}, nil
+	}
 
 	// Prompt modality tokens: promptTokensDetails gives totals (including cached);
 	// subtract cacheTokensDetails to get the non-cached portion billed at input rate.

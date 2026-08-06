@@ -24,6 +24,8 @@ import (
 // AnthropicCalculator handles models with provider "anthropic".
 // Uses input_tokens/output_tokens field names and adds cache token fields.
 // The speed flag is not echoed in the response — it is read from the request body.
+// It also accepts Messages responses converted to the OpenAI Chat Completions
+// shape by openai-to-anthropic-transformer.
 type AnthropicCalculator struct{}
 
 func (c *AnthropicCalculator) Normalize(responseBody []byte, requestBody []byte) (Usage, error) {
@@ -34,21 +36,31 @@ func (c *AnthropicCalculator) Normalize(responseBody []byte, requestBody []byte)
 		CacheCreationInputTokens int64  `json:"cache_creation_input_tokens"`
 		CacheReadInputTokens     int64  `json:"cache_read_input_tokens"`
 		InferenceGeo             string `json:"inference_geo"`
-		CacheCreation *struct {
+		CacheCreation            *struct {
 			Ephemeral5mInputTokens int64 `json:"ephemeral_5m_input_tokens"`
 			Ephemeral1hInputTokens int64 `json:"ephemeral_1h_input_tokens"`
 		} `json:"cache_creation"`
 		ServerToolUse *struct {
 			WebSearchRequests int64 `json:"web_search_requests"`
 		} `json:"server_tool_use"`
+
+		// OpenAI shape emitted by openai-to-anthropic-transformer, for both
+		// buffered responses and the converted SSE stream.
+		PromptTokens        int64 `json:"prompt_tokens"`
+		CompletionTokens    int64 `json:"completion_tokens"`
+		TotalTokens         int64 `json:"total_tokens"`
+		PromptTokensDetails *struct {
+			CachedTokens        int64 `json:"cached_tokens"`
+			CacheCreationTokens int64 `json:"cache_creation_tokens"`
+		} `json:"prompt_tokens_details"`
 	}
 	var resp struct {
-		Model   string        `json:"model"`
-		Usage   anthropicUsage `json:"usage"`
+		Model string         `json:"model"`
+		Usage anthropicUsage `json:"usage"`
 		// Anthropic streaming wraps usage/model inside a "message" envelope
 		// in the message_start event. Check both locations.
 		Message *struct {
-			Model string        `json:"model"`
+			Model string         `json:"model"`
 			Usage anthropicUsage `json:"usage"`
 		} `json:"message"`
 	}
@@ -101,6 +113,36 @@ func (c *AnthropicCalculator) Normalize(responseBody []byte, requestBody []byte)
 				searchContextSize = req.WebSearchOptions.SearchContextSize
 			}
 		}
+	}
+
+	// Transformed responses carry OpenAI token names instead of Anthropic's.
+	// Native fields are checked first so a genuine Anthropic response is never
+	// routed here.
+	if resp.Usage.InputTokens == 0 && resp.Usage.OutputTokens == 0 &&
+		resp.Usage.CacheCreationInputTokens == 0 && resp.Usage.CacheReadInputTokens == 0 &&
+		(resp.Usage.PromptTokens != 0 || resp.Usage.CompletionTokens != 0) {
+		var cachedTokens, cacheCreationTokens int64
+		if d := resp.Usage.PromptTokensDetails; d != nil {
+			cachedTokens = d.CachedTokens
+			cacheCreationTokens = d.CacheCreationTokens
+		}
+		// The transformer reports prompt_tokens as Anthropic's regular-only
+		// input_tokens, so add the cache buckets back to rebuild the inclusive
+		// prompt count genericCalculateCost expects. total_tokens is already
+		// input+output, matching the native branch below.
+		promptTokens := resp.Usage.PromptTokens + cachedTokens + cacheCreationTokens
+		return Usage{
+			PromptTokens:          promptTokens,
+			CompletionTokens:      resp.Usage.CompletionTokens,
+			TotalTokens:           resp.Usage.TotalTokens,
+			InputTokensForTiering: promptTokens,
+			CachedReadTokens:      cachedTokens,
+			// The transformer does not preserve the cache_creation TTL split, so
+			// all writes bill at the default 5-minute rate.
+			CacheWriteTokens:  cacheCreationTokens,
+			Speed:             speed,
+			SearchContextSize: searchContextSize,
+		}, nil
 	}
 
 	u := resp.Usage
