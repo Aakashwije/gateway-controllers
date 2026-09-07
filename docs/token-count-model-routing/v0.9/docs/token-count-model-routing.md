@@ -1,11 +1,11 @@
 ---
 title: "Overview"
 ---
-# Context-Based Routing
+# Token-Count Model Routing
 
 ## Overview
 
-The Context-Based Routing policy estimates the input tokens in an LLM request
+The Token-Count Model Routing policy estimates the input tokens in an LLM request
 and selects a configured model and optional provider using token ranges. It does
 not add an output-token allowance to the estimate.
 
@@ -79,6 +79,6 @@ inputJSONPaths:
 For local development, add the policy module to the gateway build configuration:
 
 ```yaml
-- name: context-based-routing
-  filePath: ./dev-policies/context-based-routing
+- name: token-count-model-routing
+  filePath: ./dev-policies/token-count-model-routing
 ```

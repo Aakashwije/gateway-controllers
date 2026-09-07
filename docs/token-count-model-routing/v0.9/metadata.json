@@ -1,6 +1,6 @@
 {
-  "name": "context-based-routing",
-  "displayName": "Context-Based Routing",
+  "name": "token-count-model-routing",
+  "displayName": "Token-Count Model Routing",
   "version": "0.9",
   "provider": "WSO2",
   "categories": [

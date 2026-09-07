@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package contextbasedrouting
+package tokencountmodelrouting
 
 import (
 	"fmt"

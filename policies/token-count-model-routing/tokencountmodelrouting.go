@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package contextbasedrouting
+package tokencountmodelrouting
 
 import (
 	"context"
@@ -30,14 +30,14 @@ import (
 )
 
 const (
-	metadataInputTokens      = "context_based_routing.input_tokens"
-	metadataSelectedModel    = "context_based_routing.selected_model"
-	metadataSelectedProvider = "context_based_routing.selected_provider"
-	metadataSelectedRoute    = "context_based_routing.selected_route"
+	metadataInputTokens      = "token_count_model_routing.input_tokens"
+	metadataSelectedModel    = "token_count_model_routing.selected_model"
+	metadataSelectedProvider = "token_count_model_routing.selected_provider"
+	metadataSelectedRoute    = "token_count_model_routing.selected_route"
 	metadataProviderRouting  = "selected_provider"
 )
 
-type ContextBasedRoutingPolicy struct {
+type TokenCountModelRoutingPolicy struct {
 	config config
 }
 
@@ -46,10 +46,10 @@ func GetPolicy(_ policy.PolicyMetadata, params map[string]interface{}) (policy.P
 	if err != nil {
 		return nil, fmt.Errorf("invalid params: %w", err)
 	}
-	return &ContextBasedRoutingPolicy{config: parsed}, nil
+	return &TokenCountModelRoutingPolicy{config: parsed}, nil
 }
 
-func (p *ContextBasedRoutingPolicy) Mode() policy.ProcessingMode {
+func (p *TokenCountModelRoutingPolicy) Mode() policy.ProcessingMode {
 	return policy.ProcessingMode{
 		RequestHeaderMode:  policy.HeaderModeSkip,
 		RequestBodyMode:    policy.BodyModeBuffer,
@@ -58,7 +58,7 @@ func (p *ContextBasedRoutingPolicy) Mode() policy.ProcessingMode {
 	}
 }
 
-func (p *ContextBasedRoutingPolicy) OnRequestBody(_ context.Context, reqCtx *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
+func (p *TokenCountModelRoutingPolicy) OnRequestBody(_ context.Context, reqCtx *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
 	if reqCtx.Body == nil || len(reqCtx.Body.Content) == 0 {
 		return badRequest("request body must contain a JSON object")
 	}
@@ -107,7 +107,7 @@ func rangeMatches(route tokenRange, tokens int64) bool {
 	return true
 }
 
-func (p *ContextBasedRoutingPolicy) applyTarget(
+func (p *TokenCountModelRoutingPolicy) applyTarget(
 	reqCtx *policy.RequestContext,
 	payload map[string]interface{},
 	selected target,

@@ -3,7 +3,7 @@
  * Licensed under the Apache License, Version 2.0.
  */
 
-package contextbasedrouting
+package tokencountmodelrouting
 
 import (
 	"context"
@@ -59,7 +59,7 @@ func TestProcessingModeBuffersOnlyRequestBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mode := raw.(*ContextBasedRoutingPolicy).Mode()
+	mode := raw.(*TokenCountModelRoutingPolicy).Mode()
 	if mode.RequestBodyMode != policy.BodyModeBuffer ||
 		mode.ResponseHeaderMode != policy.HeaderModeSkip ||
 		mode.ResponseBodyMode != policy.BodyModeSkip {
@@ -88,7 +88,7 @@ func TestRoutesByEstimatedInputTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := raw.(*ContextBasedRoutingPolicy)
+	p := raw.(*TokenCountModelRoutingPolicy)
 
 	tests := []struct {
 		name            string
@@ -135,7 +135,7 @@ func TestMalformedJSONIsRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	action := raw.(*ContextBasedRoutingPolicy).OnRequestBody(context.Background(), requestContext(`{"model":`), nil)
+	action := raw.(*TokenCountModelRoutingPolicy).OnRequestBody(context.Background(), requestContext(`{"model":`), nil)
 	response, ok := action.(policy.ImmediateResponse)
 	if !ok || response.StatusCode != 400 {
 		t.Fatalf("expected 400 response, got %#v", action)
@@ -148,7 +148,7 @@ func TestUnsupportedInputUsesFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := requestContext(`{"model":"client-model","temperature":0.5}`)
-	action := raw.(*ContextBasedRoutingPolicy).OnRequestBody(context.Background(), ctx, nil)
+	action := raw.(*TokenCountModelRoutingPolicy).OnRequestBody(context.Background(), ctx, nil)
 	mods := action.(policy.UpstreamRequestModifications)
 	var payload map[string]interface{}
 	if err := json.Unmarshal(mods.Body, &payload); err != nil {
@@ -167,7 +167,7 @@ func TestUnsupportedInputWithoutFallbackPreservesRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := requestContext(`{"model":"client-model","temperature":0.5}`)
-	action := raw.(*ContextBasedRoutingPolicy).OnRequestBody(context.Background(), ctx, nil)
+	action := raw.(*TokenCountModelRoutingPolicy).OnRequestBody(context.Background(), ctx, nil)
 	mods := action.(policy.UpstreamRequestModifications)
 	if mods.Body != nil || mods.UpstreamName != nil {
 		t.Fatalf("request should be unchanged: %#v", mods)
@@ -188,7 +188,7 @@ func TestNoMatchUsesFallbackOrPreservesOriginal(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := requestContext(`{"model":"client-model","prompt":"short"}`)
-	mods := raw.(*ContextBasedRoutingPolicy).OnRequestBody(context.Background(), ctx, nil).(policy.UpstreamRequestModifications)
+	mods := raw.(*TokenCountModelRoutingPolicy).OnRequestBody(context.Background(), ctx, nil).(policy.UpstreamRequestModifications)
 	var payload map[string]interface{}
 	_ = json.Unmarshal(mods.Body, &payload)
 	if payload["model"] != "fallback-model" {
@@ -200,7 +200,7 @@ func TestNoMatchUsesFallbackOrPreservesOriginal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mods = raw.(*ContextBasedRoutingPolicy).OnRequestBody(context.Background(), requestContext(`{"model":"client-model","prompt":"short"}`), nil).(policy.UpstreamRequestModifications)
+	mods = raw.(*TokenCountModelRoutingPolicy).OnRequestBody(context.Background(), requestContext(`{"model":"client-model","prompt":"short"}`), nil).(policy.UpstreamRequestModifications)
 	if mods.Body != nil || mods.UpstreamName != nil {
 		t.Fatalf("expected unchanged request, got %#v", mods)
 	}
@@ -303,7 +303,7 @@ func TestRewritesEveryRequestModelLocation(t *testing.T) {
 			}
 			ctx := requestContext(`{"model":"client-model","prompt":"short"}`)
 			ctx.Path = tt.path
-			action := raw.(*ContextBasedRoutingPolicy).OnRequestBody(context.Background(), ctx, nil)
+			action := raw.(*TokenCountModelRoutingPolicy).OnRequestBody(context.Background(), ctx, nil)
 			mods, ok := action.(policy.UpstreamRequestModifications)
 			if !ok {
 				t.Fatalf("expected modifications, got %#v", action)
@@ -324,7 +324,7 @@ func TestQueryRewriteFailureDoesNotPublishRoutingMetadata(t *testing.T) {
 	}
 	ctx := requestContext(`{"model":"client-model","prompt":"short"}`)
 	ctx.Path = "/invoke?model=%zz"
-	action := raw.(*ContextBasedRoutingPolicy).OnRequestBody(context.Background(), ctx, nil)
+	action := raw.(*TokenCountModelRoutingPolicy).OnRequestBody(context.Background(), ctx, nil)
 	response, ok := action.(policy.ImmediateResponse)
 	if !ok || response.StatusCode != 400 {
 		t.Fatalf("expected 400 response, got %#v", action)
@@ -374,7 +374,7 @@ func TestCustomInputJSONPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := requestContext(`{"model":"client-model","request":{"turns":[{"text":"hello"},{"text":"world"}]},"ignored":"do not count"}`)
-	action := raw.(*ContextBasedRoutingPolicy).OnRequestBody(context.Background(), ctx, nil)
+	action := raw.(*TokenCountModelRoutingPolicy).OnRequestBody(context.Background(), ctx, nil)
 	mods, ok := action.(policy.UpstreamRequestModifications)
 	if !ok {
 		t.Fatalf("expected modifications, got %#v", action)
@@ -404,7 +404,7 @@ func TestMaxTokensIsRequiredAndMissingMinStartsAtZero(t *testing.T) {
 		t.Fatalf("max-only route should be valid: %v", err)
 	}
 	ctx := requestContext(`{"model":"client-model","prompt":"short"}`)
-	mods := raw.(*ContextBasedRoutingPolicy).OnRequestBody(context.Background(), ctx, nil).(policy.UpstreamRequestModifications)
+	mods := raw.(*TokenCountModelRoutingPolicy).OnRequestBody(context.Background(), ctx, nil).(policy.UpstreamRequestModifications)
 	var payload map[string]interface{}
 	if err := json.Unmarshal(mods.Body, &payload); err != nil {
 		t.Fatal(err)

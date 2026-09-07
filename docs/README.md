@@ -38,7 +38,6 @@ All available policies, sorted alphabetically.
 | [Backend JWT](./backend-jwt/v1.0/docs/backend-jwt.md) | Security | Generates a signed JWT containing authenticated user information and injects it into the upstream request header. |
 | [Basic Auth](./basic-auth/v1.0/docs/basic-auth.md) | Security, AI, WebSub, WebBroker | Implements HTTP Basic Authentication to protect APIs with username and password credentials. |
 | [Content Length Guardrail](./content-length-guardrail/v1.0/docs/content-length.md) | Guardrails, AI | Validates the byte length of request or response body content. |
-| [Context-Based Routing](./context-based-routing/v0.9/docs/context-based-routing.md) | AI | Routes LLM requests to configured models and optional providers using client-configured input-token ranges. |
 | [CORS](./cors/v1.0/docs/cors.md) | Security, AI, MCP | Cross-Origin Resource Sharing (CORS) policy that handles preflight requests and adds appropriate CORS headers to responses. |
 | [Dynamic Endpoint](./dynamic-endpoint/v1.0/docs/dynamic-endpoint.md) | Transformation | Routes requests to a named upstream definition at request time. |
 | [Granite Guardian Prompt Injection](./granite-guardian-prompt-injection/v0.9/docs/granite-guardian-prompt-injection.md) | Guardrails, AI | Detects prompt injection and jailbreak attempts in LLM API requests using IBM Granite Guardian 3.3 8B. |
@@ -84,6 +83,7 @@ All available policies, sorted alphabetically.
 | [Set Headers](./set-headers/v1.1/docs/set-headers.md) | Transformation, MCP, WebSub, WebBroker | This policy provides the capability to set or append arbitrary headers to either the request or the response. |
 | [Subscription Validation](./subscription-validation/v1.0/docs/subscription-validation.md) | Security | Validates that incoming requests are associated with an active subscription for the target API. |
 | [Token Based Ratelimit](./token-based-ratelimit/v1.0/docs/token-based-ratelimit.md) | AI | A specialized rate limiting policy for LLM APIs that enforces usage quotas based on token counts. |
+| [Token-Count Model Routing](./token-count-model-routing/v0.9/docs/token-count-model-routing.md) | AI | Routes LLM requests to configured models and optional providers using client-configured input-token ranges. |
 | [URL Guardrail](./url-guardrail/v1.0/docs/url.md) | Guardrails, AI | Validates URLs found in request or response body content. |
 | [WebSub HMAC Auth](./websub-hmac-auth/v1.0/docs/websub-hmac-auth.md) | Security, WebSub | Validates HMAC signatures on incoming WebSub hub event notification requests. |
 | [Word Count Guardrail](./word-count-guardrail/v1.0/docs/word-count.md) | Guardrails, AI | Validates the word count of request or response body content. |
