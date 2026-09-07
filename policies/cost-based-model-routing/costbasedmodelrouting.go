@@ -15,11 +15,11 @@
  * limitations under the License.
  */
 
-// Package costbasedrouting matches LLM requests to shared model budgets.
+// Package costbasedmodelrouting matches LLM requests to shared model budgets.
 // Missing or exhausted models use a configured fallback or are rejected.
 // An optional wildcard budget caps unlisted models. Fallback uses its own
 // model budget without recursive routing.
-package costbasedrouting
+package costbasedmodelrouting
 
 import (
 	"context"
@@ -37,14 +37,14 @@ import (
 const (
 	// Policy-internal metadata. These names are namespaced so they cannot
 	// collide with the other model-routing policies in the same chain.
-	metadataSelectedModel    = "cost_based_routing.selected_model"
-	metadataSelectedProvider = "cost_based_routing.selected_provider"
-	metadataSelectedTier     = "cost_based_routing.selected_tier"
-	metadataSelectedRoute    = "cost_based_routing.selected_route"
-	metadataTrackPrimaryCost = "cost_based_routing.track_primary_cost"
-	metadataBudgetKey        = "cost_based_routing.budget_key"
-	metadataBudgetIndex      = "cost_based_routing.budget_index"
-	metadataCostCharged      = "cost_based_routing.cost_charged"
+	metadataSelectedModel    = "cost_based_model_routing.selected_model"
+	metadataSelectedProvider = "cost_based_model_routing.selected_provider"
+	metadataSelectedTier     = "cost_based_model_routing.selected_tier"
+	metadataSelectedRoute    = "cost_based_model_routing.selected_route"
+	metadataTrackPrimaryCost = "cost_based_model_routing.track_primary_cost"
+	metadataBudgetKey        = "cost_based_model_routing.budget_key"
+	metadataBudgetIndex      = "cost_based_model_routing.budget_index"
+	metadataCostCharged      = "cost_based_model_routing.cost_charged"
 
 	// metadataProviderRouting is the engine-level contract key read by the
 	// conditional provider-authentication and protocol-transformer policies.
@@ -75,8 +75,8 @@ type routingSelection struct {
 	available   int64
 }
 
-// CostBasedRoutingPolicy routes a requested model within its spending limits.
-type CostBasedRoutingPolicy struct {
+// CostBasedModelRoutingPolicy routes a requested model within its spending limits.
+type CostBasedModelRoutingPolicy struct {
 	metadata policy.PolicyMetadata
 	config   config
 	budgets  []routeBudget
@@ -103,7 +103,7 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 			namespace: budgetNamespaceFor(metadata, parsed, route),
 		}
 	}
-	result := &CostBasedRoutingPolicy{
+	result := &CostBasedModelRoutingPolicy{
 		metadata: metadata,
 		config:   parsed,
 		budgets:  budgets,
@@ -118,7 +118,7 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 // Mode requests the phases the policy needs. The request body is buffered only
 // when the model lives in the payload. The response body is streamed so that
 // cost accounting works for both streamed and buffered LLM responses.
-func (p *CostBasedRoutingPolicy) Mode() policy.ProcessingMode {
+func (p *CostBasedModelRoutingPolicy) Mode() policy.ProcessingMode {
 	requestBodyMode := policy.BodyModeSkip
 	if p.config.RequestModel.Location == "payload" {
 		requestBodyMode = policy.BodyModeBuffer
@@ -135,7 +135,7 @@ func (p *CostBasedRoutingPolicy) Mode() policy.ProcessingMode {
 // header, query parameter, or path parameter and performs the routing decision.
 // Payload-based matching is deferred to OnRequestBody because the body is not
 // available in this phase.
-func (p *CostBasedRoutingPolicy) OnRequestHeaders(
+func (p *CostBasedModelRoutingPolicy) OnRequestHeaders(
 	ctx context.Context,
 	reqCtx *policy.RequestHeaderContext,
 	_ map[string]interface{},
@@ -180,7 +180,7 @@ func (p *CostBasedRoutingPolicy) OnRequestHeaders(
 
 // OnRequestBody matches the requested model to its budget for payload
 // configurations, then rewrites the model and selects the upstream provider.
-func (p *CostBasedRoutingPolicy) OnRequestBody(
+func (p *CostBasedModelRoutingPolicy) OnRequestBody(
 	ctx context.Context,
 	reqCtx *policy.RequestContext,
 	_ map[string]interface{},
@@ -232,7 +232,7 @@ func (p *CostBasedRoutingPolicy) OnRequestBody(
 // selectTarget checks the exact requested-model budget, or the wildcard budget
 // for an unlisted model. It then checks only the fallback model's own budget.
 // At most two checks are made; fallback never recurses through the wildcard.
-func (p *CostBasedRoutingPolicy) selectTarget(ctx context.Context, requestedModel string) (routingSelection, *policy.ImmediateResponse) {
+func (p *CostBasedModelRoutingPolicy) selectTarget(ctx context.Context, requestedModel string) (routingSelection, *policy.ImmediateResponse) {
 	requestedIndex, wildcardIndex, fallbackIndex := -1, -1, -1
 	bestSpecificity := -1
 	for i, route := range p.config.Routes {
@@ -283,7 +283,7 @@ func (p *CostBasedRoutingPolicy) selectTarget(ctx context.Context, requestedMode
 	return routingSelection{}, &failure
 }
 
-func (p *CostBasedRoutingPolicy) checkBudget(ctx context.Context, index int, selected target) (routingSelection, *policy.ImmediateResponse) {
+func (p *CostBasedModelRoutingPolicy) checkBudget(ctx context.Context, index int, selected target) (routingSelection, *policy.ImmediateResponse) {
 	route := p.config.Routes[index]
 	budget := p.routeBudgetAt(index)
 	state, available, err := budget.store.Query(ctx, budget.namespace)
@@ -291,20 +291,20 @@ func (p *CostBasedRoutingPolicy) checkBudget(ctx context.Context, index int, sel
 		budgetIndex: index, budgetKey: budget.namespace, budgetState: state, available: available}
 	if err != nil {
 		if !budget.store.failOpen {
-			slog.ErrorContext(ctx, "CostBasedRouting: budget storage unavailable and failure mode is closed",
+			slog.ErrorContext(ctx, "CostBasedModelRouting: budget storage unavailable and failure mode is closed",
 				"route", p.metadata.RouteName, "modelBudget", route.Name, "backend", budget.store.backend, "error", err)
 			failure := serviceUnavailable("budget state is unavailable")
 			return routingSelection{}, &failure
 		}
-		slog.WarnContext(ctx, "CostBasedRouting: budget storage unavailable, continuing on configured model",
+		slog.WarnContext(ctx, "CostBasedModelRouting: budget storage unavailable, continuing on configured model",
 			"route", p.metadata.RouteName, "modelBudget", route.Name, "backend", budget.store.backend, "error", err)
 		selection.budgetState = budgetUnknown
 	}
 	return selection, nil
 }
 
-func (p *CostBasedRoutingPolicy) recordAndLogSelection(ctx context.Context, metadata map[string]interface{}, selection routingSelection, requestedModel string) {
-	slog.DebugContext(ctx, "CostBasedRouting: selected model",
+func (p *CostBasedModelRoutingPolicy) recordAndLogSelection(ctx context.Context, metadata map[string]interface{}, selection routingSelection, requestedModel string) {
+	slog.DebugContext(ctx, "CostBasedModelRouting: selected model",
 		"route", p.metadata.RouteName,
 		"requestedModel", requestedModel,
 		"modelBudget", selection.routeName,
@@ -352,7 +352,7 @@ func requestedModelFromPayload(payload map[string]interface{}, identifier string
 // OnResponseHeaders preserves the upstream response as-is. The policy exposes
 // no budget headers: the remaining budget is not yet final at this point,
 // because this request's own cost is only known once its body completes.
-func (p *CostBasedRoutingPolicy) OnResponseHeaders(
+func (p *CostBasedModelRoutingPolicy) OnResponseHeaders(
 	_ context.Context,
 	_ *policy.ResponseHeaderContext,
 	_ map[string]interface{},
@@ -362,7 +362,7 @@ func (p *CostBasedRoutingPolicy) OnResponseHeaders(
 
 // OnResponseBodyChunk forwards every chunk unchanged and charges the selected
 // route budget once, at end of stream, after llm-cost publishes the actual cost.
-func (p *CostBasedRoutingPolicy) OnResponseBodyChunk(
+func (p *CostBasedModelRoutingPolicy) OnResponseBodyChunk(
 	ctx context.Context,
 	respCtx *policy.ResponseStreamContext,
 	chunk *policy.StreamBody,
@@ -376,13 +376,13 @@ func (p *CostBasedRoutingPolicy) OnResponseBodyChunk(
 
 // NeedsMoreResponseData reports false: the cost is read from metadata that
 // llm-cost publishes, so this policy never accumulates response bytes itself.
-func (p *CostBasedRoutingPolicy) NeedsMoreResponseData(_ []byte) bool {
+func (p *CostBasedModelRoutingPolicy) NeedsMoreResponseData(_ []byte) bool {
 	return false
 }
 
 // OnResponseBody is the buffered fallback used when the chain cannot stream.
 // It charges through the same once-only path as the streaming hook.
-func (p *CostBasedRoutingPolicy) OnResponseBody(
+func (p *CostBasedModelRoutingPolicy) OnResponseBody(
 	ctx context.Context,
 	respCtx *policy.ResponseContext,
 	_ map[string]interface{},
@@ -394,7 +394,7 @@ func (p *CostBasedRoutingPolicy) OnResponseBody(
 // recordSelection publishes the routing decision for the later phases and for
 // diagnostics. trackCost is the single switch that decides whether the response
 // cost reaches one of the configured route budgets.
-func (p *CostBasedRoutingPolicy) recordSelection(metadata map[string]interface{}, selected target, routeName, tier, key string, budgetIndex int, trackCost bool) {
+func (p *CostBasedModelRoutingPolicy) recordSelection(metadata map[string]interface{}, selected target, routeName, tier, key string, budgetIndex int, trackCost bool) {
 	metadata[metadataSelectedModel] = selected.Model
 	metadata[metadataSelectedProvider] = selected.Provider
 	metadata[metadataSelectedTier] = tier
@@ -409,7 +409,7 @@ func (p *CostBasedRoutingPolicy) recordSelection(metadata map[string]interface{}
 	}
 }
 
-func (p *CostBasedRoutingPolicy) routeBudgetAt(index int) routeBudget {
+func (p *CostBasedModelRoutingPolicy) routeBudgetAt(index int) routeBudget {
 	budget := p.budgets[index]
 	if index == 0 && p.budget != nil {
 		budget.store = p.budget
@@ -439,7 +439,7 @@ func applyProviderRouting(metadata map[string]interface{}, selected target, setU
 // most once. It skips accounting when
 // the cost is absent, unusable, or was not calculated: a
 // pricing gap must never be able to exhaust a budget.
-func (p *CostBasedRoutingPolicy) chargeOnce(ctx context.Context, metadata map[string]interface{}) {
+func (p *CostBasedModelRoutingPolicy) chargeOnce(ctx context.Context, metadata map[string]interface{}) {
 	if metadata == nil {
 		return
 	}
@@ -459,13 +459,13 @@ func (p *CostBasedRoutingPolicy) chargeOnce(ctx context.Context, metadata map[st
 
 	key, _ := metadata[metadataBudgetKey].(string)
 	if key == "" {
-		slog.Warn("CostBasedRouting: budget key missing, skipping cost accounting",
+		slog.Warn("CostBasedModelRouting: budget key missing, skipping cost accounting",
 			"route", p.metadata.RouteName)
 		return
 	}
 	budgetIndex, ok := metadata[metadataBudgetIndex].(int)
 	if !ok || budgetIndex < 0 || budgetIndex >= len(p.budgets) {
-		slog.Warn("CostBasedRouting: budget route missing, skipping cost accounting",
+		slog.Warn("CostBasedModelRouting: budget route missing, skipping cost accounting",
 			"route", p.metadata.RouteName)
 		return
 	}
@@ -473,7 +473,7 @@ func (p *CostBasedRoutingPolicy) chargeOnce(ctx context.Context, metadata map[st
 
 	cost, status, ok := parseReportedCost(metadata)
 	if !ok {
-		slog.Warn("CostBasedRouting: no usable LLM cost was reported, budget not charged",
+		slog.Warn("CostBasedModelRouting: no usable LLM cost was reported, budget not charged",
 			"route", p.metadata.RouteName,
 			"costStatus", status,
 			"costPresent", metadata[metadataLLMCost] != nil,
@@ -481,25 +481,25 @@ func (p *CostBasedRoutingPolicy) chargeOnce(ctx context.Context, metadata map[st
 		return
 	}
 	if cost == 0 {
-		slog.Debug("CostBasedRouting: reported cost is zero, budget not charged",
+		slog.Debug("CostBasedModelRouting: reported cost is zero, budget not charged",
 			"route", p.metadata.RouteName)
 		return
 	}
 
 	scaled, ok := scaleCost(cost, p.config.CostScaleFactor)
 	if !ok || scaled <= 0 {
-		slog.Warn("CostBasedRouting: reported cost could not be scaled, budget not charged",
+		slog.Warn("CostBasedModelRouting: reported cost could not be scaled, budget not charged",
 			"route", p.metadata.RouteName, "costScaleFactor", p.config.CostScaleFactor)
 		return
 	}
 
 	if err := budget.store.Charge(ctx, key, scaled); err != nil {
-		slog.Error("CostBasedRouting: failed to charge the route budget",
+		slog.Error("CostBasedModelRouting: failed to charge the route budget",
 			"route", p.metadata.RouteName, "costRoute", metadata[metadataSelectedRoute], "backend", budget.store.backend, "error", err)
 		return
 	}
 
-	slog.Debug("CostBasedRouting: charged the route budget",
+	slog.Debug("CostBasedModelRouting: charged the route budget",
 		"route", p.metadata.RouteName, "costRoute", metadata[metadataSelectedRoute], "scaledUnits", scaled)
 }
 
@@ -524,7 +524,7 @@ func serviceUnavailable(message string) policy.ImmediateResponse {
 func budgetExhaustedResponse() policy.ImmediateResponse {
 	body, _ := json.Marshal(map[string]string{
 		"error": "requested model has no available budget or the fallback budget is missing or exhausted",
-		"code":  "cost_based_routing_budget_exhausted",
+		"code":  "cost_based_model_routing_budget_exhausted",
 	})
 	return policy.ImmediateResponse{
 		StatusCode: 429,

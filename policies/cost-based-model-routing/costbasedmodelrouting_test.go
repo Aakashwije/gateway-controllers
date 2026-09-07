@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package costbasedrouting
+package costbasedmodelrouting
 
 import (
 	"bytes"
@@ -47,8 +47,9 @@ func uniqueRoute(t *testing.T) string {
 
 func validParams() map[string]interface{} {
 	return map[string]interface{}{
-		"primary":  map[string]interface{}{"model": "gpt-4o", "provider": "openai-primary"},
-		"fallback": map[string]interface{}{"model": "gpt-4o-mini", "provider": "openai-fallback"},
+		"onExhausted": onExhaustedFallback,
+		"primary":     map[string]interface{}{"model": "gpt-4o", "provider": "openai-primary"},
+		"fallback":    map[string]interface{}{"model": "gpt-4o-mini", "provider": "openai-fallback"},
 		"budgetLimits": []interface{}{
 			map[string]interface{}{"amount": 10.0, "duration": "24h"},
 		},
@@ -58,6 +59,7 @@ func validParams() map[string]interface{} {
 
 func validMultiRouteParams() map[string]interface{} {
 	return map[string]interface{}{
+		"onExhausted": onExhaustedFallback,
 		"modelBudgets": []interface{}{
 			map[string]interface{}{
 				"name":  "premium",
@@ -107,17 +109,17 @@ func withFallbackBudget(params map[string]interface{}) map[string]interface{} {
 	return params
 }
 
-func newPolicyWithFallbackBudget(t *testing.T, params map[string]interface{}) *CostBasedRoutingPolicy {
+func newPolicyWithFallbackBudget(t *testing.T, params map[string]interface{}) *CostBasedModelRoutingPolicy {
 	t.Helper()
 	return newPolicy(t, withFallbackBudget(params))
 }
 
-func newPolicy(t *testing.T, params map[string]interface{}) *CostBasedRoutingPolicy {
+func newPolicy(t *testing.T, params map[string]interface{}) *CostBasedModelRoutingPolicy {
 	t.Helper()
 	return newPolicyOnRoute(t, params, uniqueRoute(t))
 }
 
-func newPolicyOnRoute(t *testing.T, params map[string]interface{}, route string) *CostBasedRoutingPolicy {
+func newPolicyOnRoute(t *testing.T, params map[string]interface{}, route string) *CostBasedModelRoutingPolicy {
 	t.Helper()
 	instance, err := GetPolicy(policy.PolicyMetadata{
 		RouteName:  route,
@@ -128,15 +130,15 @@ func newPolicyOnRoute(t *testing.T, params map[string]interface{}, route string)
 	if err != nil {
 		t.Fatalf("GetPolicy failed: %v", err)
 	}
-	typed, ok := instance.(*CostBasedRoutingPolicy)
+	typed, ok := instance.(*CostBasedModelRoutingPolicy)
 	if !ok {
-		t.Fatalf("GetPolicy returned %T, want *CostBasedRoutingPolicy", instance)
+		t.Fatalf("GetPolicy returned %T, want *CostBasedModelRoutingPolicy", instance)
 	}
 	return typed
 }
 
 // requestHeaders runs the header phase with a fresh per-request metadata map.
-func requestHeaders(p *CostBasedRoutingPolicy, path string, seed map[string]interface{}) (policy.RequestHeaderAction, map[string]interface{}) {
+func requestHeaders(p *CostBasedModelRoutingPolicy, path string, seed map[string]interface{}) (policy.RequestHeaderAction, map[string]interface{}) {
 	metadata := map[string]interface{}{}
 	for k, v := range seed {
 		metadata[k] = v
@@ -150,7 +152,7 @@ func requestHeaders(p *CostBasedRoutingPolicy, path string, seed map[string]inte
 	return action, metadata
 }
 
-func requestBody(p *CostBasedRoutingPolicy, metadata map[string]interface{}, body []byte) policy.RequestAction {
+func requestBody(p *CostBasedModelRoutingPolicy, metadata map[string]interface{}, body []byte) policy.RequestAction {
 	return p.OnRequestBody(context.Background(), &policy.RequestContext{
 		SharedContext: &policy.SharedContext{Metadata: metadata},
 		Body:          &policy.Body{Content: body, Present: true, EndOfStream: true},
@@ -162,7 +164,7 @@ func requestBody(p *CostBasedRoutingPolicy, metadata map[string]interface{}, bod
 // completeResponse simulates the response phase: llm-cost publishes the cost
 // first (response policies run in reverse chain order), then this policy sees
 // the end-of-stream chunk.
-func completeResponse(p *CostBasedRoutingPolicy, metadata map[string]interface{}, cost string, status string) {
+func completeResponse(p *CostBasedModelRoutingPolicy, metadata map[string]interface{}, cost string, status string) {
 	if status != "" {
 		metadata[metadataLLMCostStatus] = status
 	}
@@ -172,7 +174,7 @@ func completeResponse(p *CostBasedRoutingPolicy, metadata map[string]interface{}
 	streamChunks(p, metadata, 1)
 }
 
-func streamChunks(p *CostBasedRoutingPolicy, metadata map[string]interface{}, chunks int) {
+func streamChunks(p *CostBasedModelRoutingPolicy, metadata map[string]interface{}, chunks int) {
 	respCtx := &policy.ResponseStreamContext{
 		SharedContext:  &policy.SharedContext{Metadata: metadata},
 		ResponseStatus: 200,
@@ -188,7 +190,7 @@ func streamChunks(p *CostBasedRoutingPolicy, metadata map[string]interface{}, ch
 
 // requestCycle runs a complete request: route, then charge the reported cost.
 // It returns the tier that served the request.
-func requestCycle(p *CostBasedRoutingPolicy, cost string, seed map[string]interface{}) string {
+func requestCycle(p *CostBasedModelRoutingPolicy, cost string, seed map[string]interface{}) string {
 	_, metadata := requestHeaders(p, "/chat/completions", seed)
 	if p.config.RequestModel.Location == "payload" {
 		requestBody(p, metadata, []byte(`{"model":"gpt-4o"}`))
@@ -314,7 +316,7 @@ func TestRejectsExhaustedRequestedModelWhileOtherBudgetsRemain(t *testing.T) {
 	requestCycle(p, "6.0", nil)
 	_, metadata := requestHeaders(p, "/chat/completions", nil)
 	response := immediate(t, requestBody(p, metadata, []byte(`{"model":"gpt-4o"}`)))
-	if response.StatusCode != 429 || !strings.Contains(string(response.Body), "cost_based_routing_budget_exhausted") {
+	if response.StatusCode != 429 || !strings.Contains(string(response.Body), "cost_based_model_routing_budget_exhausted") {
 		t.Fatalf("response: %+v", response)
 	}
 	if _, selected := metadata[metadataSelectedModel]; selected {
@@ -1209,7 +1211,7 @@ func queryValue(t *testing.T, path *string, name string) string {
 }
 
 // availableDollars reads the remaining budget straight from the storage layer.
-func availableDollars(t *testing.T, p *CostBasedRoutingPolicy, key string) float64 {
+func availableDollars(t *testing.T, p *CostBasedModelRoutingPolicy, key string) float64 {
 	t.Helper()
 	_, available, err := p.budget.Query(context.Background(), key)
 	if err != nil {
@@ -1383,7 +1385,7 @@ func TestSelectionTraceIncludesActualModelAndProvider(t *testing.T) {
 		t.Fatalf("decode log: %v; %s", err, output.Bytes())
 	}
 	for key, want := range map[string]interface{}{
-		"msg": "CostBasedRouting: selected model", "requestedModel": "unknown-model",
+		"msg": "CostBasedModelRouting: selected model", "requestedModel": "unknown-model",
 		"modelName": "unknown-model", "providerName": "", "modelBudget": "unlisted-budget",
 		"selectionTier": "wildcard", "policyLevel": string(policy.LevelRoute),
 	} {

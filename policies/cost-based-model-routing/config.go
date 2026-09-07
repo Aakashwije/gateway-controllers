@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package costbasedrouting
+package costbasedmodelrouting
 
 import (
 	"fmt"
@@ -124,7 +124,7 @@ func parseConfig(params map[string]interface{}) (config, error) {
 		CostScaleFactor: DefaultCostScaleFactor,
 		Algorithm:       defaultAlgorithm,
 		Backend:         defaultBackend,
-		OnExhausted:     onExhaustedFallback,
+		OnExhausted:     onExhaustedReject,
 	}
 
 	if raw, exists := params["onExhausted"]; exists {
@@ -520,7 +520,7 @@ func compilePathModelExpression(expression string) (*regexp.Regexp, int, error) 
 		if prefix == "" || suffix == "" {
 			return nil, 0, fmt.Errorf("positive lookbehind must contain a prefix and a model expression")
 		}
-		modelGroupName = "cost_based_routing_model"
+		modelGroupName = "cost_based_model_routing_model"
 		normalized = "(?:" + prefix + ")(?P<" + modelGroupName + ">" + suffix + ")"
 	}
 

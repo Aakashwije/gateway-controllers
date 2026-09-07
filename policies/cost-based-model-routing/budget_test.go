@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package costbasedrouting
+package costbasedmodelrouting
 
 import (
 	"context"
@@ -298,13 +298,13 @@ func TestRedisBudgetsAreIsolatedAcrossAPIsAndAttachmentLevels(t *testing.T) {
 	params := redisParams(t, "redis")
 	route := "POST|/chat/completions|*"
 
-	newWithMetadata := func(metadata policy.PolicyMetadata) *CostBasedRoutingPolicy {
+	newWithMetadata := func(metadata policy.PolicyMetadata) *CostBasedModelRoutingPolicy {
 		t.Helper()
 		instance, err := GetPolicy(metadata, params)
 		if err != nil {
 			t.Fatalf("GetPolicy failed: %v", err)
 		}
-		return instance.(*CostBasedRoutingPolicy)
+		return instance.(*CostBasedModelRoutingPolicy)
 	}
 
 	apiRoute := newWithMetadata(policy.PolicyMetadata{
@@ -318,7 +318,7 @@ func TestRedisBudgetsAreIsolatedAcrossAPIsAndAttachmentLevels(t *testing.T) {
 	})
 
 	requestCycle(apiRoute, "11.0", nil)
-	for name, candidate := range map[string]*CostBasedRoutingPolicy{
+	for name, candidate := range map[string]*CostBasedModelRoutingPolicy{
 		"different API":              otherAPI,
 		"different attachment level": apiLevel,
 	} {

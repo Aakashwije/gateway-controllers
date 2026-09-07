@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package costbasedrouting
+package costbasedmodelrouting
 
 import (
 	"context"
@@ -154,7 +154,7 @@ func newBudgetStore(cfg config, route costRoute, metadata policy.PolicyMetadata)
 			if !cfg.Redis.FailOpen {
 				return nil, fmt.Errorf("redis connection failed and redis.failureMode is closed: %w", pingErr)
 			}
-			slog.Warn("CostBasedRouting: redis connection failed but redis.failureMode is open",
+			slog.Warn("CostBasedModelRouting: redis connection failed but redis.failureMode is open",
 				"route", metadata.RouteName, "error", pingErr)
 		}
 		limiterConfig.RedisClient = client
@@ -349,7 +349,7 @@ func sharedLimiter(cacheKey, reconcileKey string, cfg limiter.Config) (limiter.L
 			stale.refCount--
 			if stale.refCount <= 0 {
 				if err := stale.lim.Close(); err != nil {
-					slog.Warn("CostBasedRouting: failed to close stale budget limiter", "error", err)
+					slog.Warn("CostBasedModelRouting: failed to close stale budget limiter", "error", err)
 				}
 				delete(limiterCache.entries, previousKey)
 			}

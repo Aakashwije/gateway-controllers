@@ -1,4 +1,4 @@
-module github.com/wso2/gateway-controllers/policies/cost-based-routing
+module github.com/wso2/gateway-controllers/policies/cost-based-model-routing
 
 go 1.26.2
 

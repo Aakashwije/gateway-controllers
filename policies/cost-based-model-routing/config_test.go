@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package costbasedrouting
+package costbasedmodelrouting
 
 import (
 	"math"
@@ -292,6 +292,7 @@ func TestParseConfigValidationErrors(t *testing.T) {
 
 func TestParseConfigDefaults(t *testing.T) {
 	params := validParams()
+	delete(params, "onExhausted")
 	cfg, err := parseConfig(params)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -307,8 +308,8 @@ func TestParseConfigDefaults(t *testing.T) {
 		t.Errorf("backend = %q, want memory", cfg.Backend)
 	}
 
-	if cfg.OnExhausted != onExhaustedFallback {
-		t.Errorf("onExhausted = %q, want fallback", cfg.OnExhausted)
+	if cfg.OnExhausted != onExhaustedReject {
+		t.Errorf("onExhausted = %q, want reject", cfg.OnExhausted)
 	}
 	if !cfg.Redis.FailOpen {
 		t.Error("redis.failureMode should default to open")
@@ -352,6 +353,7 @@ func TestParseConfigRejectAllowsFallbackToBeOmitted(t *testing.T) {
 
 func TestParseConfigFallbackExhaustionRequiresFallbackModel(t *testing.T) {
 	params := validMultiRouteParams()
+	params["onExhausted"] = onExhaustedFallback
 	delete(params, "fallback")
 
 	_, err := parseConfig(params)

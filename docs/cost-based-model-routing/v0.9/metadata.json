@@ -1,6 +1,6 @@
 {
-  "name": "cost-based-routing",
-  "displayName": "Cost-Based Routing",
+  "name": "cost-based-model-routing",
+  "displayName": "Cost-Based Model Routing",
   "version": "0.9",
   "provider": "WSO2",
   "categories": [

@@ -1,11 +1,11 @@
 ---
 title: "Overview"
 ---
-# Cost-Based Routing
+# Cost-Based Model Routing
 
 ## Overview
 
-Cost-Based Routing matches the requested model to an independent, shared model
+Cost-Based Model Routing matches the requested model to an independent, shared model
 budget. Model matching is always enabled and list order does not affect routing.
 
 1. Read the requested model and look for an exact, case-sensitive model name.
@@ -40,7 +40,7 @@ cost is charged once after completion.
 | `modelBudgets[].budgetLimits` | array | Yes | - | Spending windows for this model. Maximum 10. Any exhausted window makes the budget unavailable. |
 | `modelBudgets[].budgetLimits[].amount` | number | Yes | - | Positive maximum spend in US dollars within the window. |
 | `modelBudgets[].budgetLimits[].duration` | string | Yes | - | Positive Go duration such as `1h`, `24h`, `168h`, or `720h`. |
-| `onExhausted` | string | No | `fallback` | Action when the applicable model or wildcard budget is missing or exhausted: `fallback` or `reject`. |
+| `onExhausted` | string | No | `reject` | Action when the applicable model or wildcard budget is missing or exhausted: `fallback` or `reject`. |
 | `fallback` | object | When `onExhausted: fallback` | - | Concrete model and provider used for fallback requests. |
 | `fallback.modelName` | string | Yes when fallback is supplied | - | Concrete upstream model name; cannot be `*` or `other`. |
 | `fallback.providerName` | string | No | primary provider | Additional-provider alias for fallback. |
@@ -123,7 +123,7 @@ An unknown model or an exhausted `gpt-4o` budget returns:
 HTTP/1.1 429 Too Many Requests
 Content-Type: application/json
 
-{"code":"cost_based_routing_budget_exhausted","error":"requested model has no available budget or the fallback budget is missing or exhausted"}
+{"code":"cost_based_model_routing_budget_exhausted","error":"requested model has no available budget or the fallback budget is missing or exhausted"}
 ```
 
 ### Migrating existing configuration
@@ -160,9 +160,9 @@ selected route is therefore checked using previously recorded spending and is
 charged once afterward using `x-llm-cost` and `x-llm-cost-status` metadata
 published by the `llm-cost` policy.
 
-Place `cost-based-routing` before `llm-cost` in the policy list. Response-phase
+Place `cost-based-model-routing` before `llm-cost` in the policy list. Response-phase
 policies run in reverse order, allowing `llm-cost` to publish the final cost
-before Cost-Based Routing charges the selected route.
+before Cost-Based Model Routing charges the selected route.
 
 - A request can slightly overshoot a limit because its cost is not known during
   selection. Its response is still returned; the next request observes the
@@ -196,19 +196,19 @@ The policy records its selection and accounting state in
 
 | Key | Description |
 |---|---|
-| `cost_based_routing.selected_model` | Model selected for the upstream request. |
-| `cost_based_routing.selected_provider` | Selected provider alias, or an empty string for the primary provider. |
-| `cost_based_routing.selected_route` | Configured model budget name or generated `route-N` name. |
-| `cost_based_routing.selected_tier` | The selected model budget name for direct matches, `wildcard` for unlisted models, or `fallback` for fallback selections. |
-| `cost_based_routing.track_primary_cost` | Whether this response should be charged to a configured route. |
-| `cost_based_routing.budget_key` | Internal shared budget key for the selected model budget. |
-| `cost_based_routing.budget_index` | Internal index of the selected budgeted route. |
-| `cost_based_routing.cost_charged` | Marks that response accounting has already run, preventing duplicate charges. |
+| `cost_based_model_routing.selected_model` | Model selected for the upstream request. |
+| `cost_based_model_routing.selected_provider` | Selected provider alias, or an empty string for the primary provider. |
+| `cost_based_model_routing.selected_route` | Configured model budget name or generated `route-N` name. |
+| `cost_based_model_routing.selected_tier` | The selected model budget name for direct matches, `wildcard` for unlisted models, or `fallback` for fallback selections. |
+| `cost_based_model_routing.track_primary_cost` | Whether this response should be charged to a configured route. |
+| `cost_based_model_routing.budget_key` | Internal shared budget key for the selected model budget. |
+| `cost_based_model_routing.budget_index` | Internal index of the selected budgeted route. |
+| `cost_based_model_routing.cost_charged` | Marks that response accounting has already run, preventing duplicate charges. |
 | `selected_provider` | Engine routing key, present only when the selected target specifies a provider. |
 
 ## Selection traces
 
-At debug log level, the policy emits `CostBasedRouting: selected model` with
+At debug log level, the policy emits `CostBasedModelRouting: selected model` with
 `requestedModel`, `modelName`, `providerName`, `modelBudget`, `selectionTier`,
 `policyLevel`, `route`, `budgetState`, and `availableScaledUnits`. These fields
 identify the model and provider actually selected, including unlisted models using wildcard
