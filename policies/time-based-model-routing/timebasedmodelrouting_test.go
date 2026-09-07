@@ -412,3 +412,133 @@ func TestCompilePathModelExpressionRejectsUnbalancedLookbehind(t *testing.T) {
 		t.Fatalf("error = %v, want unterminated positive lookbehind", err)
 	}
 }
+
+func selectedDaySwitches(selected ...time.Weekday) map[string]interface{} {
+	days := make(map[string]interface{}, 7)
+	for day := time.Sunday; day <= time.Saturday; day++ {
+		days[day.String()] = false
+	}
+	for _, day := range selected {
+		days[day.String()] = true
+	}
+	return days
+}
+
+func TestDaySwitchesRouteOnlyOnMondayAndWednesday(t *testing.T) {
+	for _, window := range []struct {
+		name, from, to string
+		hour           int
+	}{
+		{"same-day", "09:00", "17:00", 10},
+		{"overnight-start", "22:00", "06:00", 23},
+		{"overnight-next-day", "22:00", "06:00", 25},
+	} {
+		t.Run(window.name, func(t *testing.T) {
+			for offset := 0; offset < 7; offset++ {
+				startDay := time.Date(2026, 9, 7+offset, 0, 0, 0, 0, time.UTC)
+				t.Run(startDay.Weekday().String(), func(t *testing.T) {
+					params := testParams()
+					params["timezone"] = "UTC"
+					params["schedules"] = []interface{}{map[string]interface{}{
+						"from": window.from, "to": window.to,
+						"days":  selectedDaySwitches(time.Monday, time.Wednesday),
+						"model": map[string]interface{}{"modelName": "selected-day-model"},
+					}}
+					raw, err := GetPolicy(policy.PolicyMetadata{}, params)
+					if err != nil {
+						t.Fatal(err)
+					}
+					fixedNow(t, startDay.Add(time.Duration(window.hour)*time.Hour).Format(time.RFC3339))
+					ctx := requestContext(`{"model":"client-model"}`)
+					mods := raw.(*TimeBasedModelRoutingPolicy).OnRequestBody(context.Background(), ctx, nil).(policy.UpstreamRequestModifications)
+					var payload map[string]interface{}
+					if err := json.Unmarshal(mods.Body, &payload); err != nil {
+						t.Fatal(err)
+					}
+					want := "default-model"
+					if startDay.Weekday() == time.Monday || startDay.Weekday() == time.Wednesday {
+						want = "selected-day-model"
+					}
+					if payload["model"] != want {
+						t.Fatalf("model = %v, want %s", payload["model"], want)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestDaySwitchValidation(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		days      interface{}
+		wantError string
+	}{
+		{"all off", selectedDaySwitches(), "must select at least one day"},
+		{"non-boolean", map[string]interface{}{"Monday": "true"}, "must be a boolean"},
+		{"unknown day", map[string]interface{}{"Funday": true}, "full weekday name"},
+		{"abbreviated switch", map[string]interface{}{"Mon": true}, "full weekday name"},
+		{"invalid type", "Monday", "object of weekday booleans"},
+		{"legacy duplicate", []interface{}{"Mon", "Monday"}, "duplicates"},
+		{"empty legacy list", []interface{}{}, "non-empty array"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			params := testParams()
+			params["schedules"].([]interface{})[0].(map[string]interface{})["days"] = tt.days
+			if _, err := parseConfig(params); err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("error = %v, want %q", err, tt.wantError)
+			}
+		})
+	}
+}
+
+func TestDaySwitchDefaultsAndLegacyLists(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		days interface{}
+		want []time.Weekday
+	}{
+		{"omitted", nil, []time.Weekday{0, 1, 2, 3, 4, 5, 6}},
+		{"empty object", map[string]interface{}{}, []time.Weekday{0, 1, 2, 3, 4, 5, 6}},
+		{"omitted switches enabled", map[string]interface{}{"Saturday": false, "Sunday": false}, []time.Weekday{1, 2, 3, 4, 5}},
+		{"all enabled", selectedDaySwitches(0, 1, 2, 3, 4, 5, 6), []time.Weekday{0, 1, 2, 3, 4, 5, 6}},
+		{"legacy list", []interface{}{"Mon", "Wednesday"}, []time.Weekday{1, 3}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			params := testParams()
+			if tt.days != nil {
+				params["schedules"].([]interface{})[0].(map[string]interface{})["days"] = tt.days
+			}
+			cfg, err := parseConfig(params)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for day := time.Sunday; day <= time.Saturday; day++ {
+				want := false
+				for _, selected := range tt.want {
+					want = want || day == selected
+				}
+				if got := scheduleStartAppliesOn(cfg.Schedules[0], day); got != want {
+					t.Fatalf("%s enabled = %v, want %v", day, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestDaySwitchOverlapValidation(t *testing.T) {
+	params := testParams()
+	items := params["schedules"].([]interface{})
+	first := items[0].(map[string]interface{})
+	second := items[1].(map[string]interface{})
+	first["days"] = selectedDaySwitches(time.Monday)
+	second["from"], second["to"] = first["from"], first["to"]
+	second["days"] = selectedDaySwitches(time.Wednesday)
+	if _, err := parseConfig(params); err != nil {
+		t.Fatalf("disjoint selected days must not overlap: %v", err)
+	}
+	second["days"] = selectedDaySwitches(time.Monday, time.Wednesday)
+	if _, err := parseConfig(params); err == nil || !strings.Contains(err.Error(), "overlaps") {
+		t.Fatalf("expected overlap on Monday, got %v", err)
+	}
+}

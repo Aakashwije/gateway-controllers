@@ -24,7 +24,7 @@ fallback is configured, the original model and provider remain unchanged.
 | `timezone` | string | No | `UTC` | IANA timezone used to evaluate schedules, for example `America/New_York` or `Asia/Colombo`. |
 | `schedules` | array | Yes | - | Ordered, non-overlapping routing windows. |
 | `schedules[].name` | string | No | `schedule-N` | Human-readable name recorded in request metadata. |
-| `schedules[].days` | array | No | every day | Weekdays on which the window starts, using short or long English names such as `Mon` or `Monday`. |
+| `schedules[].days` | object | No | every day | Day switches named `Monday` through `Sunday`. Enabled days determine when the window starts. Omitted switches default to `true`; at least one day must be enabled. |
 | `schedules[].from` | string | Yes | - | Inclusive start time in 24-hour `HH:MM` format. |
 | `schedules[].to` | string | Yes | - | Exclusive end time in 24-hour `HH:MM` format. |
 | `schedules[].model.modelName` | string | Yes | - | Model written to the upstream request. |
@@ -41,7 +41,14 @@ parameters:
   timezone: America/New_York
   schedules:
     - name: business-hours
-      days: [Mon, Tue, Wed, Thu, Fri]
+      days:
+        Monday: true
+        Tuesday: true
+        Wednesday: true
+        Thursday: true
+        Friday: true
+        Saturday: false
+        Sunday: false
       from: "09:00"
       to: "17:00"
       model:
@@ -59,6 +66,31 @@ parameters:
 In this example, the `business-hours` target is active from 09:00 inclusive to
 17:00 exclusive on weekdays in New York. The `overnight` target applies every
 day and spans midnight. At all other times, the fallback model is used.
+
+### Select Monday and Wednesday
+
+In the policy form, expand `days`, leave Monday and Wednesday enabled, and turn
+all other days off. For example, use the following day settings with a schedule's
+`from`, `to`, and `model`:
+
+```yaml
+days:
+  Monday: true
+  Tuesday: false
+  Wednesday: true
+  Thursday: false
+  Friday: false
+  Saturday: false
+  Sunday: false
+```
+
+All seven switches start enabled. Omitting `days` applies the schedule every day;
+omitting an individual switch leaves that day enabled. Turning every switch off
+is invalid. For an overnight window, the selected day is the day the window starts.
+
+The runtime continues to accept existing lists such as `days: [Mon, Wed]`,
+including short and long English day names. The policy form uses the boolean
+object; convert legacy lists to this object when editing through the form.
 
 ### Preserve the client target when no schedule matches
 

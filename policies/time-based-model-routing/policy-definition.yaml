@@ -51,16 +51,36 @@ parameters:
             description: Optional human-readable name for the schedule.
             minLength: 1
           days:
-            type: array
+            title: Applicable days
+            type: object
+            additionalProperties: false
             description: |
-              Optional weekdays when this schedule applies. Values may be short
-              or long names, for example Mon or Monday. When omitted, the
-              schedule applies every day.
-            minItems: 1
-            uniqueItems: true
-            items:
-              type: string
-              enum: [Sun, Sunday, Mon, Monday, Tue, Tues, Tuesday, Wed, Wednesday, Thu, Thur, Thurs, Thursday, Fri, Friday, Sat, Saturday]
+              Enable the weekdays on which this schedule starts. All days are
+              enabled by default; omitted switches remain enabled. At least one
+              day must be enabled. Overnight windows continue into the next day.
+            x-wso2-policy-property-order: [Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday]
+            properties:
+              Monday:
+                type: boolean
+                default: true
+              Tuesday:
+                type: boolean
+                default: true
+              Wednesday:
+                type: boolean
+                default: true
+              Thursday:
+                type: boolean
+                default: true
+              Friday:
+                type: boolean
+                default: true
+              Saturday:
+                type: boolean
+                default: true
+              Sunday:
+                type: boolean
+                default: true
           model:
             title: Model
             type: object

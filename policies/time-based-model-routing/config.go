@@ -160,24 +160,31 @@ func parseSchedule(item map[string]interface{}, index int) (schedule, error) {
 	result.ToMinute = toMinute
 
 	if raw, exists := item["days"]; exists {
-		values, ok := raw.([]interface{})
-		if !ok || len(values) == 0 {
-			return result, fmt.Errorf("'schedules[%d].days' must be a non-empty array of strings", index)
-		}
-		result.Days = make(map[time.Weekday]struct{}, len(values))
-		for dayIndex, value := range values {
-			day, ok := value.(string)
-			if !ok {
-				return result, fmt.Errorf("'schedules[%d].days[%d]' must be a string", index, dayIndex)
-			}
-			weekday, err := parseWeekday(day)
+		if selections, ok := raw.(map[string]interface{}); ok {
+			result.Days, err = parseDaySelections(selections, index)
 			if err != nil {
-				return result, fmt.Errorf("'schedules[%d].days[%d]' is invalid: %w", index, dayIndex, err)
+				return result, err
 			}
-			if _, duplicate := result.Days[weekday]; duplicate {
-				return result, fmt.Errorf("'schedules[%d].days[%d]' duplicates '%s'", index, dayIndex, day)
+		} else {
+			values, ok := raw.([]interface{})
+			if !ok || len(values) == 0 {
+				return result, fmt.Errorf("'schedules[%d].days' must be an object of weekday booleans or a non-empty array of strings", index)
 			}
-			result.Days[weekday] = struct{}{}
+			result.Days = make(map[time.Weekday]struct{}, len(values))
+			for dayIndex, value := range values {
+				day, ok := value.(string)
+				if !ok {
+					return result, fmt.Errorf("'schedules[%d].days[%d]' must be a string", index, dayIndex)
+				}
+				weekday, err := parseWeekday(day)
+				if err != nil {
+					return result, fmt.Errorf("'schedules[%d].days[%d]' is invalid: %w", index, dayIndex, err)
+				}
+				if _, duplicate := result.Days[weekday]; duplicate {
+					return result, fmt.Errorf("'schedules[%d].days[%d]' duplicates '%s'", index, dayIndex, day)
+				}
+				result.Days[weekday] = struct{}{}
+			}
 		}
 	}
 
@@ -194,6 +201,34 @@ func parseSchedule(item map[string]interface{}, index int) (schedule, error) {
 	}
 	result.Target = parsedTarget
 	return result, nil
+}
+
+// parseDaySelections reads the day switches exposed by the policy schema.
+// Missing switches default to enabled, matching the schema's boolean defaults.
+func parseDaySelections(selections map[string]interface{}, index int) (map[time.Weekday]struct{}, error) {
+	days := make(map[time.Weekday]struct{}, 7)
+	for name, value := range selections {
+		weekday, err := parseWeekday(name)
+		if err != nil || name != weekday.String() {
+			return nil, fmt.Errorf("'schedules[%d].days.%s' must use a full weekday name from Monday to Sunday", index, name)
+		}
+		if _, ok := value.(bool); !ok {
+			return nil, fmt.Errorf("'schedules[%d].days.%s' must be a boolean", index, name)
+		}
+	}
+	for day := time.Sunday; day <= time.Saturday; day++ {
+		enabled := true
+		if value, exists := selections[day.String()]; exists {
+			enabled = value.(bool)
+		}
+		if enabled {
+			days[day] = struct{}{}
+		}
+	}
+	if len(days) == 0 {
+		return nil, fmt.Errorf("'schedules[%d].days' must select at least one day", index)
+	}
+	return days, nil
 }
 
 func parseTarget(raw interface{}, field string) (target, error) {
