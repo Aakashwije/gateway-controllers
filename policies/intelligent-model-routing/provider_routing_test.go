@@ -247,3 +247,59 @@ func TestEmptyBodyPreservesRouting(t *testing.T) {
 		}
 	}
 }
+
+func TestOnRequestBody_ContentPathDefaultAndOverride(t *testing.T) {
+	for _, tc := range []struct {
+		name, path, want string
+		omit             bool
+	}{
+		{name: "omitted", omit: true, want: "final message"},
+		{name: "empty", path: "", want: "final message"},
+		{name: "explicit override", path: "$.prompt", want: "custom prompt"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			received := make(chan string, 4)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request chatCompletionRequest
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Error(err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				for _, message := range request.Messages {
+					if message.Role == "user" {
+						received <- message.Content
+					}
+				}
+				json.NewEncoder(w).Encode(map[string]interface{}{"choices": []interface{}{map[string]interface{}{"message": map[string]string{"content": "Coding"}}}})
+			}))
+			defer server.Close()
+			params := providerTestParams()
+			params["llmEndpoint"] = server.URL
+			if tc.omit {
+				delete(params, "contentPath")
+			} else {
+				params["contentPath"] = tc.path
+			}
+			impl, err := GetPolicy(policy.PolicyMetadata{}, params)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := &policy.RequestContext{
+				SharedContext: &policy.SharedContext{},
+				Body:          &policy.Body{Content: []byte(`{"model":"old","messages":[{"content":"earlier message"},{"content":"final message"}],"prompt":"custom prompt"}`)},
+			}
+			action := impl.(*IntelligentModelRoutingPolicy).OnRequestBody(t.Context(), req, nil)
+			assertProviderAction(t, action, req, "shared-model", "provider-a")
+			select {
+			case got := <-received:
+				want := buildClassificationPrompt(impl.(*IntelligentModelRoutingPolicy).routingRules, tc.want)
+				if got != want {
+					t.Fatalf("provider input = %q, want %q", got, want)
+				}
+			default:
+				t.Fatal("provider was not called with request content")
+			}
+		})
+	}
+}
