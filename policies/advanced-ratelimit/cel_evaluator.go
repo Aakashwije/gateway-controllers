@@ -177,16 +177,18 @@ func (e *CELEvaluator) EvaluateResponseCostExpression(expression string, respCtx
 // buildResponseCostEvalContext builds the CEL evaluation context for response-phase
 // cost extraction from a v1alpha2 ResponseContext.
 func buildResponseCostEvalContext(respCtx *policy.ResponseContext) map[string]interface{} {
+	ds := respCtx.DownstreamRequest()
+
 	requestHeaders := make(map[string][]string)
-	if respCtx.RequestHeaders != nil {
-		respCtx.RequestHeaders.Iterate(func(key string, values []string) {
+	if reqHdrs := ds.Headers; reqHdrs != nil {
+		reqHdrs.Iterate(func(key string, values []string) {
 			requestHeaders[key] = values
 		})
 	}
 
 	responseHeaders := make(map[string][]string)
-	if respCtx.ResponseHeaders != nil {
-		respCtx.ResponseHeaders.Iterate(func(key string, values []string) {
+	if respHdrs := respCtx.UpstreamHeaders(); respHdrs != nil {
+		respHdrs.Iterate(func(key string, values []string) {
 			responseHeaders[key] = values
 		})
 	}
@@ -216,8 +218,8 @@ func buildResponseCostEvalContext(respCtx *policy.ResponseContext) map[string]in
 		"request.Headers":     requestHeaders,
 		"request.Body":        requestBodyBytes,
 		"request.BodyString":  requestBodyString,
-		"request.Path":        respCtx.RequestPath,
-		"request.Method":      respCtx.RequestMethod,
+		"request.Path":        ds.Path,
+		"request.Method":      ds.Method,
 		"request.Metadata":    metadata,
 		"response.Headers":    responseHeaders,
 		"response.Body":       responseBodyBytes,
@@ -231,10 +233,13 @@ func buildResponseCostEvalContext(respCtx *policy.ResponseContext) map[string]in
 }
 
 func buildKeyEvalContext(reqCtx *policy.RequestContext, routeName string) map[string]interface{} {
-	// Convert headers to map[string][]string for CEL
+	// Convert headers to map[string][]string for CEL. Use the downstream
+	// snapshot so the rate-limit key reflects what the client actually sent, not a
+	// value a peer policy rewrote during the header phase.
+	ds := reqCtx.DownstreamRequest()
 	headers := make(map[string][]string)
-	if reqCtx.Headers != nil {
-		reqCtx.Headers.Iterate(func(key string, values []string) {
+	if hdrs := ds.Headers; hdrs != nil {
+		hdrs.Iterate(func(key string, values []string) {
 			headers[key] = values
 		})
 	}
@@ -249,8 +254,8 @@ func buildKeyEvalContext(reqCtx *policy.RequestContext, routeName string) map[st
 
 	return map[string]interface{}{
 		"request.Headers":  headers,
-		"request.Path":     reqCtx.Path,
-		"request.Method":   reqCtx.Method,
+		"request.Path":     ds.Path,
+		"request.Method":   ds.Method,
 		"request.Metadata": metadata,
 		"api.Name":         reqCtx.APIName,
 		"api.Version":      reqCtx.APIVersion,
@@ -261,10 +266,13 @@ func buildKeyEvalContext(reqCtx *policy.RequestContext, routeName string) map[st
 }
 
 func buildRequestCostEvalContext(reqCtx *policy.RequestContext) map[string]interface{} {
-	// Convert headers to map[string][]string for CEL
+	// Convert headers to map[string][]string for CEL. Use the downstream
+	// snapshot so cost extraction reflects what the client actually sent, not a
+	// value a peer policy rewrote during the header phase.
+	ds := reqCtx.DownstreamRequest()
 	headers := make(map[string][]string)
-	if reqCtx.Headers != nil {
-		reqCtx.Headers.Iterate(func(key string, values []string) {
+	if hdrs := ds.Headers; hdrs != nil {
+		hdrs.Iterate(func(key string, values []string) {
 			headers[key] = values
 		})
 	}
@@ -289,8 +297,8 @@ func buildRequestCostEvalContext(reqCtx *policy.RequestContext) map[string]inter
 		"request.Headers":    headers,
 		"request.Body":       bodyBytes,
 		"request.BodyString": bodyString,
-		"request.Path":       reqCtx.Path,
-		"request.Method":     reqCtx.Method,
+		"request.Path":       ds.Path,
+		"request.Method":     ds.Method,
 		"request.Metadata":   metadata,
 		// Response variables are empty during request phase
 		"response.Headers":    map[string][]string{},

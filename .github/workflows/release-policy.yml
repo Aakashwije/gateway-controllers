@@ -1,4 +1,20 @@
+# Release Policy
+#
+# Validates and tests a policy version (job: validate), then creates its git
+# tag under GitHub Environment approval and, for each selected environment,
+# registers it with Policy Hub (jobs: release-policy-tag-only / release-and-register-policy).
+#
+# Tag creation always requires environment approval: if no environment was
+# selected, the Dev environment's approval gates a tag-only release (no
+# Policy Hub calls at all); if one or more environments were selected,
+# approval for any one of them is enough to create the tag, and each
+# environment's own approval separately gates its own Policy Hub
+# registration. Releasing an already-tagged version to a new environment
+# reuses that tag's exact content rather than re-validating against
+# whatever HEAD is now.
+
 name: Release Policy
+run-name: Release Policy - ${{ inputs.policy }} v${{ inputs.version }}
 
 on:
   workflow_dispatch:
@@ -11,199 +27,269 @@ on:
         description: "Version (SemVer: X.Y.Z | X.Y.Z-dev.N | X.Y.Z-rc.N)"
         required: true
         type: string
+      release_dev:
+        description: "Release to dev"
+        required: false
+        type: boolean
+        default: true
+      release_staging:
+        description: "Release to staging"
+        required: false
+        type: boolean
+        default: true
+      release_production:
+        description: "Release to production"
+        required: false
+        type: boolean
+        default: true
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-policy-${{ github.event.inputs.policy }}-${{ github.event.inputs.version }}
+  cancel-in-progress: false
 
 jobs:
-  release-policy:
-    name: Validate, Test & Release Policy
+  # ------------------------------------------------------------
+  # Validate and test the release. No tagging, environment approval, or
+  # Policy Hub / API calls happen here at all — tag creation is gated by
+  # environment approval in the jobs below. Any failure writes its own
+  # summary and exits immediately — nothing downstream is needed to
+  # explain a failure.
+  # ------------------------------------------------------------
+  validate:
+    name: Validate & Test Policy
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      target_dir: ${{ steps.meta.outputs.target_dir }}
+      module_path: ${{ steps.meta.outputs.module_path }}
+      tag_name: ${{ steps.meta.outputs.tag_name }}
+      pip_package: ${{ steps.structure.outputs.pip_package }}
+      environments: ${{ steps.envs.outputs.environments }}
+      tag_existed: ${{ steps.tag-check.outputs.tag_existed }}
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
 
     steps:
-      # ------------------------------------------------------------
-      # Checkout
-      # ------------------------------------------------------------
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
-      # ------------------------------------------------------------
-      # Validate inputs
-      # ------------------------------------------------------------
       - name: Validate inputs
         shell: bash
+        env:
+          POLICY_INPUT: ${{ inputs.policy }}
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
           set -euo pipefail
 
-          POLICY="${{ github.event.inputs.policy }}"
-          VERSION="${{ github.event.inputs.version }}"
-
-          if ! [[ "$POLICY" =~ ^[a-zA-Z0-9-]+$ ]]; then
-            echo "❌ Invalid policy name: $POLICY"
+          fail() {
+            echo "::error::$1"
+            { echo "## ❌ Validation Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
             exit 1
-          fi
+          }
 
-          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(dev|rc)\.[0-9]+)?$ ]]; then
-            echo "❌ Invalid version format: $VERSION"
-            exit 1
-          fi
+          [[ "$POLICY_INPUT" =~ ^[a-zA-Z0-9-]+$ ]] || fail "Invalid policy name: $POLICY_INPUT"
+          [[ "$VERSION_INPUT" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(dev|rc)\.[0-9]+)?$ ]] || fail "Invalid version format: $VERSION_INPUT"
 
           echo "✅ Inputs validated"
 
-      # ------------------------------------------------------------
-      # Resolve module metadata
-      # ------------------------------------------------------------
-      - name: Resolve module metadata
-        id: meta
+      - name: Determine target environments
+        id: envs
         shell: bash
+        env:
+          RELEASE_DEV: ${{ inputs.release_dev }}
+          RELEASE_STAGING: ${{ inputs.release_staging }}
+          RELEASE_PRODUCTION: ${{ inputs.release_production }}
         run: |
           set -euo pipefail
 
-          POLICY="${{ github.event.inputs.policy }}"
-          VERSION="${{ github.event.inputs.version }}"
+          ENVS=()
+          [[ "$RELEASE_DEV" == "true" ]] && ENVS+=("Dev")
+          [[ "$RELEASE_STAGING" == "true" ]] && ENVS+=("Staging")
+          [[ "$RELEASE_PRODUCTION" == "true" ]] && ENVS+=("Production")
+
+          if [[ ${#ENVS[@]} -eq 0 ]]; then
+            echo "ℹ️ No environment selected — this will be a tag-only release (no Policy Hub registration)"
+            JSON="[]"
+          else
+            echo "Selected environments: ${ENVS[*]}"
+            # printf still runs its format once even with zero args, so build the
+            # JSON array only in this branch where ENVS is guaranteed non-empty.
+            JSON=$(printf '%s\n' "${ENVS[@]}" | jq -R . | jq -sc .)
+          fi
+
+          echo "environments=$JSON" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve module metadata
+        id: meta
+        shell: bash
+        env:
+          POLICY_INPUT: ${{ inputs.policy }}
+          VERSION_INPUT: ${{ inputs.version }}
+          CANONICAL_REPOSITORY: ${{ vars.CANONICAL_REPOSITORY || github.repository }}
+        run: |
+          set -euo pipefail
+
+          POLICY="$POLICY_INPUT"
+          VERSION="$VERSION_INPUT"
           MAJOR="${VERSION%%.*}"
 
           if [[ "$MAJOR" == "0" || "$MAJOR" == "1" ]]; then
             TARGET_DIR="policies/$POLICY"
-            MODULE_PATH="github.com/${{ github.repository }}/policies/$POLICY"
+            MODULE_PATH="github.com/$CANONICAL_REPOSITORY/policies/$POLICY"
           else
             TARGET_DIR="policies/$POLICY/v$MAJOR"
-            MODULE_PATH="github.com/${{ github.repository }}/policies/$POLICY/v$MAJOR"
+            MODULE_PATH="github.com/$CANONICAL_REPOSITORY/policies/$POLICY/v$MAJOR"
           fi
 
           TAG_NAME="policies/$POLICY/v$VERSION"
 
-          # For Python policies, construct the shortened URL (same pattern as Go MODULE_PATH
-          # but with @vMAJOR suffix instead of /vMAJOR path segment).
-          # Example: github.com/wso2/gateway-controllers/policies/prompt-compressor@v0
-          PIP_PACKAGE=""
-          if [[ -f "$TARGET_DIR/pyproject.toml" ]]; then
-            PIP_PACKAGE="github.com/${{ github.repository }}/policies/$POLICY@v$MAJOR"
-          fi
-
           echo "target_dir=$TARGET_DIR" >> "$GITHUB_OUTPUT"
           echo "module_path=$MODULE_PATH" >> "$GITHUB_OUTPUT"
           echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
-          echo "pip_package=$PIP_PACKAGE" >> "$GITHUB_OUTPUT"
 
-      # ------------------------------------------------------------
-      # Validate policy structure
-      # ------------------------------------------------------------
-      - name: Validate policy structure
+      - name: Check for existing release tag
+        id: tag-check
         shell: bash
+        env:
+          TAG_NAME: ${{ steps.meta.outputs.tag_name }}
         run: |
           set -euo pipefail
 
-          DIR="${{ steps.meta.outputs.target_dir }}"
+          if git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
+            echo "ℹ️ Tag already exists: $TAG_NAME"
+            git show "$TAG_NAME" --no-patch --format="Tagged commit: %H (%ai) - %s"
+            echo "Checking out that exact commit so every selected environment releases identical content."
+            git checkout "refs/tags/$TAG_NAME"
+            echo "tag_existed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "✅ Tag does not exist yet — this is the first release of this version"
+            echo "tag_existed=false" >> "$GITHUB_OUTPUT"
+          fi
 
-          [[ -d "$DIR" ]] || { echo "❌ Missing directory: $DIR"; exit 1; }
-          [[ -f "$DIR/policy-definition.yaml" ]] || { echo "❌ Missing policy-definition.yaml in $DIR"; exit 1; }
+      - name: Validate policy structure
+        id: structure
+        shell: bash
+        env:
+          POLICY_INPUT: ${{ inputs.policy }}
+          VERSION_INPUT: ${{ inputs.version }}
+          CANONICAL_REPOSITORY: ${{ vars.CANONICAL_REPOSITORY || github.repository }}
+          DIR: ${{ steps.meta.outputs.target_dir }}
+          EXPECTED_MODULE_PATH: ${{ steps.meta.outputs.module_path }}
+        run: |
+          set -euo pipefail
+
+          fail() {
+            echo "::error::$1"
+            { echo "## ❌ Validation Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
+          MAJOR="${VERSION_INPUT%%.*}"
+
+          [[ -d "$DIR" ]] || fail "Missing directory: $DIR"
+          [[ -f "$DIR/policy-definition.yaml" ]] || fail "Missing policy-definition.yaml in $DIR"
+
+          # PIP_PACKAGE is derived here (post tag-checkout) rather than in "Resolve
+          # module metadata", since that step runs before the tag-reuse checkout and
+          # would otherwise reflect HEAD's file layout instead of the released commit's.
+          PIP_PACKAGE=""
 
           if [[ -f "$DIR/go.mod" ]]; then
             echo "RUNTIME=go" >> "$GITHUB_ENV"
-            EXPECTED="${{ steps.meta.outputs.module_path }}"
+            EXPECTED="$EXPECTED_MODULE_PATH"
             ACTUAL=$(grep '^module ' "$DIR/go.mod" | awk '{print $2}')
 
-            [[ "$EXPECTED" == "$ACTUAL" ]] || {
-              echo "❌ go.mod module mismatch"
-              echo "Expected: $EXPECTED"
-              echo "Actual:   $ACTUAL"
-              exit 1
-            }
+            [[ "$EXPECTED" == "$ACTUAL" ]] || fail "go.mod module mismatch. Expected: $EXPECTED, Actual: $ACTUAL"
             echo "✅ Go Policy structure valid"
           elif [[ -f "$DIR/pyproject.toml" ]]; then
             echo "RUNTIME=python" >> "$GITHUB_ENV"
 
             # Validate src layout: src/ directory must exist
-            [[ -d "$DIR/src" ]] || { echo "❌ Missing src/ directory in $DIR (expected src layout)"; exit 1; }
+            [[ -d "$DIR/src" ]] || fail "Missing src/ directory in $DIR (expected src layout)"
 
             # Validate that at least one Python package exists under src/
             PKG_COUNT=$(find "$DIR/src" -mindepth 1 -maxdepth 1 -type d ! -name '__pycache__' | wc -l | tr -d ' ')
-            [[ "$PKG_COUNT" -ge 1 ]] || { echo "❌ No Python package found under $DIR/src/"; exit 1; }
+            [[ "$PKG_COUNT" -ge 1 ]] || fail "No Python package found under $DIR/src/"
 
             # Validate that the package contains a policy.py module
             POLICY_PY=$(find "$DIR/src" -mindepth 2 -maxdepth 2 -name 'policy.py' -type f | head -1)
-            [[ -n "$POLICY_PY" ]] || { echo "❌ Missing policy.py module in src package"; exit 1; }
+            [[ -n "$POLICY_PY" ]] || fail "Missing policy.py module in src package"
 
             # Validate that tests/ directory exists
-            [[ -d "$DIR/tests" ]] || { echo "❌ Missing tests/ directory in $DIR"; exit 1; }
+            [[ -d "$DIR/tests" ]] || fail "Missing tests/ directory in $DIR"
 
             echo "✅ Python Policy structure valid (src layout)"
+
+            # For Python policies, construct the shortened URL (same pattern as Go
+            # MODULE_PATH but with @vMAJOR suffix instead of /vMAJOR path segment).
+            PIP_PACKAGE="github.com/$CANONICAL_REPOSITORY/policies/$POLICY_INPUT@v$MAJOR"
           else
-            echo "❌ Current implementation requires either go.mod or pyproject.toml"
-            exit 1
+            fail "Current implementation requires either go.mod or pyproject.toml"
           fi
 
-      # ------------------------------------------------------------
-      # Validate version consistency
-      # ------------------------------------------------------------
+          echo "pip_package=$PIP_PACKAGE" >> "$GITHUB_OUTPUT"
+
       - name: Validate version consistency
         shell: bash
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+          DIR: ${{ steps.meta.outputs.target_dir }}
         run: |
           set -euo pipefail
 
-          DIR="${{ steps.meta.outputs.target_dir }}"
-          INPUT_VERSION="${{ github.event.inputs.version }}"
+          fail() {
+            echo "::error::$1"
+            { echo "## ❌ Validation Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
 
-          # Extract version from policy-definition.yaml
+          INPUT_VERSION="$VERSION_INPUT"
+
           POLICY_DEF_VERSION=$(yq eval '.version' "$DIR/policy-definition.yaml")
-
-          # Remove 'v' prefix if present in policy-definition.yaml
           POLICY_DEF_VERSION=${POLICY_DEF_VERSION#v}
 
           echo "Input version: $INPUT_VERSION"
           echo "Policy definition version: $POLICY_DEF_VERSION"
 
-          if [[ "$INPUT_VERSION" != "$POLICY_DEF_VERSION" ]]; then
-            echo "❌ Version mismatch!"
-            echo "The version specified in the workflow input ($INPUT_VERSION) does not match"
-            echo "the version in the policy-definition.yaml file ($POLICY_DEF_VERSION)."
-            echo "Please update the policy-definition.yaml version to v$INPUT_VERSION or"
-            echo "use version $POLICY_DEF_VERSION in the workflow input."
-            exit 1
-          fi
+          [[ "$INPUT_VERSION" == "$POLICY_DEF_VERSION" ]] || fail "Version mismatch: workflow input ($INPUT_VERSION) vs policy-definition.yaml ($POLICY_DEF_VERSION)"
 
-          # For Python policies, also validate pyproject.toml version
           if [[ "${RUNTIME:-}" == "python" ]]; then
             PYPROJECT_VERSION=$(yq eval '.project.version' "$DIR/pyproject.toml")
             echo "pyproject.toml version: $PYPROJECT_VERSION"
 
-            if [[ "$INPUT_VERSION" != "$PYPROJECT_VERSION" ]]; then
-              echo "❌ pyproject.toml version mismatch!"
-              echo "The version specified in the workflow input ($INPUT_VERSION) does not match"
-              echo "the version in pyproject.toml ($PYPROJECT_VERSION)."
-              echo "Please update pyproject.toml version to $INPUT_VERSION."
-              exit 1
-            fi
+            [[ "$INPUT_VERSION" == "$PYPROJECT_VERSION" ]] || fail "Version mismatch: workflow input ($INPUT_VERSION) vs pyproject.toml ($PYPROJECT_VERSION)"
           fi
 
           echo "✅ Version consistency validated"
 
-      # ------------------------------------------------------------
-      # Setup Go
-      # ------------------------------------------------------------
       - name: Setup Go
         if: env.RUNTIME == 'go'
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: ${{ steps.meta.outputs.target_dir }}/go.mod
           cache: false
 
-      # ------------------------------------------------------------
-      # Setup Python
-      # ------------------------------------------------------------
       - name: Setup Python
         if: env.RUNTIME == 'python'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.10"
 
-      # ------------------------------------------------------------
-      # Install Python policy dependencies
-      # ------------------------------------------------------------
       - name: Install Python policy dependencies
         if: env.RUNTIME == 'python'
         working-directory: ${{ steps.meta.outputs.target_dir }}
@@ -220,235 +306,302 @@ jobs:
           pip install -e . --no-deps
           echo "✅ Python policy dependencies installed"
 
-      # ------------------------------------------------------------
-      # Run tests
-      # ------------------------------------------------------------
       - name: Run policy tests
         working-directory: ${{ steps.meta.outputs.target_dir }}
         shell: bash
+        env:
+          POLICY_INPUT: ${{ inputs.policy }}
         run: |
           set -euo pipefail
+
+          fail() {
+            echo "::error::$1"
+            { echo "## ❌ Validation Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
           if [[ "${RUNTIME}" == "go" ]]; then
-            go test -v -race ./...
+            go test -v -race ./... || fail "Go tests failed for policy $POLICY_INPUT"
           elif [[ "${RUNTIME}" == "python" ]]; then
-            # Use pytest if available, otherwise fall back to unittest
             if python -m pytest --version 2>/dev/null; then
-              PYTHONDONTWRITEBYTECODE=1 python -m pytest tests/ -v
+              PYTHONDONTWRITEBYTECODE=1 python -m pytest tests/ -v || fail "Python tests failed for policy $POLICY_INPUT"
             else
-              PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_*.py' -v
+              PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_*.py' -v || fail "Python tests failed for policy $POLICY_INPUT"
             fi
           fi
 
-      # ------------------------------------------------------------
-      # Git hygiene
-      # ------------------------------------------------------------
       - name: Ensure clean working tree
         shell: bash
         run: |
           set -euo pipefail
-          git diff --exit-code
-          test -z "$(git status --porcelain)"
 
-      # ------------------------------------------------------------
-      # Ensure version uniqueness
-      # ------------------------------------------------------------
-      - name: Ensure version is new
-        shell: bash
-        run: |
-          set -euo pipefail
-          if git rev-parse "${{ steps.meta.outputs.tag_name }}" >/dev/null 2>&1; then
-            echo "❌ Tag already exists: ${{ steps.meta.outputs.tag_name }}"
-            echo "Existing tag information:"
-            git show "${{ steps.meta.outputs.tag_name }}" --no-patch --format="%H %s (%ai)"
+          fail() {
+            echo "::error::$1"
+            { echo "## ❌ Validation Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
             exit 1
-          else
-            echo "✅ Version is new"
-          fi
+          }
 
-      # ------------------------------------------------------------
-      # Register Policy in Policy Hub (MANDATORY, multipart)
-      # ------------------------------------------------------------
-      - name: Register policy in Policy Hub
-        if: false  # Temporarily disabled
-        id: policy-hub
+          git diff --exit-code || fail "Working tree has uncommitted changes after running tests"
+          [[ -z "$(git status --porcelain)" ]] || fail "Working tree has untracked files after running tests"
+
+      - name: Upload policy definition for registration
+        uses: actions/upload-artifact@v7
+        with:
+          name: policy-definition
+          path: ${{ steps.meta.outputs.target_dir }}/policy-definition.yaml
+          retention-days: 7
+
+      - name: Publish summary
         shell: bash
         env:
-          POLICY_HUB_URL: ${{ secrets.POLICY_HUB_URL }}
-          POLICY_HUB_TOKEN: ${{ secrets.POLICY_HUB_TOKEN }}
+          TAG_EXISTED: ${{ steps.tag-check.outputs.tag_existed }}
+          POLICY_INPUT: ${{ inputs.policy }}
+          VERSION_INPUT: ${{ inputs.version }}
+          TAG_NAME: ${{ steps.meta.outputs.tag_name }}
+          MODULE_PATH: ${{ steps.meta.outputs.module_path }}
         run: |
           set -euo pipefail
 
-          if [[ -z "${POLICY_HUB_URL:-}" || -z "${POLICY_HUB_TOKEN:-}" ]]; then
-            echo "registration_status=skipped" >> "$GITHUB_OUTPUT"
-            echo "registration_message=Missing POLICY_HUB_URL or POLICY_HUB_TOKEN" >> "$GITHUB_OUTPUT"
-            exit 0
+          TAG_STATUS="⏳ Pending environment approval — this policy version will be released once approved"
+          if [[ "$TAG_EXISTED" == "true" ]]; then
+            TAG_STATUS="ℹ️ This policy version was already released (tag \`$TAG_NAME\`) — reused its content, no new policy module released"
           fi
 
-          DIR="${{ steps.meta.outputs.target_dir }}"
+          {
+            echo "## ✅ Validation & Tests Passed"
+            echo ""
+            echo "| Item | Value |"
+            echo "|------|------|"
+            echo "| Policy | \`$POLICY_INPUT\` |"
+            echo "| Version | \`$VERSION_INPUT\` |"
+            echo "| Tag | \`$TAG_NAME\` |"
+            echo "| Package Path | \`$MODULE_PATH\` |"
+            echo ""
+            echo "**Tests:** ✅ Passed"
+            echo ""
+            echo "## ℹ️ Release Status"
+            echo ""
+            echo "$TAG_STATUS"
+          } >> "$GITHUB_STEP_SUMMARY"
 
-          if [[ "${RUNTIME}" == "python" ]]; then
-            PACKAGE_FIELD="-F pip_package=${{ steps.meta.outputs.pip_package }}"
-          else
-            PACKAGE_FIELD="-F module_path=${{ steps.meta.outputs.module_path }}"
-          fi
+  # ------------------------------------------------------------
+  # Tag-only release path: when no environment was selected, tag creation
+  # still requires sign-off. Gated on the Dev GitHub Environment's required
+  # reviewers. The `release-and-register-policy` matrix below never runs in
+  # this case.
+  # ------------------------------------------------------------
+  release-policy-tag-only:
+    name: Release Policy (Tag-only)
+    needs: validate
+    if: needs.validate.outputs.environments == '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: Dev
+    permissions:
+      contents: write
 
-          RESPONSE=$(curl -sSL -w "HTTPSTATUS:%{http_code}" \
-            -X POST "$POLICY_HUB_URL/policies/register" \
-            -H "Authorization: Bearer $POLICY_HUB_TOKEN" \
-            -F "policy=${{ github.event.inputs.policy }}" \
-            -F "version=${{ github.event.inputs.version }}" \
-            $PACKAGE_FIELD \
-            -F "repository=${{ github.repository }}" \
-            -F "policy_definition=@$DIR/policy-definition.yaml;type=application/yaml")
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
-          STATUS=$(echo "$RESPONSE" | sed -E 's/.*HTTPSTATUS:([0-9]{3})$/\1/')
-          BODY=$(echo "$RESPONSE" | sed -E 's/HTTPSTATUS:[0-9]{3}$//')
-
-          if [[ "$STATUS" =~ ^(200|201)$ ]]; then
-            echo "registration_status=success" >> "$GITHUB_OUTPUT"
-            echo "registration_message=Policy registered successfully" >> "$GITHUB_OUTPUT"
-          else
-            echo "registration_status=failed" >> "$GITHUB_OUTPUT"
-            echo "registration_message=HTTP $STATUS: $BODY" >> "$GITHUB_OUTPUT"
-          fi
-
-      # ------------------------------------------------------------
-      # Set default Policy Hub outputs (since registration is disabled)
-      # ------------------------------------------------------------
-      - name: Set default Policy Hub outputs
-        id: policy-hub-default
-        shell: bash
-        run: |
-          echo "registration_status=skipped" >> "$GITHUB_OUTPUT"
-          echo "registration_message=Policy Hub registration disabled for testing" >> "$GITHUB_OUTPUT"
-
-      # ------------------------------------------------------------
-      # Resolve final Policy Hub status
-      # ------------------------------------------------------------
-      - name: Resolve Policy Hub status
-        id: policy-hub-final
-        shell: bash
-        run: |
-          # Use actual Policy Hub result if it ran, otherwise use default
-          if [[ "${{ steps.policy-hub.conclusion }}" == "success" || "${{ steps.policy-hub.conclusion }}" == "failure" ]]; then
-            echo "registration_status=${{ steps.policy-hub.outputs.registration_status }}" >> "$GITHUB_OUTPUT"
-            echo "registration_message=${{ steps.policy-hub.outputs.registration_message }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "registration_status=${{ steps.policy-hub-default.outputs.registration_status }}" >> "$GITHUB_OUTPUT"
-            echo "registration_message=${{ steps.policy-hub-default.outputs.registration_message }}" >> "$GITHUB_OUTPUT"
-          fi
-
-      # ------------------------------------------------------------
-      # Create and push Git tag (only on successful registration or skipped)
-      # ------------------------------------------------------------
       - name: Create and push tag
-        if: steps.policy-hub-final.outputs.registration_status == 'success' || steps.policy-hub-final.outputs.registration_status == 'skipped'
+        if: needs.validate.outputs.tag_existed == 'false'
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.validate.outputs.tag_name }}
+          POLICY_INPUT: ${{ inputs.policy }}
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
           set -euo pipefail
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git tag -a "${{ steps.meta.outputs.tag_name }}" \
-            -m "Release ${{ github.event.inputs.policy }} v${{ github.event.inputs.version }}"
+          git tag -a "$TAG_NAME" -m "Release $POLICY_INPUT v$VERSION_INPUT"
 
           git push "https://x-access-token:$GITHUB_TOKEN@github.com/${{ github.repository }}.git" \
-            "${{ steps.meta.outputs.tag_name }}"
+            "$TAG_NAME"
 
-      # ------------------------------------------------------------
-      # Verify Go module resolution (only on successful registration or skipped)
-      # ------------------------------------------------------------
-      # - name: Verify Go module resolution
-      #   if: steps.policy-hub-default.outputs.registration_status == 'success' || steps.policy-hub-default.outputs.registration_status == 'skipped'
-      #   shell: bash
-      #   run: |
-      #     set -euo pipefail
+          echo "✅ Tag created and pushed: $TAG_NAME"
 
-      #     MOD="${{ steps.meta.outputs.module_path }}"
-      #     VER="v${{ github.event.inputs.version }}"
-
-      #     for i in 1 2 3; do
-      #       if go list -m "$MOD@$VER"; then
-      #         echo "✅ Module resolved"
-      #         exit 0
-      #       fi
-      #       sleep 15
-      #     done
-
-      #     echo "❌ Go module resolution failed"
-      #     exit 1
-
-      # ------------------------------------------------------------
-      # Publish summary (Markdown)
-      # ------------------------------------------------------------
       - name: Publish summary
-        run: |
-          case "${{ steps.policy-hub-final.outputs.registration_status }}" in
-            success)
-              TITLE=" Policy Released Successfully"
-              HUB="✅ Policy Hub registration successful"
-              ACTION=""
-              TAG_STATUS="✅ Git tag created"
-              MODULE_STATUS="✅ Package verified"
-              ;;
-            skipped)
-              TITLE="🎉 Policy Released Successfully"
-              HUB="ℹ️ Policy Hub registration skipped (not configured)"
-              ACTION=""
-              TAG_STATUS="✅ Git tag created"
-              MODULE_STATUS="✅ Package verified"
-              ;;
-            failed)
-              TITLE="❌ Policy Release Failed"
-              HUB="❌ Policy Hub registration failed"
-              ACTION="**Fix:** Review Policy Hub error details above and retry."
-              TAG_STATUS="❌ Git tag not created"
-              MODULE_STATUS="❌ Package not verified"
-              ;;
-            *)
-              TITLE="❌ Policy Release Failed"
-              HUB="❌ Unknown Policy Hub state"
-              ACTION="**Fix:** Inspect workflow logs."
-              TAG_STATUS="❌ Git tag not created"
-              MODULE_STATUS="❌ Package not verified"
-              ;;
-          esac
-
-          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
-          # $TITLE
-
-          | Item | Value |
-          |------|------|
-          | Policy | \`${{ github.event.inputs.policy }}\` |
-          | Version | \`${{ github.event.inputs.version }}\` |
-          | Tag | \`${{ steps.meta.outputs.tag_name }}\` |
-          | Package Path | \`${{ steps.meta.outputs.module_path }}\` |
-
-          ## Status
-          ✅ Tests passed  
-          $TAG_STATUS  
-          $MODULE_STATUS  
-          $HUB
-
-          $ACTION
-          EOF
-
-      # ------------------------------------------------------------
-      # Final status enforcement
-      # ------------------------------------------------------------
-      - name: Final status check
         shell: bash
+        env:
+          TAG_EXISTED: ${{ needs.validate.outputs.tag_existed }}
+          TAG_NAME: ${{ needs.validate.outputs.tag_name }}
         run: |
-          case "${{ steps.policy-hub-final.outputs.registration_status }}" in
-            success|skipped)
-              echo "✅ Workflow completed successfully"
-              exit 0
-              ;;
-            *)
-              echo "❌ Workflow failed due to Policy Hub registration"
-              exit 1
-              ;;
-          esac
+          set -euo pipefail
+
+          TAG_STATUS="✅ Policy released — tag created and pushed (not registered to any environment)"
+          if [[ "$TAG_EXISTED" == "true" ]]; then
+            TAG_STATUS="ℹ️ Policy already released — reused the existing tag, nothing new pushed"
+          fi
+
+          {
+            echo "### Tag: $TAG_NAME"
+            echo ""
+            echo "**Status:** $TAG_STATUS"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ------------------------------------------------------------
+  # Create the release tag and register the policy in Policy Hub, once per
+  # selected environment. fail-fast: false so one environment's failure
+  # doesn't cancel the others. Skipped entirely when no environment was
+  # selected (tag-only release, handled instead by release-policy-tag-only
+  # above).
+  #
+  # Each environment's approval gate covers both tag creation and
+  # registration for that environment, so there is exactly one approval per
+  # environment rather than a separate gate stacked in front of this one.
+  # Because multiple environments can be approved independently and
+  # concurrently, whichever leg is approved first creates the tag; the
+  # others detect it already exists and skip creating it (see the
+  # concurrency-safe check below).
+  # ------------------------------------------------------------
+  release-and-register-policy:
+    name: Release & Register to ${{ matrix.environment }}
+    needs: validate
+    if: needs.validate.outputs.environments != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: ${{ matrix.environment }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJson(needs.validate.outputs.environments) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Create and push tag
+        if: needs.validate.outputs.tag_existed == 'false'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.validate.outputs.tag_name }}
+          POLICY_INPUT: ${{ inputs.policy }}
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Multiple environments can be approved independently and around
+          # the same time, so more than one matrix leg can reach this step.
+          # Check the remote directly right before creating — a plain `git
+          # fetch` of a single ref only updates FETCH_HEAD, not a local tag
+          # ref, so it can't be used for this check — and treat losing the
+          # race to another leg's push as success rather than failing this leg.
+          TAG_STATUS="✅ Policy released — tag created and pushed following this environment's approval"
+          if git ls-remote --exit-code --tags "https://x-access-token:$GITHUB_TOKEN@github.com/${{ github.repository }}.git" "refs/tags/$TAG_NAME" >/dev/null 2>&1; then
+            echo "ℹ️ Tag already created by another environment's approval — nothing to do"
+            TAG_STATUS="ℹ️ Policy already released by another environment's approval — reusing that tag"
+          else
+            git tag -a "$TAG_NAME" -m "Release $POLICY_INPUT v$VERSION_INPUT"
+
+            if ! PUSH_OUTPUT=$(git push "https://x-access-token:$GITHUB_TOKEN@github.com/${{ github.repository }}.git" "$TAG_NAME" 2>&1); then
+              if echo "$PUSH_OUTPUT" | grep -qi "already exists"; then
+                echo "ℹ️ Lost the race to another environment's approval — tag already exists remotely"
+                TAG_STATUS="ℹ️ Policy already released by another environment's approval — reusing that tag"
+              else
+                echo "::error::Failed to push tag $TAG_NAME"
+                echo "$PUSH_OUTPUT"
+                {
+                  echo "## ❌ Failed"
+                  echo ""
+                  echo "**Error:** Failed to push tag \`$TAG_NAME\`"
+                  echo '```'
+                  echo "$PUSH_OUTPUT"
+                  echo '```'
+                } >> "$GITHUB_STEP_SUMMARY"
+                exit 1
+              fi
+            else
+              echo "✅ Tag created and pushed: $TAG_NAME"
+            fi
+          fi
+          echo "TAG_STATUS=$TAG_STATUS" >> "$GITHUB_ENV"
+
+      - name: Download policy definition
+        uses: actions/download-artifact@v8
+        with:
+          name: policy-definition
+          path: ${{ needs.validate.outputs.target_dir }}
+
+      - name: Register policy in Policy Hub
+        shell: bash
+        env:
+          POLICY_HUB_URL: ${{ vars.POLICY_HUB_URL }}
+          POLICY_HUB_TOKEN: ${{ secrets.POLICY_HUB_TOKEN }}
+          POLICY_INPUT: ${{ inputs.policy }}
+          VERSION_INPUT: ${{ inputs.version }}
+          TARGET_DIR: ${{ needs.validate.outputs.target_dir }}
+          ENV_NAME: ${{ matrix.environment }}
+          TAG_STATUS: ${{ env.TAG_STATUS || 'ℹ️ This policy version was already released — reused its content' }}
+        run: |
+          set -euo pipefail
+
+          # Writes one "### Release & Registration: <env>" block to the job
+          # summary per invocation — every matrix leg's outcome shows up on
+          # the run's Summary page without needing a separate aggregator job.
+          summarize() {
+            {
+              echo "### Release & Registration: $ENV_NAME"
+              echo ""
+              echo "| Field | Value |"
+              echo "|-------|-------|"
+              echo "| Policy | \`$POLICY_INPUT\` |"
+              echo "| Version | \`$VERSION_INPUT\` |"
+              echo "| Tag | $TAG_STATUS |"
+              echo "| Status | $1 |"
+              echo "| Message | $2 |"
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          if [[ -z "${POLICY_HUB_URL:-}" || -z "${POLICY_HUB_TOKEN:-}" ]]; then
+            echo "::warning::Missing POLICY_HUB_URL or POLICY_HUB_TOKEN for environment '$ENV_NAME' — skipping registration"
+            summarize "⚠️ Skipped" "Missing POLICY_HUB_URL or POLICY_HUB_TOKEN"
+            exit 0
+          fi
+
+          RESPONSE=$(curl -sS -w "HTTPSTATUS:%{http_code}" \
+            -X POST "$POLICY_HUB_URL/policies/$POLICY_INPUT/versions/$VERSION_INPUT/release" \
+            -H "api-key: $POLICY_HUB_TOKEN" \
+            -F "definition=@$TARGET_DIR/policy-definition.yaml;type=application/yaml")
+
+          STATUS="${RESPONSE##*HTTPSTATUS:}"
+          BODY="${RESPONSE%HTTPSTATUS:*}"
+
+          if [[ "$STATUS" =~ ^(200|201)$ ]]; then
+            echo "✅ Released to $ENV_NAME"
+            summarize "✅ Released" "Policy registered successfully"
+          elif [[ "$STATUS" == "409" ]]; then
+            MESSAGE=$(echo "$BODY" | jq -r '.message // empty' 2>/dev/null || true)
+            [[ -z "$MESSAGE" ]] && MESSAGE="Version already released to this environment"
+            echo "ℹ️ Already released to $ENV_NAME (HTTP 409) — treating as no-op, not a failure"
+            summarize "ℹ️ Already released" "$MESSAGE"
+          elif [[ "$STATUS" == "401" ]]; then
+            # Never echo the response body for 401s: some APIs reflect request
+            # headers/credentials back in auth-error bodies, and $GITHUB_STEP_SUMMARY
+            # is not secret-masked the way console log output is.
+            echo "::error::Registration failed for $ENV_NAME: Unauthorized (HTTP 401) — check POLICY_HUB_TOKEN for this environment"
+            summarize "❌ Failed" "Unauthorized (HTTP 401) — check POLICY_HUB_TOKEN for this environment"
+            exit 1
+          else
+            MESSAGE=$(echo "$BODY" | jq -r '.message // empty' 2>/dev/null || true)
+            [[ -z "$MESSAGE" ]] && MESSAGE="${BODY:-No response body} (HTTP $STATUS)"
+            echo "::error::Registration failed for $ENV_NAME: $MESSAGE"
+            summarize "❌ Failed" "$MESSAGE"
+            exit 1
+          fi

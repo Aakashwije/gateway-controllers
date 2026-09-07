@@ -60,7 +60,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 Apply API key authentication using a custom header
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: weather-api-v1.0
@@ -91,7 +91,7 @@ spec:
 Use the default API-Key header name
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: weather-api-v1.0
@@ -122,7 +122,7 @@ spec:
 Use a custom header for API key authentication
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: weather-api-v1.0
@@ -153,7 +153,7 @@ spec:
 Apply different API key configurations to different routes
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: weather-api-v1.0
@@ -196,7 +196,7 @@ spec:
 Extract the API key from an `Authorization` header that carries a `Bearer ` prefix. The prefix is removed before validation, so a request sending `Authorization: Bearer <api-key>` is validated against `<api-key>`.
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: weather-api-v1.0

@@ -49,7 +49,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 Enforce Basic Auth with default realm and deny unauthenticated access:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: protected-api-v1.0
@@ -80,7 +80,7 @@ spec:
 Specify a custom authentication realm for improved user experience:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: customer-api-v1.0
@@ -112,7 +112,7 @@ spec:
 Allow unauthenticated access while recording authentication status for downstream processing:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: optional-auth-api-v1.0

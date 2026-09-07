@@ -1,6 +1,7 @@
 package jwtauth
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/ecdsa"
@@ -12,8 +13,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1375,4 +1378,643 @@ func writeJWKSResponse(t *testing.T, w http.ResponseWriter, publicKey *rsa.Publi
 	if err := json.NewEncoder(w).Encode(jwks); err != nil {
 		t.Logf("Failed to encode JWKS: %v", err)
 	}
+}
+
+// ============================================================================
+// scopes / claims (new params) — unit tests for the pure resolution/evaluation
+// helpers, plus integration tests through OnRequestHeaders.
+// ============================================================================
+
+// ifaceStrings converts a string list into the []interface{} form config values arrive as.
+func ifaceStrings(ss ...string) []interface{} {
+	out := make([]interface{}, len(ss))
+	for i, s := range ss {
+		out[i] = s
+	}
+	return out
+}
+
+// claimMatcherParam builds a raw {claim, values:[…]} matcher as it appears in config.
+func claimMatcherParam(claim string, values ...string) map[string]interface{} {
+	return map[string]interface{}{"claim": claim, "values": ifaceStrings(values...)}
+}
+
+// setScopes sets the new `scopes` param on params (nil slice → that side omitted).
+func setScopes(params map[string]interface{}, allOf, anyOf []string) {
+	m := map[string]interface{}{}
+	if allOf != nil {
+		m["allOf"] = ifaceStrings(allOf...)
+	}
+	if anyOf != nil {
+		m["anyOf"] = ifaceStrings(anyOf...)
+	}
+	params["scopes"] = m
+}
+
+// setClaims sets the new `claims` param on params (nil slice → that side omitted).
+func setClaims(params map[string]interface{}, allOf, anyOf []map[string]interface{}) {
+	m := map[string]interface{}{}
+	if allOf != nil {
+		arr := make([]interface{}, len(allOf))
+		for i, e := range allOf {
+			arr[i] = e
+		}
+		m["allOf"] = arr
+	}
+	if anyOf != nil {
+		arr := make([]interface{}, len(anyOf))
+		for i, e := range anyOf {
+			arr[i] = e
+		}
+		m["anyOf"] = arr
+	}
+	params["claims"] = m
+}
+
+func TestResolveScopeConstraints(t *testing.T) {
+	tests := []struct {
+		name    string
+		params  map[string]interface{}
+		want    ScopeConstraints
+		wantErr bool
+	}{
+		{
+			name:   "new only",
+			params: map[string]interface{}{"scopes": map[string]interface{}{"allOf": ifaceStrings("api:read"), "anyOf": ifaceStrings("api:write", "api:update")}},
+			want:   ScopeConstraints{AllOf: []string{"api:read"}, AnyOf: []string{"api:write", "api:update"}},
+		},
+		{
+			name:   "old only maps to anyOf",
+			params: map[string]interface{}{"requiredScopes": ifaceStrings("api:read", "api:write")},
+			want:   ScopeConstraints{AnyOf: []string{"api:read", "api:write"}},
+		},
+		{
+			name: "new wins over old",
+			params: map[string]interface{}{
+				"scopes":         map[string]interface{}{"allOf": ifaceStrings("api:read")},
+				"requiredScopes": ifaceStrings("api:write"),
+			},
+			want: ScopeConstraints{AllOf: []string{"api:read"}},
+		},
+		{
+			name: "empty new falls back to old (D1)",
+			params: map[string]interface{}{
+				"scopes":         map[string]interface{}{},
+				"requiredScopes": ifaceStrings("api:read"),
+			},
+			want: ScopeConstraints{AnyOf: []string{"api:read"}},
+		},
+		{
+			name:   "neither",
+			params: map[string]interface{}{},
+			want:   ScopeConstraints{},
+		},
+		{
+			name:    "malformed new (D2)",
+			params:  map[string]interface{}{"scopes": "not-an-object"},
+			wantErr: true,
+		},
+		{
+			name:    "malformed new array item (D2)",
+			params:  map[string]interface{}{"scopes": map[string]interface{}{"allOf": []interface{}{123}}},
+			wantErr: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveScopeConstraints(tc.params)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil (result %+v)", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveClaimConstraints(t *testing.T) {
+	tests := []struct {
+		name    string
+		params  map[string]interface{}
+		want    ClaimConstraints
+		wantErr bool
+	}{
+		{
+			name: "new only",
+			params: map[string]interface{}{"claims": map[string]interface{}{
+				"anyOf": []interface{}{claimMatcherParam("department", "platform", "engineering")},
+				"allOf": []interface{}{claimMatcherParam("status", "suspended")},
+			}},
+			want: ClaimConstraints{
+				AllOf: []ClaimMatcher{{Claim: "status", Values: []string{"suspended"}}},
+				AnyOf: []ClaimMatcher{{Claim: "department", Values: []string{"platform", "engineering"}}},
+			},
+		},
+		{
+			name:   "old only maps to allOf with legacy flag",
+			params: map[string]interface{}{"requiredClaims": map[string]interface{}{"role": "admin"}},
+			want:   ClaimConstraints{AllOf: []ClaimMatcher{{Claim: "role", Values: []string{"admin"}, legacyExactString: true}}},
+		},
+		{
+			name: "new wins over old",
+			params: map[string]interface{}{
+				"claims":         map[string]interface{}{"allOf": []interface{}{claimMatcherParam("role", "admin")}},
+				"requiredClaims": map[string]interface{}{"role": "user"},
+			},
+			want: ClaimConstraints{AllOf: []ClaimMatcher{{Claim: "role", Values: []string{"admin"}}}},
+		},
+		{
+			name: "empty new falls back to old (D1)",
+			params: map[string]interface{}{
+				"claims":         map[string]interface{}{},
+				"requiredClaims": map[string]interface{}{"role": "admin"},
+			},
+			want: ClaimConstraints{AllOf: []ClaimMatcher{{Claim: "role", Values: []string{"admin"}, legacyExactString: true}}},
+		},
+		{
+			name:    "malformed: missing values (D2)",
+			params:  map[string]interface{}{"claims": map[string]interface{}{"allOf": []interface{}{map[string]interface{}{"claim": "role"}}}},
+			wantErr: true,
+		},
+		{
+			name:    "malformed: empty values (D2)",
+			params:  map[string]interface{}{"claims": map[string]interface{}{"allOf": []interface{}{map[string]interface{}{"claim": "role", "values": []interface{}{}}}}},
+			wantErr: true,
+		},
+		{
+			name:    "malformed: entry not object (D2)",
+			params:  map[string]interface{}{"claims": map[string]interface{}{"anyOf": []interface{}{"nope"}}},
+			wantErr: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveClaimConstraints(tc.params)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil (result %+v)", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestEvaluateScopeConstraints(t *testing.T) {
+	set := func(ss ...string) map[string]bool {
+		m := map[string]bool{}
+		for _, s := range ss {
+			m[s] = true
+		}
+		return m
+	}
+	tests := []struct {
+		name   string
+		sc     ScopeConstraints
+		scopes map[string]bool
+		want   bool
+	}{
+		{"allOf all present", ScopeConstraints{AllOf: []string{"api:read", "api:deploy"}}, set("api:read", "api:deploy", "extra"), true},
+		{"allOf missing one", ScopeConstraints{AllOf: []string{"api:read", "api:deploy"}}, set("api:read"), false},
+		{"anyOf one present", ScopeConstraints{AnyOf: []string{"api:write", "api:update"}}, set("api:update"), true},
+		{"anyOf none present", ScopeConstraints{AnyOf: []string{"api:write", "api:update"}}, set("api:read"), false},
+		{"both satisfied", ScopeConstraints{AllOf: []string{"api:read", "api:deploy"}, AnyOf: []string{"api:write", "api:update"}}, set("api:read", "api:deploy", "api:write"), true},
+		{"both, anyOf fails", ScopeConstraints{AllOf: []string{"api:read", "api:deploy"}, AnyOf: []string{"api:write", "api:update"}}, set("api:read", "api:deploy"), false},
+		{"both, allOf fails", ScopeConstraints{AllOf: []string{"api:read", "api:deploy"}, AnyOf: []string{"api:write"}}, set("api:read", "api:write"), false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, _ := evaluateScopeConstraints(tc.sc, tc.scopes); got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestEvaluateClaimConstraints(t *testing.T) {
+	mc := func(m map[string]interface{}) jwt.MapClaims { return jwt.MapClaims(m) }
+	tests := []struct {
+		name   string
+		cc     ClaimConstraints
+		claims jwt.MapClaims
+		want   bool
+	}{
+		{
+			name:   "anyOf matches one value",
+			cc:     ClaimConstraints{AnyOf: []ClaimMatcher{{Claim: "department", Values: []string{"platform", "engineering"}}}},
+			claims: mc(map[string]interface{}{"department": "engineering"}),
+			want:   true,
+		},
+		{
+			name:   "anyOf no match",
+			cc:     ClaimConstraints{AnyOf: []ClaimMatcher{{Claim: "department", Values: []string{"platform"}}}},
+			claims: mc(map[string]interface{}{"department": "sales"}),
+			want:   false,
+		},
+		{
+			name: "allOf all match",
+			cc: ClaimConstraints{AllOf: []ClaimMatcher{
+				{Claim: "status", Values: []string{"suspended"}},
+				{Claim: "role", Values: []string{"internal"}},
+			}},
+			claims: mc(map[string]interface{}{"status": "suspended", "role": "internal"}),
+			want:   true,
+		},
+		{
+			name: "allOf one fails",
+			cc: ClaimConstraints{AllOf: []ClaimMatcher{
+				{Claim: "status", Values: []string{"suspended"}},
+				{Claim: "role", Values: []string{"internal"}},
+			}},
+			claims: mc(map[string]interface{}{"status": "suspended", "role": "external"}),
+			want:   false,
+		},
+		{
+			name:   "multi-valued claim intersects",
+			cc:     ClaimConstraints{AllOf: []ClaimMatcher{{Claim: "roles", Values: []string{"internal"}}}},
+			claims: mc(map[string]interface{}{"roles": []interface{}{"external", "internal"}}),
+			want:   true,
+		},
+		{
+			name:   "missing claim fails closed",
+			cc:     ClaimConstraints{AllOf: []ClaimMatcher{{Claim: "role", Values: []string{"internal"}}}},
+			claims: mc(map[string]interface{}{}),
+			want:   false,
+		},
+		{
+			name:   "legacy exact string does not match array",
+			cc:     ClaimConstraints{AllOf: []ClaimMatcher{{Claim: "role", Values: []string{"admin"}, legacyExactString: true}}},
+			claims: mc(map[string]interface{}{"role": []interface{}{"admin"}}),
+			want:   false,
+		},
+		{
+			name:   "legacy exact string matches scalar",
+			cc:     ClaimConstraints{AllOf: []ClaimMatcher{{Claim: "role", Values: []string{"admin"}, legacyExactString: true}}},
+			claims: mc(map[string]interface{}{"role": "admin"}),
+			want:   true,
+		},
+		{
+			name: "full example: claims AND",
+			cc: ClaimConstraints{
+				AnyOf: []ClaimMatcher{{Claim: "department", Values: []string{"platform", "engineering"}}},
+				AllOf: []ClaimMatcher{
+					{Claim: "status", Values: []string{"suspended"}},
+					{Claim: "role", Values: []string{"internal"}},
+				},
+			},
+			claims: mc(map[string]interface{}{"department": "platform", "status": "suspended", "role": "internal"}),
+			want:   true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, _ := evaluateClaimConstraints(tc.cc, tc.claims); got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLogDeprecatedParamUsage(t *testing.T) {
+	capture := func(params map[string]interface{}) string {
+		var buf bytes.Buffer
+		prev := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		defer slog.SetDefault(prev)
+		logDeprecatedParamUsage(params)
+		return buf.String()
+	}
+
+	// New params only → no deprecation warning (decision D3).
+	if out := capture(map[string]interface{}{
+		"scopes": map[string]interface{}{"allOf": ifaceStrings("api:read")},
+	}); strings.Contains(out, "deprecated") {
+		t.Fatalf("expected no deprecation warning, got: %s", out)
+	}
+
+	// Old requiredScopes only → migrate warning.
+	if out := capture(map[string]interface{}{"requiredScopes": ifaceStrings("api:read")}); !strings.Contains(out, "'requiredScopes' is deprecated; migrate") {
+		t.Fatalf("expected migrate warning, got: %s", out)
+	}
+
+	// Old + new (same dimension) → "ignored" variant.
+	if out := capture(map[string]interface{}{
+		"requiredScopes": ifaceStrings("api:read"),
+		"scopes":         map[string]interface{}{"allOf": ifaceStrings("api:read")},
+	}); !strings.Contains(out, "ignored because 'scopes' is configured") {
+		t.Fatalf("expected 'ignored' warning, got: %s", out)
+	}
+
+	// Old requiredClaims → warning.
+	if out := capture(map[string]interface{}{"requiredClaims": map[string]interface{}{"role": "admin"}}); !strings.Contains(out, "'requiredClaims' is deprecated") {
+		t.Fatalf("expected requiredClaims warning, got: %s", out)
+	}
+}
+
+// ---------- integration tests through OnRequestHeaders ----------
+
+func TestJWTAuthPolicy_Scopes_AllOf_PassAndFail(t *testing.T) {
+	resetJWTAuthSingletonCache(t)
+	privateKey, publicKey := generateTestKeys(t)
+	jwksServer := createJWKSServer(t, publicKey, "test-kid")
+	defer jwksServer.Close()
+
+	makeToken := func(scope string) string {
+		return createTestToken(t, privateKey, map[string]interface{}{
+			"sub": "user-1", "iss": "https://issuer.example.com", "scope": scope,
+		})
+	}
+
+	// All required scopes present → success.
+	params := newRemoteParams(jwksServer.URL + "/jwks.json")
+	setScopes(params, []string{"api:read", "api:deploy"}, nil)
+	ctx, action := executeOnRequestHeaders(t, params, authHeader("Authorization", "Bearer", makeToken("api:read api:deploy api:write")))
+	assertAuthSuccess(t, ctx, action)
+
+	// Missing one of the allOf scopes → deny.
+	params2 := newRemoteParams(jwksServer.URL + "/jwks.json")
+	setScopes(params2, []string{"api:read", "api:deploy"}, nil)
+	ctx2, action2 := executeOnRequestHeaders(t, params2, authHeader("Authorization", "Bearer", makeToken("api:read")))
+	assertAuthFailure(t, ctx2, action2, 401)
+}
+
+func TestJWTAuthPolicy_Scopes_Combined_Example(t *testing.T) {
+	resetJWTAuthSingletonCache(t)
+	privateKey, publicKey := generateTestKeys(t)
+	jwksServer := createJWKSServer(t, publicKey, "test-kid")
+	defer jwksServer.Close()
+
+	// scopes: allOf [api:read, api:deploy] AND anyOf [api:write, api:update]
+	newParams := func() map[string]interface{} {
+		p := newRemoteParams(jwksServer.URL + "/jwks.json")
+		setScopes(p, []string{"api:read", "api:deploy"}, []string{"api:write", "api:update"})
+		return p
+	}
+	tok := func(scope string) string {
+		return createTestToken(t, privateKey, map[string]interface{}{
+			"sub": "user-1", "iss": "https://issuer.example.com", "scope": scope,
+		})
+	}
+
+	// allOf satisfied and one anyOf present → success.
+	ctx, action := executeOnRequestHeaders(t, newParams(), authHeader("Authorization", "Bearer", tok("api:read api:deploy api:update")))
+	assertAuthSuccess(t, ctx, action)
+
+	// allOf satisfied but no anyOf present → deny.
+	ctx2, action2 := executeOnRequestHeaders(t, newParams(), authHeader("Authorization", "Bearer", tok("api:read api:deploy")))
+	assertAuthFailure(t, ctx2, action2, 401)
+}
+
+func TestJWTAuthPolicy_Claims_Example(t *testing.T) {
+	resetJWTAuthSingletonCache(t)
+	privateKey, publicKey := generateTestKeys(t)
+	jwksServer := createJWKSServer(t, publicKey, "test-kid")
+	defer jwksServer.Close()
+
+	// claims: anyOf [department in {platform, engineering}] AND allOf [status=suspended, role=internal]
+	newParams := func() map[string]interface{} {
+		p := newRemoteParams(jwksServer.URL + "/jwks.json")
+		setClaims(p,
+			[]map[string]interface{}{claimMatcherParam("status", "suspended"), claimMatcherParam("role", "internal")},
+			[]map[string]interface{}{claimMatcherParam("department", "platform", "engineering")},
+		)
+		return p
+	}
+
+	// All satisfied → success.
+	okToken := createTestToken(t, privateKey, map[string]interface{}{
+		"sub": "user-1", "iss": "https://issuer.example.com",
+		"department": "platform", "status": "suspended", "role": "internal",
+	})
+	ctx, action := executeOnRequestHeaders(t, newParams(), authHeader("Authorization", "Bearer", okToken))
+	assertAuthSuccess(t, ctx, action)
+
+	// One allOf matcher fails (role) → deny.
+	badToken := createTestToken(t, privateKey, map[string]interface{}{
+		"sub": "user-1", "iss": "https://issuer.example.com",
+		"department": "platform", "status": "suspended", "role": "external",
+	})
+	ctx2, action2 := executeOnRequestHeaders(t, newParams(), authHeader("Authorization", "Bearer", badToken))
+	assertAuthFailure(t, ctx2, action2, 401)
+
+	// anyOf fails (department not in set) → deny.
+	badDept := createTestToken(t, privateKey, map[string]interface{}{
+		"sub": "user-1", "iss": "https://issuer.example.com",
+		"department": "sales", "status": "suspended", "role": "internal",
+	})
+	ctx3, action3 := executeOnRequestHeaders(t, newParams(), authHeader("Authorization", "Bearer", badDept))
+	assertAuthFailure(t, ctx3, action3, 401)
+}
+
+func TestJWTAuthPolicy_Precedence_ScopesOverRequiredScopes(t *testing.T) {
+	resetJWTAuthSingletonCache(t)
+	privateKey, publicKey := generateTestKeys(t)
+	jwksServer := createJWKSServer(t, publicKey, "test-kid")
+	defer jwksServer.Close()
+
+	// Token has api:read only. Old requiredScopes:[api:read] would PASS; new scopes.allOf:[api:deploy]
+	// FAILS. Both set → new must win → deny.
+	token := createTestToken(t, privateKey, map[string]interface{}{
+		"sub": "user-1", "iss": "https://issuer.example.com", "scope": "api:read",
+	})
+	params := newRemoteParams(jwksServer.URL + "/jwks.json")
+	params["requiredScopes"] = ifaceStrings("api:read")
+	setScopes(params, []string{"api:deploy"}, nil)
+
+	ctx, action := executeOnRequestHeaders(t, params, authHeader("Authorization", "Bearer", token))
+	assertAuthFailure(t, ctx, action, 401)
+}
+
+func TestJWTAuthPolicy_Precedence_ClaimsOverRequiredClaims(t *testing.T) {
+	resetJWTAuthSingletonCache(t)
+	privateKey, publicKey := generateTestKeys(t)
+	jwksServer := createJWKSServer(t, publicKey, "test-kid")
+	defer jwksServer.Close()
+
+	// Old requiredClaims:{role:admin} PASSES; new claims.allOf:[{role:[superadmin]}] FAILS.
+	// Both set → new must win → deny.
+	token := createTestToken(t, privateKey, map[string]interface{}{
+		"sub": "user-1", "iss": "https://issuer.example.com", "role": "admin",
+	})
+	params := newRemoteParams(jwksServer.URL + "/jwks.json")
+	params["requiredClaims"] = map[string]interface{}{"role": "admin"}
+	setClaims(params, []map[string]interface{}{claimMatcherParam("role", "superadmin")}, nil)
+
+	ctx, action := executeOnRequestHeaders(t, params, authHeader("Authorization", "Bearer", token))
+	assertAuthFailure(t, ctx, action, 401)
+}
+
+func TestJWTAuthPolicy_Mixed_NewScopes_OldClaims(t *testing.T) {
+	resetJWTAuthSingletonCache(t)
+	privateKey, publicKey := generateTestKeys(t)
+	jwksServer := createJWKSServer(t, publicKey, "test-kid")
+	defer jwksServer.Close()
+
+	// New scopes for the scope dimension (passes) + deprecated requiredClaims for the claim
+	// dimension (fails). Each dimension is enforced independently → deny on the claim check.
+	token := createTestToken(t, privateKey, map[string]interface{}{
+		"sub": "user-1", "iss": "https://issuer.example.com",
+		"scope": "api:read", "role": "user",
+	})
+	params := newRemoteParams(jwksServer.URL + "/jwks.json")
+	setScopes(params, []string{"api:read"}, nil)
+	params["requiredClaims"] = map[string]interface{}{"role": "admin"}
+
+	ctx, action := executeOnRequestHeaders(t, params, authHeader("Authorization", "Bearer", token))
+	assertAuthFailure(t, ctx, action, 401)
+}
+
+func TestJWTAuthPolicy_MalformedScopes_Denies(t *testing.T) {
+	resetJWTAuthSingletonCache(t)
+	privateKey, publicKey := generateTestKeys(t)
+	jwksServer := createJWKSServer(t, publicKey, "test-kid")
+	defer jwksServer.Close()
+
+	// scopes present but malformed (not an object) → fail closed (decision D2).
+	token := createTestToken(t, privateKey, map[string]interface{}{
+		"sub": "user-1", "iss": "https://issuer.example.com", "scope": "api:read",
+	})
+	params := newRemoteParams(jwksServer.URL + "/jwks.json")
+	params["scopes"] = "not-an-object"
+
+	ctx, action := executeOnRequestHeaders(t, params, authHeader("Authorization", "Bearer", token))
+	assertAuthFailure(t, ctx, action, 401)
+}
+
+func TestJWTAuthPolicy_EmptyNewScopes_FallsBackToOld(t *testing.T) {
+	resetJWTAuthSingletonCache(t)
+	privateKey, publicKey := generateTestKeys(t)
+	jwksServer := createJWKSServer(t, publicKey, "test-kid")
+	defer jwksServer.Close()
+
+	// scopes present but empty ({}) → treated as unset (D1); deprecated requiredScopes applies.
+	token := createTestToken(t, privateKey, map[string]interface{}{
+		"sub": "user-1", "iss": "https://issuer.example.com", "scope": "api:read",
+	})
+	params := newRemoteParams(jwksServer.URL + "/jwks.json")
+	params["scopes"] = map[string]interface{}{}
+	params["requiredScopes"] = ifaceStrings("api:read")
+
+	ctx, action := executeOnRequestHeaders(t, params, authHeader("Authorization", "Bearer", token))
+	assertAuthSuccess(t, ctx, action)
+}
+
+// TestJWTAuthPolicy_NewScopes_And_NewClaims exercises both new params on one operation: both
+// dimensions must pass.
+func TestJWTAuthPolicy_NewScopes_And_NewClaims(t *testing.T) {
+	resetJWTAuthSingletonCache(t)
+	privateKey, publicKey := generateTestKeys(t)
+	jwksServer := createJWKSServer(t, publicKey, "test-kid")
+	defer jwksServer.Close()
+
+	newParams := func() map[string]interface{} {
+		p := newRemoteParams(jwksServer.URL + "/jwks.json")
+		setScopes(p, []string{"api:read"}, nil)
+		setClaims(p, []map[string]interface{}{claimMatcherParam("role", "internal")}, nil)
+		return p
+	}
+
+	// Both satisfied → success.
+	okToken := createTestToken(t, privateKey, map[string]interface{}{
+		"sub": "u", "iss": "https://issuer.example.com", "scope": "api:read", "role": "internal",
+	})
+	ctx, action := executeOnRequestHeaders(t, newParams(), authHeader("Authorization", "Bearer", okToken))
+	assertAuthSuccess(t, ctx, action)
+
+	// Scope ok but claim fails → deny.
+	badClaim := createTestToken(t, privateKey, map[string]interface{}{
+		"sub": "u", "iss": "https://issuer.example.com", "scope": "api:read", "role": "external",
+	})
+	ctx2, action2 := executeOnRequestHeaders(t, newParams(), authHeader("Authorization", "Bearer", badClaim))
+	assertAuthFailure(t, ctx2, action2, 401)
+
+	// Claim ok but scope fails → deny.
+	badScope := createTestToken(t, privateKey, map[string]interface{}{
+		"sub": "u", "iss": "https://issuer.example.com", "scope": "api:other", "role": "internal",
+	})
+	ctx3, action3 := executeOnRequestHeaders(t, newParams(), authHeader("Authorization", "Bearer", badScope))
+	assertAuthFailure(t, ctx3, action3, 401)
+}
+
+// TestJWTAuthPolicy_Mixed_OldScopes_NewClaims is the reverse mix of
+// TestJWTAuthPolicy_Mixed_NewScopes_OldClaims: the deprecated requiredScopes governs the scope
+// dimension while the new claims governs the claim dimension; both are enforced independently.
+func TestJWTAuthPolicy_Mixed_OldScopes_NewClaims(t *testing.T) {
+	resetJWTAuthSingletonCache(t)
+	privateKey, publicKey := generateTestKeys(t)
+	jwksServer := createJWKSServer(t, publicKey, "test-kid")
+	defer jwksServer.Close()
+
+	newParams := func() map[string]interface{} {
+		p := newRemoteParams(jwksServer.URL + "/jwks.json")
+		p["requiredScopes"] = ifaceStrings("api:read")
+		setClaims(p, []map[string]interface{}{claimMatcherParam("role", "internal")}, nil)
+		return p
+	}
+
+	// Both dimensions pass → success.
+	okToken := createTestToken(t, privateKey, map[string]interface{}{
+		"sub": "u", "iss": "https://issuer.example.com", "scope": "api:read", "role": "internal",
+	})
+	ctx, action := executeOnRequestHeaders(t, newParams(), authHeader("Authorization", "Bearer", okToken))
+	assertAuthSuccess(t, ctx, action)
+
+	// New claim dimension fails (old scope dimension still passes) → deny.
+	badClaim := createTestToken(t, privateKey, map[string]interface{}{
+		"sub": "u", "iss": "https://issuer.example.com", "scope": "api:read", "role": "external",
+	})
+	ctx2, action2 := executeOnRequestHeaders(t, newParams(), authHeader("Authorization", "Bearer", badClaim))
+	assertAuthFailure(t, ctx2, action2, 401)
+
+	// Old scope dimension fails (new claim dimension passes) → deny.
+	badScope := createTestToken(t, privateKey, map[string]interface{}{
+		"sub": "u", "iss": "https://issuer.example.com", "scope": "api:other", "role": "internal",
+	})
+	ctx3, action3 := executeOnRequestHeaders(t, newParams(), authHeader("Authorization", "Bearer", badScope))
+	assertAuthFailure(t, ctx3, action3, 401)
+}
+
+// TestJWTAuthPolicy_BothFormats_NewWinsBothDimensions defines all four params (deprecated and new
+// for both dimensions) on one operation and confirms the new params win both dimensions.
+func TestJWTAuthPolicy_BothFormats_NewWinsBothDimensions(t *testing.T) {
+	resetJWTAuthSingletonCache(t)
+	privateKey, publicKey := generateTestKeys(t)
+	jwksServer := createJWKSServer(t, publicKey, "test-kid")
+	defer jwksServer.Close()
+
+	newParams := func() map[string]interface{} {
+		p := newRemoteParams(jwksServer.URL + "/jwks.json")
+		p["requiredScopes"] = ifaceStrings("api:legacy")
+		p["requiredClaims"] = map[string]interface{}{"role": "legacy"}
+		setScopes(p, []string{"api:read"}, nil)
+		setClaims(p, []map[string]interface{}{claimMatcherParam("role", "internal")}, nil)
+		return p
+	}
+
+	// Passes the NEW params (and fails the OLD ones, which are ignored) → success.
+	newOK := createTestToken(t, privateKey, map[string]interface{}{
+		"sub": "u", "iss": "https://issuer.example.com", "scope": "api:read", "role": "internal",
+	})
+	ctx, action := executeOnRequestHeaders(t, newParams(), authHeader("Authorization", "Bearer", newOK))
+	assertAuthSuccess(t, ctx, action)
+
+	// Passes the OLD params but fails the NEW ones → deny (new wins both dimensions).
+	oldOnly := createTestToken(t, privateKey, map[string]interface{}{
+		"sub": "u", "iss": "https://issuer.example.com", "scope": "api:legacy", "role": "legacy",
+	})
+	ctx2, action2 := executeOnRequestHeaders(t, newParams(), authHeader("Authorization", "Bearer", oldOnly))
+	assertAuthFailure(t, ctx2, action2, 401)
 }

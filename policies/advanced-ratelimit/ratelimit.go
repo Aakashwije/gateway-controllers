@@ -23,6 +23,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -55,8 +56,11 @@ type limiterCache struct {
 	mu sync.Mutex
 	// byQuotaKey maps quota cache keys to limiter entries with reference counts
 	byQuotaKey map[string]*limiterEntry
-	// quotaKeysByBaseKey tracks which quota keys exist for each base cache key
-	// This enables automatic cleanup of stale limiters when quota configurations change
+	// quotaKeysByBaseKey tracks which quota keys exist for each policy instance, keyed by a
+	// reconcileKey (see reconcileKeyFor) rather than the bare baseCacheKey. This enables
+	// automatic cleanup of stale limiters when a policy instance's quota configuration changes,
+	// without one policy instance evicting a limiter that another instance on the same route
+	// legitimately shares.
 	quotaKeysByBaseKey map[string]map[string]struct{}
 }
 
@@ -68,10 +72,18 @@ var globalLimiterCache = &limiterCache{
 
 // KeyComponent represents a single component for building rate limit keys
 type KeyComponent struct {
-	Type       string // "header", "metadata", "ip", "apiname", "apiversion", "routename", "cel"
+	Type       string // "header", "metadata", "authproperty", "ip", "apiname", "apiversion", "routename", "cel"
 	Key        string // header name or metadata key (required for header/metadata)
 	Expression string // CEL expression (required for cel type)
 	Fallback   string // value to use when the key is missing (optional; defaults to a "_missing_*_" placeholder)
+
+	// Match, when set, gates whether the quota applies at all: if the component's extracted
+	// value does not match, the entire quota is skipped for the request (not counted, not
+	// enforced). MatchType/MatchValue are kept alongside the compiled Match regexp so
+	// getQuotaCacheKey can fold the raw config into its hash without decompiling the regexp.
+	MatchType  string // "regex" (only supported value currently); empty if no match condition
+	MatchValue string
+	Match      *regexp.Regexp
 }
 
 // LimitConfig holds parsed rate limit configuration
@@ -139,10 +151,13 @@ func GetPolicy(
 		routeName = "unknown-route"
 	}
 
-	// Extract API metadata for scope-based caching
-	apiId := ""
-	apiName := ""
-	apiVersion := ""
+	// Extract API metadata for scope-based caching. These feed getBaseCacheKey /
+	// getQuotaCacheKey so that apiname-scoped quotas share one limiter per API (and,
+	// crucially, do NOT collide across different APIs that happen to use the same
+	// quota shape — without this the cache key degenerates to "apiScope:" for everyone).
+	apiId := metadata.APIId
+	apiName := metadata.APIName
+	apiVersion := metadata.APIVersion
 
 	// Parse onRateLimitExceeded (optional)
 	statusCode := 429
@@ -322,12 +337,21 @@ func GetPolicy(
 			desiredQuotaKeys[quotaCacheKey] = struct{}{}
 		}
 
+		// reconcileKey identifies THIS policy instance's limiter bucket for the stale-cleanup
+		// bookkeeping below. It must be unique per policy instance on a route: an API-level
+		// (global) policy and a route-level (operation) policy attached to the same route must
+		// NOT share a reconciliation bucket, or building one would evict (Close) the other's
+		// cached limiter — non-deterministically breaking apiname-scoped cross-route sharing.
+		// baseCacheKey alone collides for them (it hashes route + shared params, not the
+		// attachment level), so we extend it with AttachedTo.
+		reconcileKey := reconcileKeyFor(baseCacheKey, metadata.AttachedTo)
+
 		// Single lock for all cache operations - ensures atomicity
 		globalLimiterCache.mu.Lock()
 		defer globalLimiterCache.mu.Unlock()
 
-		// Get previous quota keys for this baseKey (may be nil)
-		oldQuotaKeys := globalLimiterCache.quotaKeysByBaseKey[baseCacheKey]
+		// Get previous quota keys for this policy instance (may be nil)
+		oldQuotaKeys := globalLimiterCache.quotaKeysByBaseKey[reconcileKey]
 
 		// Reconcile: process each quota
 		for _, info := range quotaInfos {
@@ -412,8 +436,8 @@ func GetPolicy(
 			}
 		}
 
-		// Update the index with current quota keys for this baseKey
-		globalLimiterCache.quotaKeysByBaseKey[baseCacheKey] = desiredQuotaKeys
+		// Update the index with current quota keys for this policy instance
+		globalLimiterCache.quotaKeysByBaseKey[reconcileKey] = desiredQuotaKeys
 	}
 
 	// Log quota details including cost extraction status
@@ -916,6 +940,34 @@ func parseKeyExtraction(raw interface{}) ([]KeyComponent, error) {
 			return nil, fmt.Errorf("keyExtraction[%d]: type 'cel' requires 'expression' field", i)
 		}
 
+		// Parse optional match condition
+		if matchRaw, ok := compMap["match"]; ok {
+			matchMap, ok := matchRaw.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("keyExtraction[%d].match must be an object", i)
+			}
+			matchType, ok := matchMap["type"].(string)
+			if !ok {
+				return nil, fmt.Errorf("keyExtraction[%d].match.type is required", i)
+			}
+			matchValue, ok := matchMap["value"].(string)
+			if !ok || matchValue == "" {
+				return nil, fmt.Errorf("keyExtraction[%d].match.value is required", i)
+			}
+			switch matchType {
+			case "regex":
+				re, err := regexp.Compile(matchValue)
+				if err != nil {
+					return nil, fmt.Errorf("keyExtraction[%d].match.value is not a valid regex: %w", i, err)
+				}
+				comp.MatchType = matchType
+				comp.MatchValue = matchValue
+				comp.Match = re
+			default:
+				return nil, fmt.Errorf("keyExtraction[%d].match.type %q is not supported", i, matchType)
+			}
+		}
+
 		components = append(components, comp)
 	}
 
@@ -1180,6 +1232,19 @@ func getBaseCacheKey(routeName, apiName, algorithm, backend string, params map[s
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// reconcileKeyFor derives the bookkeeping key under which a policy instance's active quota cache
+// keys are tracked for stale-limiter cleanup. It extends baseCacheKey with the policy's attachment
+// level so that two rate-limit policies on the SAME route but attached at different levels — an
+// API-level (global) quota and a route-level (operation) quota — do NOT share a cleanup bucket and
+// evict each other's cached limiters. baseCacheKey alone collides for them: it hashes route +
+// shared params but not the attachment, so building the operation policy would treat the global
+// policy's shared apiname limiter as "stale" and Close it (breaking cross-route sharing). AttachedTo
+// is stable across config reloads, so a limit-only change to a single policy still reuses its bucket
+// and cleans up its old limiter (unlike keying on the mutable quota set).
+func reconcileKeyFor(baseCacheKey string, attachedTo policy.Level) string {
+	return baseCacheKey + "|attachedTo:" + string(attachedTo)
+}
+
 // getQuotaCacheKey produces final key per quota using base + quota-specific config.
 // apiName is passed separately to enable API-scoped cache keys for quotas using apiname keyExtraction.
 func getQuotaCacheKey(base, apiName string, q *QuotaRuntime, index int) string {
@@ -1228,7 +1293,7 @@ func getQuotaCacheKey(base, apiName string, q *QuotaRuntime, index int) string {
 	// Include key extraction
 	h.Write([]byte("keyExtraction:"))
 	for i, comp := range q.KeyExtraction {
-		h.Write([]byte(fmt.Sprintf("[%d:t=%s,k=%s]", i, comp.Type, comp.Key)))
+		h.Write([]byte(fmt.Sprintf("[%d:t=%s,k=%s,m=%s:%s]", i, comp.Type, comp.Key, comp.MatchType, comp.MatchValue)))
 	}
 	h.Write([]byte("|"))
 
@@ -1264,6 +1329,11 @@ func (p *RateLimitPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.R
 		}
 		if hasCELKey {
 			slog.Debug("Deferring quota to body phase: CEL key extraction", "quota", quotaName)
+			continue
+		}
+
+		if !p.quotaAppliesFromHeaderCtx(reqCtx, q) {
+			slog.Debug("Quota skipped: match condition not satisfied", "quota", quotaName)
 			continue
 		}
 
@@ -1440,7 +1510,7 @@ func (p *RateLimitPolicy) extractQuotaKeyFromHeaderCtx(reqCtx *policy.RequestHea
 func (p *RateLimitPolicy) extractKeyComponentFromHeaderCtx(reqCtx *policy.RequestHeaderContext, comp KeyComponent) string {
 	switch comp.Type {
 	case "header":
-		values := reqCtx.Headers.Get(strings.ToLower(comp.Key))
+		values := reqCtx.DownstreamHeaders().Get(strings.ToLower(comp.Key))
 		if len(values) > 0 && values[0] != "" {
 			return values[0]
 		}
@@ -1464,8 +1534,21 @@ func (p *RateLimitPolicy) extractKeyComponentFromHeaderCtx(reqCtx *policy.Reques
 		slog.Warn("Metadata key not found for rate limit key, using placeholder", "key", comp.Key, "type", comp.Type, "placeholder", placeholder)
 		return placeholder
 
+	case "authproperty":
+		if reqCtx.AuthContext != nil {
+			if val, ok := reqCtx.AuthContext.Properties[comp.Key]; ok && val != "" {
+				return val
+			}
+		}
+		if comp.Fallback != "" {
+			return comp.Fallback
+		}
+		placeholder := fmt.Sprintf("_missing_authproperty_%s_", comp.Key)
+		slog.Warn("Auth property not found for rate limit key, using placeholder", "key", comp.Key, "type", comp.Type, "placeholder", placeholder)
+		return placeholder
+
 	case "ip":
-		return p.extractIPAddress(reqCtx.Headers)
+		return p.extractIPAddress(reqCtx.DownstreamHeaders())
 
 	case "apiname":
 		if reqCtx.APIName != "" {
@@ -1497,6 +1580,24 @@ func (p *RateLimitPolicy) extractKeyComponentFromHeaderCtx(reqCtx *policy.Reques
 		slog.Warn("Unknown key component type, using empty string", "type", comp.Type)
 		return ""
 	}
+}
+
+// quotaAppliesFromHeaderCtx reports whether every keyExtraction component with a match
+// condition matches its extracted value, using header-phase context. If false, the quota
+// does not apply to this request at all and must not be counted or enforced. Quotas with a
+// "cel" component are always deferred to the body phase before this is reached, so no
+// component here needs full RequestContext.
+func (p *RateLimitPolicy) quotaAppliesFromHeaderCtx(reqCtx *policy.RequestHeaderContext, q *QuotaRuntime) bool {
+	for _, comp := range q.KeyExtraction {
+		if comp.Match == nil {
+			continue
+		}
+		value := p.extractKeyComponentFromHeaderCtx(reqCtx, comp)
+		if !comp.Match.MatchString(value) {
+			return false
+		}
+	}
+	return true
 }
 
 // OnRequestBody performs rate limit check across all quotas.
@@ -1534,13 +1635,18 @@ func (p *RateLimitPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Requ
 
 		for i := range p.quotas {
 			q := &p.quotas[i]
-
-			// Extract rate limit key for this quota
-			key := p.extractQuotaKey(reqCtx, q)
 			quotaName := q.Name
 			if quotaName == "" {
 				quotaName = fmt.Sprintf("quota-%d", i)
 			}
+
+			if !p.quotaApplies(reqCtx, q) {
+				slog.Debug("Quota skipped: match condition not satisfied", "quota", quotaName)
+				continue
+			}
+
+			// Extract rate limit key for this quota
+			key := p.extractQuotaKey(reqCtx, q)
 			quotaKeys[quotaName] = key
 
 			slog.Debug("Rate limit key extracted",
@@ -1752,7 +1858,14 @@ func (p *RateLimitPolicy) OnResponseHeaders(ctx context.Context, respCtx *policy
 	// The kernel activates FULL_DUPLEX_STREAMED mode under the same conditions, which
 	// means OnResponseBodyChunk will be used instead of OnResponseBody, and response
 	// headers will be committed before any body chunks arrive.
-	isStreaming := isStreamingResponse(respCtx.ResponseHeaders)
+	//
+	// Read from the upstream snapshot so the streaming-mode decision
+	// reflects the content-type/transfer-encoding the upstream actually returned,
+	// not a value a peer policy rewrote during the response header phase.
+	isStreaming := isStreamingResponse(respCtx.UpstreamHeaders())
+
+	// Client request snapshot for path/method used by response-phase cost extraction.
+	ds := respCtx.DownstreamRequest()
 
 	// Retrieve stored results from request phase
 	resultsRaw, hasResults := respCtx.Metadata[p.metaKey(rateLimitResultKey)]
@@ -1788,8 +1901,8 @@ func (p *RateLimitPolicy) OnResponseHeaders(ctx context.Context, respCtx *policy
 			slog.Debug("Processing response-header-phase cost extraction",
 				"quota", quotaName)
 
-			key := quotaKeys[quotaName]
-			if key == "" {
+			key, ok := quotaKeys[quotaName]
+			if !ok {
 				slog.Warn("Rate limit key not found for cost extraction", "quota", quotaName)
 				continue
 			}
@@ -1801,10 +1914,14 @@ func (p *RateLimitPolicy) OnResponseHeaders(ctx context.Context, respCtx *policy
 				SharedContext:   respCtx.SharedContext,
 				RequestHeaders:  respCtx.RequestHeaders,
 				RequestBody:     respCtx.RequestBody,
-				RequestPath:     respCtx.RequestPath,
-				RequestMethod:   respCtx.RequestMethod,
+				RequestPath:     ds.Path,
+				RequestMethod:   ds.Method,
 				ResponseHeaders: respCtx.ResponseHeaders,
 				ResponseStatus:  respCtx.ResponseStatus,
+				// Propagate the snapshots so header-based cost extraction
+				// reads the original upstream response (and downstream request) values.
+				Downstream: respCtx.Downstream,
+				Upstream:   respCtx.Upstream,
 			}
 			actualCost, extracted := q.CostExtractor.ExtractResponseCost(responseCtx)
 			if !extracted {
@@ -1894,8 +2011,8 @@ func (p *RateLimitPolicy) OnResponseHeaders(ctx context.Context, respCtx *policy
 				// successive requests as each EOS deduction is applied.
 				// For buffered responses this branch is intentionally skipped —
 				// OnResponseBody will set accurate post-consumption values instead.
-				key := quotaKeys[quotaName]
-				if key != "" {
+				key, ok := quotaKeys[quotaName]
+				if ok {
 					available, err := q.Limiter.GetAvailable(context.Background(), key)
 					if err == nil {
 						duration := getDurationFromQuota(q)
@@ -2015,8 +2132,8 @@ func (p *RateLimitPolicy) OnResponseBody(ctx context.Context, respCtx *policy.Re
 				slog.Debug("Processing response-phase cost extraction",
 					"quota", quotaName)
 
-				key := quotaKeys[quotaName]
-				if key == "" {
+				key, ok := quotaKeys[quotaName]
+				if !ok {
 					slog.Warn("Rate limit key not found for cost extraction", "quota", quotaName)
 					continue
 				}
@@ -2155,7 +2272,7 @@ func (p *RateLimitPolicy) extractQuotaKey(reqCtx *policy.RequestContext, q *Quot
 func (p *RateLimitPolicy) extractKeyComponent(reqCtx *policy.RequestContext, comp KeyComponent) string {
 	switch comp.Type {
 	case "header":
-		values := reqCtx.Headers.Get(strings.ToLower(comp.Key))
+		values := reqCtx.DownstreamHeaders().Get(strings.ToLower(comp.Key))
 		if len(values) > 0 && values[0] != "" {
 			return values[0]
 		}
@@ -2179,8 +2296,21 @@ func (p *RateLimitPolicy) extractKeyComponent(reqCtx *policy.RequestContext, com
 		slog.Warn("Metadata key not found for rate limit key, using placeholder", "key", comp.Key, "type", comp.Type, "placeholder", placeholder)
 		return placeholder
 
+	case "authproperty":
+		if reqCtx.AuthContext != nil {
+			if val, ok := reqCtx.AuthContext.Properties[comp.Key]; ok && val != "" {
+				return val
+			}
+		}
+		if comp.Fallback != "" {
+			return comp.Fallback
+		}
+		placeholder := fmt.Sprintf("_missing_authproperty_%s_", comp.Key)
+		slog.Warn("Auth property not found for rate limit key, using placeholder", "key", comp.Key, "type", comp.Type, "placeholder", placeholder)
+		return placeholder
+
 	case "ip":
-		return p.extractIPAddress(reqCtx.Headers)
+		return p.extractIPAddress(reqCtx.DownstreamHeaders())
 
 	case "apiname":
 		if reqCtx.APIName != "" {
@@ -2218,6 +2348,23 @@ func (p *RateLimitPolicy) extractKeyComponent(reqCtx *policy.RequestContext, com
 		slog.Warn("Unknown key component type, using empty string", "type", comp.Type)
 		return ""
 	}
+}
+
+// quotaApplies reports whether every keyExtraction component with a match condition
+// matches its extracted value, using full request context (supports "cel" components).
+// If false, the quota does not apply to this request at all and must not be counted or
+// enforced.
+func (p *RateLimitPolicy) quotaApplies(reqCtx *policy.RequestContext, q *QuotaRuntime) bool {
+	for _, comp := range q.KeyExtraction {
+		if comp.Match == nil {
+			continue
+		}
+		value := p.extractKeyComponent(reqCtx, comp)
+		if !comp.Match.MatchString(value) {
+			return false
+		}
+	}
+	return true
 }
 
 // extractIPAddress extracts client IP from headers
@@ -2352,7 +2499,11 @@ func (p *RateLimitPolicy) finalizeAndConsumeStreamingCosts(
 		}
 
 		quotaName := quotaNameFor(q, i)
-		key := quotaKeys[quotaName]
+		key, ok := quotaKeys[quotaName]
+		if !ok {
+			slog.Warn("Rate limit key not found for streaming cost consumption", "quota", quotaName)
+			continue
+		}
 		qs := state[quotaName]
 
 		var (
@@ -2376,14 +2527,19 @@ func (p *RateLimitPolicy) finalizeAndConsumeStreamingCosts(
 		if qs != nil {
 			bodyBytes = qs.accumulated
 		}
+		ds := respCtx.DownstreamRequest()
 		synthCtx := &policy.ResponseContext{
 			SharedContext:   respCtx.SharedContext,
 			RequestHeaders:  respCtx.RequestHeaders,
 			RequestBody:     respCtx.RequestBody,
-			RequestPath:     respCtx.RequestPath,
-			RequestMethod:   respCtx.RequestMethod,
+			RequestPath:     ds.Path,
+			RequestMethod:   ds.Method,
 			ResponseHeaders: respCtx.ResponseHeaders,
 			ResponseStatus:  respCtx.ResponseStatus,
+			// Propagate the snapshots so header-based cost extraction
+			// reads the original upstream response (and downstream request) values.
+			Downstream: respCtx.Downstream,
+			Upstream:   respCtx.Upstream,
 			ResponseBody: &policy.Body{
 				Content:     bodyBytes,
 				Present:     len(bodyBytes) > 0,

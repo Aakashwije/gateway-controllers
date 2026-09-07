@@ -69,7 +69,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 
 ```yaml
 - name: interceptor-service
-  gomodule: github.com/wso2/gateway-controllers/policies/interceptor-service@v0
+  gomodule: github.com/wso2/gateway-controllers/policies/interceptor-service@v1
 ```
 
 ## Reference Scenarios
@@ -79,7 +79,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 Send the request body to a PII redaction service before it reaches upstream. If the interceptor is unreachable, the request is rejected.
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: chat-api-v1.0
@@ -92,7 +92,7 @@ spec:
       url: http://chat-backend:8080
   policies:
     - name: interceptor-service
-      version: v1.0
+      version: v1
       params:
         endpoint: https://pii-redactor:8443/api/v1
         request:
@@ -136,7 +136,7 @@ A reply that rewrites the request body:
 Use the interceptor to authorize the request based on custom business rules. When the interceptor denies the request, the gateway returns the interceptor's response directly to the client without contacting upstream.
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: orders-api-v1.0
@@ -149,7 +149,7 @@ spec:
       url: http://orders-backend:8080
   policies:
     - name: interceptor-service
-      version: v1.0
+      version: v1
       params:
         endpoint: https://authz-svc:8443/api/v1
         request:
@@ -176,7 +176,7 @@ Interceptor reply that short-circuits with `403`:
 Inspect the incoming request and route it to a different upstream by name, optionally rewriting the path and query string.
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: pets-api-v1.0
@@ -191,7 +191,7 @@ spec:
       url: http://pets-v2:8080
   policies:
     - name: interceptor-service
-      version: v1.0
+      version: v1
       params:
         endpoint: https://router-svc:8443/api/v1
         request:
@@ -216,7 +216,7 @@ Interceptor reply that routes the request to the `pets-v2` upstream and rewrites
 Sanitise the upstream response before it reaches the client. If the interceptor is unavailable, the upstream response is forwarded unchanged.
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: docs-api-v1.0
@@ -229,7 +229,7 @@ spec:
       url: http://docs-backend:8080
   policies:
     - name: interceptor-service
-      version: v1.0
+      version: v1
       params:
         endpoint: https://sanitizer-svc:8443/api/v1
         response:
@@ -257,7 +257,7 @@ A response-phase reply that overrides the status code and rewrites the body:
 Attach the policy in both the request and response phases so the interceptor can correlate the two calls via `interceptorContext`. Anything the request-phase reply puts into `interceptorContext` is automatically echoed in the response-phase request body.
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: audit-api-v1.0
@@ -270,7 +270,7 @@ spec:
       url: http://audit-backend:8080
   policies:
     - name: interceptor-service
-      version: v1.0
+      version: v1
       params:
         endpoint: https://audit-svc:8443/api/v1
         request:

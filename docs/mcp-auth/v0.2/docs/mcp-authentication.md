@@ -25,24 +25,24 @@ Configured by the administrator in `config.toml` under `policy_configurations.mc
 
 | Parameter | Type | Required | Default | Path | Description |
 |-----------|------|----------|---------|----------|-------------|
-| `keyManagers` | `KeyManager` array | Yes | - | jwtauth_v0 | List of key manager definitions. Each entry must include a unique `name` and `issuer`, and either `jwks.remote` or `jwks.local` configuration. |
-| `jwksCacheTtl` | string | No | - | jwtauth_v0 | Duration string for JWKS caching (e.g., `"5m"`). If omitted a default is used. |
-| `jwksFetchTimeout` | string | No | - | jwtauth_v0 | Timeout for HTTP fetch of JWKS (e.g., `"5s"`). |
-| `jwksFetchRetryCount` | integer | No | - | jwtauth_v0 | Number of retries for JWKS fetch on transient failures. |
-| `jwksFetchRetryInterval` | string | No | - | jwtauth_v0 | Interval between JWKS fetch retries (e.g., `"2s"`). |
+| `keymanagers` | `KeyManager` array | Yes | - | jwtauth_v0 | List of key manager definitions. Each entry must include a unique `name` and `issuer`, and either `jwks.remote` or `jwks.local` configuration. |
+| `jwkscachettl` | string | No | - | jwtauth_v0 | Duration string for JWKS caching (e.g., `"5m"`). If omitted a default is used. |
+| `jwksfetchtimeout` | string | No | - | jwtauth_v0 | Timeout for HTTP fetch of JWKS (e.g., `"5s"`). |
+| `jwksfetchretrycount` | integer | No | - | jwtauth_v0 | Number of retries for JWKS fetch on transient failures. |
+| `jwksfetchretryinterval` | string | No | - | jwtauth_v0 | Interval between JWKS fetch retries (e.g., `"2s"`). |
 | `allowedAlgorithms` | string array | No | - | jwtauth_v0 | Allowed JWT signing algorithms (e.g., `["RS256", "ES256"]`). |
 | `leeway` | string | No | - | jwtauth_v0 | Clock skew allowance for `exp`/`nbf` checks (e.g., `"30s"`). |
-| `authHeaderScheme` | string | No | `"Bearer"` | jwtauth_v0 | Expected scheme prefix in the authorization header. |
-| `headerName` | string | No | `"Authorization"` | jwtauth_v0 | Header name to extract the token from. |
-| `onFailureStatusCode` | integer | No | `401` | jwtauth_v0 | HTTP status code returned on authentication failure. Allowed values: `401`, `403`. |
-| `errorMessageFormat` | string | No | `"json"` | jwtauth_v0 | Format of the error response. Allowed values: `"json"`, `"plain"`, `"minimal"`. |
-| `errorMessage` | string | No | - | jwtauth_v0 | Custom error message to include in the response body on authentication failure. |
-| `validateIssuer` | boolean | No | - | jwtauth_v0 | Whether to validate the token's issuer claim against configured key managers. |
-| `gatewayHost` | string | No | `"localhost"` | mcpauth_v0 | The outward facing gateway host name used when deriving the protected resource metadata URL and response. Falls back to this if no vhosts are defined in the MCP proxy configuration. |
+| `authheaderscheme` | string | No | `"Bearer"` | jwtauth_v0 | Expected scheme prefix in the authorization header. |
+| `headername` | string | No | `"Authorization"` | jwtauth_v0 | Header name to extract the token from. |
+| `onfailurestatuscode` | integer | No | `401` | jwtauth_v0 | HTTP status code returned on authentication failure. Allowed values: `401`, `403`. |
+| `errormessageformat` | string | No | `"json"` | jwtauth_v0 | Format of the error response. Allowed values: `"json"`, `"plain"`, `"minimal"`. |
+| `errormessage` | string | No | - | jwtauth_v0 | Custom error message to include in the response body on authentication failure. |
+| `validateissuer` | boolean | No | - | jwtauth_v0 | Whether to validate the token's issuer claim against configured key managers. |
+| `gatewayhost` | string | No | `"localhost"` | mcpauth_v0 | The outward-facing gateway host name used when deriving the protected resource metadata URL and response. Falls back to this if no vhosts are defined in the MCP proxy configuration. |
 
 #### KeyManager Configuration
 
-Each key manager in the `keyManagers` array supports the following structure:
+Each key manager in the `keymanagers` array supports the following structure:
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -60,35 +60,35 @@ Each key manager in the `keyManagers` array supports the following structure:
 
 ```toml
 [policy_configurations.mcpauth_v0]
-gatewayHost = "gw.example.com"
+gatewayhost = "gw.example.com"
 
 [policy_configurations.jwtauth_v0]
-jwksCacheTtl = "5m"
-jwksFetchTimeout = "5s"
-jwksFetchRetryCount = 3
-jwksFetchRetryInterval = "2s"
+jwkscachettl = "5m"
+jwksfetchtimeout = "5s"
+jwksfetchretrycount = 3
+jwksfetchretryinterval = "2s"
 allowedAlgorithms = ["RS256", "ES256"]
 leeway = "30s"
-authHeaderScheme = "Bearer"
-headerName = "Authorization"
-onFailureStatusCode = 401
-errorMessageFormat = "json"
-errorMessage = "Authentication failed."
-validateIssuer = true
+authheaderscheme = "Bearer"
+headername = "Authorization"
+onfailurestatuscode = 401
+errormessageformat = "json"
+errormessage = "Authentication failed."
+validateissuer = true
 
-[[policy_configurations.jwtauth_v0.keyManagers]]
+[[policy_configurations.jwtauth_v0.keymanagers]]
 name = "PrimaryIDP"
 issuer = "https://idp.example.com/oauth2/token"
 
-[policy_configurations.jwtauth_v0.keyManagers.jwks.remote]
+[policy_configurations.jwtauth_v0.keymanagers.jwks.remote]
 uri = "https://idp.example.com/oauth2/jwks"
 skipTlsVerify = false
 
-[[policy_configurations.jwtauth_v0.keyManagers]]
+[[policy_configurations.jwtauth_v0.keymanagers]]
 name = "SecondaryIDP"
 issuer = "https://auth.example.org/oauth2/token"
 
-[policy_configurations.jwtauth_v0.keyManagers.jwks.remote]
+[policy_configurations.jwtauth_v0.keymanagers.jwks.remote]
 uri = "https://auth.example.org/oauth2/jwks"
 skipTlsVerify = false
 ```
@@ -99,7 +99,7 @@ These parameters are configured per-API/route by the API developer:
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `issuers` | string array | No | `[]` | List of issuer names (referencing entries in `system.keyManagers`). This list is sent as `authorization_servers` in the protected resource metadata response. If omitted, all configured key managers are used. |
+| `issuers` | string array | No | `[]` | List of issuer names (referencing entries in `system.keymanagers`). This list is sent as `authorization_servers` in the protected resource metadata response. If omitted, all configured key managers are used. |
 | `requiredScopes` | string array | No | `[]` | List of scopes that must be present in the token (space-delimited `scope` claim or array `scp`). These are also advertised in the protected resource metadata. |
 | `audiences` | string array | No | `[]` | List of acceptable audience values; token must contain at least one. |
 | `requiredClaims` | object | No | `{}` | Map of claimName → expectedValue for custom claim validation. |

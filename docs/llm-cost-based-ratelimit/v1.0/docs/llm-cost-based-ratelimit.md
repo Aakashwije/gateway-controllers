@@ -134,7 +134,7 @@ This policy requires the `llm-cost` policy to run on the same path. Because resp
 Limit the total spend on a route to $50 per day:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: LlmProvider
 metadata:
   name: openai-provider
@@ -142,8 +142,9 @@ spec:
   displayName: OpenAI Provider
   version: v1.0
   context: /openai
+  template: openai
   upstream:
-    url: https://api.openai.com
+    url: https://api.openai.com/v1
     auth:
       type: api-key
       header: Authorization
@@ -153,7 +154,7 @@ spec:
     exceptions:
       - path: /chat/completions
         methods: [POST]
-  policies:
+  operationPolicies:
     - name: llm-cost-based-ratelimit
       version: v1
       paths:
@@ -177,7 +178,7 @@ Once the $50 daily budget is exhausted, subsequent requests receive a `429` resp
 Apply both a short-term burst limit and a long-term daily budget:
 
 ```yaml
-  policies:
+  operationPolicies:
     - name: llm-cost-based-ratelimit
       version: v1
       paths:
@@ -203,7 +204,7 @@ This enforces a $5 per hour burst limit alongside a $50 daily cap. Both limits a
 Apply long-horizon budget controls suitable for subscription-style APIs:
 
 ```yaml
-  policies:
+  operationPolicies:
     - name: llm-cost-based-ratelimit
       version: v1
       paths:
@@ -229,7 +230,7 @@ This sets a $25 weekly budget and a $100 monthly budget. Both limits are tracked
 Apply different spending limits to different endpoints within the same provider:
 
 ```yaml
-  policies:
+  operationPolicies:
     - name: llm-cost-based-ratelimit
       version: v1
       paths:

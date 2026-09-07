@@ -1,8 +1,9 @@
 name: advanced-ratelimit
-version: v1.1.0
+version: v1.2.0
 description: |
   Applies advanced rate limits using fixed-window (default) or GCRA algorithms with multi-quota controls,
-  configurable key and cost extraction, and memory or Redis storage.
+  configurable key (including JWT/auth-context properties and pattern-based match conditions) and cost
+  extraction, and memory or Redis storage.
 
 parameters:
   type: object
@@ -85,13 +86,15 @@ parameters:
                   type: string
                   x-wso2-policy-advanced-param: false
                   description: |
-                    Specifies which key component to extract: header, metadata, ip, apiname,
-                    apiversion, routename, cel, or constant.
-                  enum: ["header", "metadata", "ip", "apiname", "apiversion", "routename", "cel", "constant"]
+                    Specifies which key component to extract: header, metadata, authproperty, ip,
+                    apiname, apiversion, routename, cel, or constant.
+                  enum: ["header", "metadata", "authproperty", "ip", "apiname", "apiversion", "routename", "cel", "constant"]
                 key:
                   type: string
                   x-wso2-policy-advanced-param: false
-                  description: Specifies the header name or metadata key for header and metadata types.
+                  description: |
+                    Specifies the header name, metadata key, or auth property (claim) name for
+                    header, metadata, and authproperty types.
                   minLength: 1
                   maxLength: 256
                 expression:
@@ -100,11 +103,35 @@ parameters:
                   description: |
                     Specifies the CEL expression for cel type and requires a string result.
                   maxLength: 1024
+                match:
+                  type: object
+                  x-wso2-policy-advanced-param: false
+                  description: |
+                    Specifies an optional match condition for this component. If the extracted
+                    value does not match, the entire quota is skipped for the request (not
+                    counted, not enforced) rather than just changing which bucket it falls into.
+                    If multiple components in a quota declare a match, all must match.
+                  additionalProperties: false
+                  required: ["type", "value"]
+                  properties:
+                    type:
+                      type: string
+                      x-wso2-policy-advanced-param: false
+                      description: Specifies the match type.
+                      enum: ["regex"]
+                    value:
+                      type: string
+                      x-wso2-policy-advanced-param: false
+                      description: |
+                        Specifies the regex pattern matched against the component's extracted
+                        value.
+                      minLength: 1
+                      maxLength: 1024
               allOf:
                 - if:
                     properties:
                       type:
-                        enum: ["header", "metadata", "constant"]
+                        enum: ["header", "metadata", "authproperty", "constant"]
                     required: ["type"]
                   then:
                     required: ["key"]
@@ -245,13 +272,15 @@ parameters:
             type: string
             x-wso2-policy-advanced-param: false
             description: |
-              Specifies which key component to extract: header, metadata, ip, apiname,
-              apiversion, routename, cel, or constant.
-            enum: ["header", "metadata", "ip", "apiname", "apiversion", "routename", "cel", "constant"]
+              Specifies which key component to extract: header, metadata, authproperty, ip,
+              apiname, apiversion, routename, cel, or constant.
+            enum: ["header", "metadata", "authproperty", "ip", "apiname", "apiversion", "routename", "cel", "constant"]
           key:
             type: string
             x-wso2-policy-advanced-param: false
-            description: Specifies the header name or metadata key for header and metadata types.
+            description: |
+              Specifies the header name, metadata key, or auth property (claim) name for
+              header, metadata, and authproperty types.
             minLength: 1
             maxLength: 256
           expression:
@@ -260,11 +289,35 @@ parameters:
             description: |
               Specifies the CEL expression for cel type and requires a string result.
             maxLength: 1024
+          match:
+            type: object
+            x-wso2-policy-advanced-param: false
+            description: |
+              Specifies an optional match condition for this component. If the extracted
+              value does not match, the entire quota is skipped for the request (not
+              counted, not enforced) rather than just changing which bucket it falls into.
+              If multiple components in a quota declare a match, all must match.
+            additionalProperties: false
+            required: ["type", "value"]
+            properties:
+              type:
+                type: string
+                x-wso2-policy-advanced-param: false
+                description: Specifies the match type.
+                enum: ["regex"]
+              value:
+                type: string
+                x-wso2-policy-advanced-param: false
+                description: |
+                  Specifies the regex pattern matched against the component's extracted
+                  value.
+                minLength: 1
+                maxLength: 1024
         allOf:
           - if:
               properties:
                 type:
-                  enum: ["header", "metadata", "constant"]
+                  enum: ["header", "metadata", "authproperty", "constant"]
               required: ["type"]
             then:
               required: ["key"]

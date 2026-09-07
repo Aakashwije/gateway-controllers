@@ -53,13 +53,13 @@ policies list in the API definition YAML.
 Apply the policy to the API (or an operation). The upstream must use `hostRewrite: manual`.
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: example-api
 spec:
   displayName: Example API
-  version: v1
+  version: v1.0
   context: /example/$version
   upstream:
     main:
@@ -70,6 +70,9 @@ spec:
       version: v1
       params:
         host: example-updated.com
+  operations:
+    - method: GET
+      path: /resource
 ```
 
 ## How it works

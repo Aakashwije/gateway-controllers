@@ -50,7 +50,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 Transform JSON requests from clients to XML for a legacy backend, and XML responses back to JSON for clients:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: legacy-integration-api-v1.0
@@ -149,7 +149,7 @@ Content-Type: application/json
 Transform XML requests from clients to JSON for a modern REST backend, and JSON responses back to XML for clients:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: soap-to-rest-api-v1.0
@@ -209,7 +209,7 @@ Content-Type: application/json
 Apply different mediation settings to specific operations:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: hybrid-api-v1.0

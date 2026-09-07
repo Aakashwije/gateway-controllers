@@ -35,10 +35,10 @@ github.com/stretchr/testify v1.8.0/go.mod h1:yNjHg4UonilssWZ8iaSj1OCr/vHnekPRkoO
 github.com/stretchr/testify v1.8.1/go.mod h1:w2LPCIKwWwSfY2zedu0+kehJoqGctiVI29o6fzry7u4=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
-github.com/wso2/api-platform/sdk/core v0.2.4 h1:dwwe7QROmf1HIeCqhfiv82/34n6oAe2b0hazYljpPS0=
-github.com/wso2/api-platform/sdk/core v0.2.4/go.mod h1:vgNVzR16g9k5cun3VXZ7wDg8UGbPxsVU2TW8EbRCv0o=
-github.com/wso2/gateway-controllers/policies/advanced-ratelimit v1.1.0 h1:aATwzwxL2dpP0AAVwmzDmFuit6+ZFMFsCVylRhWL/Do=
-github.com/wso2/gateway-controllers/policies/advanced-ratelimit v1.1.0/go.mod h1:yDg8RCH45yWPnEzr+lVYZTeNUyIB9bkv3kSYy+MuNkg=
+github.com/wso2/api-platform/sdk/core v0.3.4 h1:0QkrwZeeFppOiaU79swRa+5kRZ4cBqmF4absQ+rs4Z8=
+github.com/wso2/api-platform/sdk/core v0.3.4/go.mod h1:TgjpOk3QBPc7xEQC+NctWcNq5dSPBkn7wSKh+hULTj8=
+github.com/wso2/gateway-controllers/policies/advanced-ratelimit v1.1.2 h1:IVqkX4qj9RRviCC+6tKkwc91IOgTCaiD5ubw7Pf3/8k=
+github.com/wso2/gateway-controllers/policies/advanced-ratelimit v1.1.2/go.mod h1:rGlm3MwH3j49M0MWWfYftqT92+a9K6lZuoXcpLUpD6Q=
 github.com/yuin/gopher-lua v1.1.1 h1:kYKnWBjvbNP4XLT3+bPEwAXJx262OhaHDWDVOPjL46M=
 github.com/yuin/gopher-lua v1.1.1/go.mod h1:GBR0iDaNXjAgGg9zfCvksxSRnQx76gclCIb7kdAd1Pw=
 golang.org/x/exp v0.0.0-20260112195511-716be5621a96 h1:Z/6YuSHTLOHfNFdb8zVZomZr7cqNgTJvA8+Qz75D8gU=

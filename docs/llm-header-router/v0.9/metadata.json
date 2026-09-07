@@ -1,0 +1,10 @@
+{
+  "name": "llm-header-router",
+  "displayName": "LLM Header Router",
+  "version": "0.9",
+  "provider": "WSO2",
+  "categories": [
+    "AI"
+  ],
+  "description": "Selects an LLM provider for OpenAI Chat Completions requests using a configurable request header. The selection is published to shared metadata so downstream translator policies can route and translate the request, letting a single OpenAI-shaped endpoint fan out to multiple providers."
+}

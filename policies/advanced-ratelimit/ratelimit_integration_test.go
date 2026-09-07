@@ -19,6 +19,7 @@ package ratelimit
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -1088,6 +1089,193 @@ func TestKeyExtractionHeaderPhase(t *testing.T) {
 		got := p.extractKeyComponentFromHeaderCtx(withAppCtx, KeyComponent{Type: "metadata", Key: "x-wso2-application-id", Fallback: "default"})
 		if got != "app-456" {
 			t.Fatalf("expected actual value %q, got %q", "app-456", got)
+		}
+	})
+}
+
+// TestAuthPropertyKeyExtraction covers the "authproperty" keyExtraction type — reads a
+// value from SharedContext.AuthContext.Properties, populated by auth policies like jwt-auth
+// from non-standard JWT claims (e.g. a custom "app_id" claim), which is NOT reachable via
+// "header" or "metadata".
+func TestAuthPropertyKeyExtraction(t *testing.T) {
+	p := &RateLimitPolicy{routeName: "route-main"}
+
+	t.Run("present auth property is returned", func(t *testing.T) {
+		hctx := &policy.RequestHeaderContext{
+			SharedContext: &policy.SharedContext{
+				Metadata: map[string]interface{}{},
+				AuthContext: &policy.AuthContext{
+					Authenticated: true,
+					Properties:    map[string]string{"app_id": "guest-42"},
+				},
+			},
+			Headers: policy.NewHeaders(nil),
+		}
+		got := p.extractKeyComponentFromHeaderCtx(hctx, KeyComponent{Type: "authproperty", Key: "app_id"})
+		if got != "guest-42" {
+			t.Fatalf("expected guest-42, got %q", got)
+		}
+	})
+
+	t.Run("missing AuthContext falls back to placeholder when no Fallback set", func(t *testing.T) {
+		hctx := &policy.RequestHeaderContext{
+			SharedContext: &policy.SharedContext{Metadata: map[string]interface{}{}},
+			Headers:       policy.NewHeaders(nil),
+		}
+		got := p.extractKeyComponentFromHeaderCtx(hctx, KeyComponent{Type: "authproperty", Key: "app_id"})
+		if got != "_missing_authproperty_app_id_" {
+			t.Fatalf("expected placeholder, got %q", got)
+		}
+	})
+
+	t.Run("missing claim uses Fallback when set", func(t *testing.T) {
+		hctx := &policy.RequestHeaderContext{
+			SharedContext: &policy.SharedContext{
+				Metadata:    map[string]interface{}{},
+				AuthContext: &policy.AuthContext{Authenticated: true, Properties: map[string]string{}},
+			},
+			Headers: policy.NewHeaders(nil),
+		}
+		got := p.extractKeyComponentFromHeaderCtx(hctx, KeyComponent{Type: "authproperty", Key: "app_id", Fallback: "unknown-app"})
+		if got != "unknown-app" {
+			t.Fatalf("expected fallback unknown-app, got %q", got)
+		}
+	})
+
+	t.Run("does not read from Metadata even if same key exists there", func(t *testing.T) {
+		// Guards against accidentally aliasing authproperty to the metadata map.
+		hctx := &policy.RequestHeaderContext{
+			SharedContext: &policy.SharedContext{
+				Metadata:    map[string]interface{}{"app_id": "from-metadata-not-auth"},
+				AuthContext: &policy.AuthContext{Authenticated: true, Properties: map[string]string{"app_id": "from-auth-context"}},
+			},
+			Headers: policy.NewHeaders(nil),
+		}
+		got := p.extractKeyComponentFromHeaderCtx(hctx, KeyComponent{Type: "authproperty", Key: "app_id"})
+		if got != "from-auth-context" {
+			t.Fatalf("expected value from AuthContext.Properties, got %q", got)
+		}
+	})
+
+	t.Run("full-context extraction (extractKeyComponent) behaves the same as header-phase", func(t *testing.T) {
+		reqCtx := &policy.RequestContext{
+			SharedContext: &policy.SharedContext{
+				Metadata: map[string]interface{}{},
+				AuthContext: &policy.AuthContext{
+					Authenticated: true,
+					Properties:    map[string]string{"app_id": "channel-partner"},
+				},
+			},
+			Headers: policy.NewHeaders(nil),
+		}
+		got := p.extractKeyComponent(reqCtx, KeyComponent{Type: "authproperty", Key: "app_id"})
+		if got != "channel-partner" {
+			t.Fatalf("expected channel-partner, got %q", got)
+		}
+	})
+}
+
+// TestAuthPropertyKeyExtraction_EndToEnd proves authproperty works through the actual
+// policy entrypoint (OnRequestHeaders), not just the extraction helper — mirrors a JWT
+// carrying a custom "app_id" claim, which jwt-auth would already have written into
+// AuthContext.Properties before advanced-ratelimit runs.
+func TestAuthPropertyKeyExtraction_EndToEnd(t *testing.T) {
+	lim := &fakeLimiter{allowNFn: func(ctx context.Context, key string, n int64) (*limiter.Result, error) {
+		if key != "guest-42" {
+			t.Fatalf("expected limiter key %q derived from AuthContext.Properties, got %q", "guest-42", key)
+		}
+		return newResult(true, 10, 9, 0, time.Minute), nil
+	}}
+	p := &RateLimitPolicy{
+		quotas: []QuotaRuntime{{
+			Name:          "per-app",
+			KeyExtraction: []KeyComponent{{Type: "authproperty", Key: "app_id"}},
+			Limiter:       lim,
+			Limits:        []LimitConfig{{Limit: 10, Duration: time.Minute}},
+		}},
+		routeName:      "route-main",
+		statusCode:     429,
+		responseBody:   `{"error":"limited"}`,
+		responseFormat: "json",
+		backend:        "memory",
+	}
+	hctx := &policy.RequestHeaderContext{
+		SharedContext: &policy.SharedContext{
+			Metadata: map[string]interface{}{},
+			AuthContext: &policy.AuthContext{
+				Authenticated: true,
+				AuthType:      "jwt",
+				Properties:    map[string]string{"app_id": "guest-42"},
+			},
+		},
+		Headers: policy.NewHeaders(nil),
+	}
+
+	action := p.OnRequestHeaders(context.Background(), hctx, nil)
+	if _, ok := action.(policy.UpstreamRequestHeaderModifications); !ok {
+		t.Fatalf("expected UpstreamRequestHeaderModifications, got %T", action)
+	}
+	if lim.allowNCalls != 1 {
+		t.Fatalf("expected AllowN called once, got %d calls", lim.allowNCalls)
+	}
+}
+
+// TestAuthPropertyAndMatch_Combined proves authproperty and match compose cleanly — this
+// is the combined shape needed when a customer wants to bucket AND filter by a JWT claim
+// that is only reachable via AuthContext, not a header.
+func TestAuthPropertyAndMatch_Combined(t *testing.T) {
+	basePolicy := func(lim *fakeLimiter) *RateLimitPolicy {
+		return &RateLimitPolicy{
+			quotas: []QuotaRuntime{{
+				Name: "guest-and-partner-checkout",
+				KeyExtraction: []KeyComponent{
+					{Type: "authproperty", Key: "app_id", Match: regexp.MustCompile("^(guest-.*|channel-partner)$")},
+				},
+				Limiter: lim,
+				Limits:  []LimitConfig{{Limit: 10, Duration: time.Minute}},
+			}},
+			routeName:      "route-main",
+			statusCode:     429,
+			responseBody:   `{"error":"limited"}`,
+			responseFormat: "json",
+			backend:        "memory",
+		}
+	}
+	authCtx := func(appID string) *policy.RequestHeaderContext {
+		return &policy.RequestHeaderContext{
+			SharedContext: &policy.SharedContext{
+				Metadata:    map[string]interface{}{},
+				AuthContext: &policy.AuthContext{Authenticated: true, AuthType: "jwt", Properties: map[string]string{"app_id": appID}},
+			},
+			Headers: policy.NewHeaders(nil),
+		}
+	}
+
+	t.Run("matching JWT claim is counted and enforced", func(t *testing.T) {
+		lim := &fakeLimiter{allowNFn: func(ctx context.Context, key string, n int64) (*limiter.Result, error) {
+			return newResult(true, 10, 9, 0, time.Minute), nil
+		}}
+		p := basePolicy(lim)
+		action := p.OnRequestHeaders(context.Background(), authCtx("guest-42"), nil)
+		if _, ok := action.(policy.UpstreamRequestHeaderModifications); !ok {
+			t.Fatalf("expected UpstreamRequestHeaderModifications, got %T", action)
+		}
+		if lim.allowNCalls != 1 {
+			t.Fatalf("expected AllowN called once, got %d calls", lim.allowNCalls)
+		}
+	})
+
+	t.Run("non-matching JWT claim bypasses the quota entirely", func(t *testing.T) {
+		lim := &fakeLimiter{allowNFn: func(ctx context.Context, key string, n int64) (*limiter.Result, error) {
+			return newResult(false, 10, 0, 5*time.Second, time.Minute), nil
+		}}
+		p := basePolicy(lim)
+		action := p.OnRequestHeaders(context.Background(), authCtx("internal-app-1"), nil)
+		if _, ok := action.(policy.UpstreamRequestHeaderModifications); !ok {
+			t.Fatalf("expected non-matching request to be allowed through, got %T", action)
+		}
+		if lim.allowNCalls != 0 {
+			t.Fatalf("expected AllowN to never be called for a non-matching request, got %d calls", lim.allowNCalls)
 		}
 	})
 }
@@ -3408,6 +3596,98 @@ func TestOnResponseBodyChunk_NoCostExtractionEnabled_NoConsume(t *testing.T) {
 	}
 }
 
+// TestOnResponseBodyChunk_MatchSkippedQuota_NoPhantomConsumption is a regression test for a
+// bug where a quota skipped by a "match" condition (so it never gets an entry in the
+// rateLimitKeysKey map) still had its streaming cost charged at end-of-stream — against an
+// empty-string key, since the map lookup for a missing quota name silently returns "". That
+// empty key is not private: apiname/apiversion/cel components can legitimately produce ""
+// for an unrelated quota, so the phantom charge could land on a real, unrelated bucket.
+// finalizeAndConsumeStreamingCosts must treat an empty looked-up key the same as "this quota
+// was never assigned a key" and skip consumption entirely, matching the guard already used
+// by the other three quotaKeys consumers (OnResponseHeaders cost extraction, the streaming
+// availability snapshot, and OnResponseBody cost extraction).
+func TestOnResponseBodyChunk_MatchSkippedQuota_NoPhantomConsumption(t *testing.T) {
+	lim := &fakeLimiter{}
+	ce := NewCostExtractor(CostExtractionConfig{
+		Enabled: true,
+		Default: 1,
+		Sources: []CostSource{{Type: CostSourceResponseBody, JSONPath: "$.usage.total_tokens", Multiplier: 1}},
+	})
+	p := &RateLimitPolicy{
+		quotas: []QuotaRuntime{{
+			Name: "guest-tokens", Limiter: lim,
+			Limits: []LimitConfig{{Limit: 10000, Duration: time.Minute}},
+			KeyExtraction: []KeyComponent{
+				{Type: "header", Key: "X-App-ID", Match: regexp.MustCompile("^guest-.*$")},
+			},
+			CostExtractor:         ce,
+			CostExtractionEnabled: true,
+		}},
+		routeName: "route-chatbot",
+	}
+
+	// Simulates a match-skipped quota: the request phase never reached
+	// quotaKeys[quotaName] = key for "guest-tokens" (its match didn't apply), so no entry
+	// exists here — exactly what a real skip produces, not something contrived for the test.
+	meta := map[string]interface{}{
+		rateLimitKeysKey: map[string]string{},
+	}
+	respCtx := newResponseStreamCtx(nil, nil, meta, 200)
+
+	sendChunks(t, p, respCtx, [][]byte{
+		[]byte("data: {\"usage\":{\"total_tokens\":800}}\n"),
+	})
+
+	if lim.consumeNCalls != 0 {
+		t.Fatalf("expected ConsumeN not called for a match-skipped quota, got %d calls (lastKey=%q, lastCost=%d)",
+			lim.consumeNCalls, lim.lastKey, lim.lastCost)
+	}
+}
+
+// TestOnResponseBodyChunk_PresentEmptyKey_StillConsumes guards against a stricter-but-wrong
+// fix for the phantom-consumption bug above: a quota that was NOT skipped, and whose
+// keyExtraction (e.g. "apiname" on an API with no name) legitimately produced an empty
+// string, has a real entry in quotaKeys ("guest-tokens": "") — present, just empty. Unlike
+// the absent-key case, this quota's streaming cost must still be consumed; the guard must
+// distinguish "never recorded" from "recorded as empty" using the map's ok flag, not a
+// key == "" check, which would incorrectly treat both the same way.
+func TestOnResponseBodyChunk_PresentEmptyKey_StillConsumes(t *testing.T) {
+	lim := &fakeLimiter{}
+	ce := NewCostExtractor(CostExtractionConfig{
+		Enabled: true,
+		Default: 1,
+		Sources: []CostSource{{Type: CostSourceResponseBody, JSONPath: "$.usage.total_tokens", Multiplier: 1}},
+	})
+	p := &RateLimitPolicy{
+		quotas: []QuotaRuntime{{
+			Name: "guest-tokens", Limiter: lim,
+			Limits:                []LimitConfig{{Limit: 10000, Duration: time.Minute}},
+			KeyExtraction:         []KeyComponent{{Type: "apiname"}},
+			CostExtractor:         ce,
+			CostExtractionEnabled: true,
+		}},
+		routeName: "route-chatbot",
+	}
+
+	// Present entry with an empty value — the quota WAS processed (e.g. apiname was unset),
+	// not skipped by match. This must not be confused with an absent entry.
+	meta := map[string]interface{}{
+		rateLimitKeysKey: map[string]string{"guest-tokens": ""},
+	}
+	respCtx := newResponseStreamCtx(nil, nil, meta, 200)
+
+	sendChunks(t, p, respCtx, [][]byte{
+		[]byte("data: {\"usage\":{\"total_tokens\":800}}\n"),
+	})
+
+	if lim.consumeNCalls != 1 {
+		t.Fatalf("expected ConsumeN called once for a present-but-empty key, got %d calls", lim.consumeNCalls)
+	}
+	if lim.lastCost != 800 {
+		t.Fatalf("expected cost=800, got %d", lim.lastCost)
+	}
+}
+
 // clearCaches resets all global caches for test isolation.
 func clearCaches() {
 	globalLimiterCache.mu.Lock()
@@ -3442,4 +3722,342 @@ func getLimiterRefCountByInstance(targetLimiter interface{}) int {
 		}
 	}
 	return count
+}
+
+func TestParseKeyExtraction_MatchField(t *testing.T) {
+	t.Run("valid regex match is parsed and compiled", func(t *testing.T) {
+		raw := []interface{}{
+			map[string]interface{}{
+				"type": "header",
+				"key":  "X-App-ID",
+				"match": map[string]interface{}{
+					"type":  "regex",
+					"value": "^(guest-.*|channel-partner)$",
+				},
+			},
+		}
+		comps, err := parseKeyExtraction(raw)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if comps[0].Match == nil {
+			t.Fatalf("expected compiled Match regexp, got nil")
+		}
+		if comps[0].MatchType != "regex" || comps[0].MatchValue != "^(guest-.*|channel-partner)$" {
+			t.Fatalf("expected MatchType/MatchValue to be recorded, got %q/%q", comps[0].MatchType, comps[0].MatchValue)
+		}
+		if !comps[0].Match.MatchString("guest-42") || !comps[0].Match.MatchString("channel-partner") {
+			t.Fatalf("expected compiled regex to match guest-42 and channel-partner")
+		}
+		if comps[0].Match.MatchString("internal-app-1") {
+			t.Fatalf("expected compiled regex to not match internal-app-1")
+		}
+	})
+
+	t.Run("no match field leaves Match nil", func(t *testing.T) {
+		raw := []interface{}{
+			map[string]interface{}{"type": "header", "key": "X-App-ID"},
+		}
+		comps, err := parseKeyExtraction(raw)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if comps[0].Match != nil {
+			t.Fatalf("expected nil Match when not configured")
+		}
+	})
+
+	t.Run("invalid regex is rejected at config load", func(t *testing.T) {
+		raw := []interface{}{
+			map[string]interface{}{
+				"type": "header",
+				"key":  "X-App-ID",
+				"match": map[string]interface{}{
+					"type":  "regex",
+					"value": "(unclosed",
+				},
+			},
+		}
+		_, err := parseKeyExtraction(raw)
+		if err == nil || !strings.Contains(err.Error(), "not a valid regex") {
+			t.Fatalf("expected invalid regex error, got %v", err)
+		}
+	})
+
+	t.Run("missing match.type is rejected", func(t *testing.T) {
+		raw := []interface{}{
+			map[string]interface{}{
+				"type":  "header",
+				"key":   "X-App-ID",
+				"match": map[string]interface{}{"value": "guest-.*"},
+			},
+		}
+		_, err := parseKeyExtraction(raw)
+		if err == nil || !strings.Contains(err.Error(), "match.type is required") {
+			t.Fatalf("expected match.type required error, got %v", err)
+		}
+	})
+
+	t.Run("missing match.value is rejected", func(t *testing.T) {
+		raw := []interface{}{
+			map[string]interface{}{
+				"type":  "header",
+				"key":   "X-App-ID",
+				"match": map[string]interface{}{"type": "regex"},
+			},
+		}
+		_, err := parseKeyExtraction(raw)
+		if err == nil || !strings.Contains(err.Error(), "match.value is required") {
+			t.Fatalf("expected match.value required error, got %v", err)
+		}
+	})
+
+	t.Run("unsupported match.type is rejected", func(t *testing.T) {
+		raw := []interface{}{
+			map[string]interface{}{
+				"type": "header",
+				"key":  "X-App-ID",
+				"match": map[string]interface{}{
+					"type":  "glob",
+					"value": "guest-*",
+				},
+			},
+		}
+		_, err := parseKeyExtraction(raw)
+		if err == nil || !strings.Contains(err.Error(), "not supported") {
+			t.Fatalf("expected unsupported match type error, got %v", err)
+		}
+	})
+
+	t.Run("match is not an object is rejected", func(t *testing.T) {
+		raw := []interface{}{
+			map[string]interface{}{"type": "header", "key": "X-App-ID", "match": "regex"},
+		}
+		_, err := parseKeyExtraction(raw)
+		if err == nil || !strings.Contains(err.Error(), "match must be an object") {
+			t.Fatalf("expected match object type error, got %v", err)
+		}
+	})
+}
+
+func TestQuotaAppliesFromHeaderCtx(t *testing.T) {
+	p := &RateLimitPolicy{routeName: "route-main"}
+
+	t.Run("matching header value applies the quota", func(t *testing.T) {
+		q := &QuotaRuntime{KeyExtraction: []KeyComponent{{Type: "header", Key: "X-App-ID", Match: regexp.MustCompile("^(guest-.*|channel-partner)$")}}}
+		hctx := newRequestHeaderCtx(map[string][]string{"x-app-id": {"guest-42"}}, nil)
+		if !p.quotaAppliesFromHeaderCtx(hctx, q) {
+			t.Fatalf("expected quota to apply for matching value guest-42")
+		}
+	})
+
+	t.Run("non-matching header value skips the quota", func(t *testing.T) {
+		q := &QuotaRuntime{KeyExtraction: []KeyComponent{{Type: "header", Key: "X-App-ID", Match: regexp.MustCompile("^(guest-.*|channel-partner)$")}}}
+		hctx := newRequestHeaderCtx(map[string][]string{"x-app-id": {"internal-app-1"}}, nil)
+		if p.quotaAppliesFromHeaderCtx(hctx, q) {
+			t.Fatalf("expected quota to be skipped for non-matching value internal-app-1")
+		}
+	})
+
+	t.Run("component without match always applies", func(t *testing.T) {
+		q := &QuotaRuntime{KeyExtraction: []KeyComponent{{Type: "header", Key: "X-App-ID"}}}
+		hctx := newRequestHeaderCtx(map[string][]string{"x-app-id": {"anything"}}, nil)
+		if !p.quotaAppliesFromHeaderCtx(hctx, q) {
+			t.Fatalf("expected quota with no match condition to always apply")
+		}
+	})
+
+	t.Run("multiple matched components require all to match (AND)", func(t *testing.T) {
+		q := &QuotaRuntime{KeyExtraction: []KeyComponent{
+			{Type: "header", Key: "X-App-ID", Match: regexp.MustCompile("^guest-.*$")},
+			{Type: "apiname", Match: regexp.MustCompile("^petstore$")},
+		}}
+		matching := newRequestHeaderCtx(map[string][]string{"x-app-id": {"guest-1"}}, nil)
+		matching.APIName = "petstore"
+		if !p.quotaAppliesFromHeaderCtx(matching, q) {
+			t.Fatalf("expected quota to apply when both components match")
+		}
+
+		partial := newRequestHeaderCtx(map[string][]string{"x-app-id": {"guest-1"}}, nil)
+		partial.APIName = "other-api"
+		if p.quotaAppliesFromHeaderCtx(partial, q) {
+			t.Fatalf("expected quota to be skipped when only one of two matched components matches")
+		}
+	})
+}
+
+func TestQuotaAppliesFromHeaderCtx_MetadataType(t *testing.T) {
+	// match is applied identically regardless of keyExtraction type — this locks in that
+	// contract for "metadata" specifically, since that's how a value set by an earlier
+	// policy in the chain (e.g. subscription-validation's x-wso2-application-id) reaches
+	// this policy, not necessarily a raw request header.
+	p := &RateLimitPolicy{routeName: "route-main"}
+	q := &QuotaRuntime{KeyExtraction: []KeyComponent{
+		{Type: "metadata", Key: "x-wso2-application-id", Match: regexp.MustCompile("^(guest-.*|channel-partner)$")},
+	}}
+
+	t.Run("matching metadata value applies the quota", func(t *testing.T) {
+		hctx := newRequestHeaderCtx(nil, map[string]interface{}{"x-wso2-application-id": "guest-42"})
+		if !p.quotaAppliesFromHeaderCtx(hctx, q) {
+			t.Fatalf("expected quota to apply for matching metadata value guest-42")
+		}
+	})
+
+	t.Run("non-matching metadata value skips the quota", func(t *testing.T) {
+		hctx := newRequestHeaderCtx(nil, map[string]interface{}{"x-wso2-application-id": "internal-app-1"})
+		if p.quotaAppliesFromHeaderCtx(hctx, q) {
+			t.Fatalf("expected quota to be skipped for non-matching metadata value internal-app-1")
+		}
+	})
+}
+
+func TestMatchCondition_SkipsQuotaWhenNotMatching_MetadataType(t *testing.T) {
+	basePolicy := func(comp KeyComponent, lim *fakeLimiter) *RateLimitPolicy {
+		return &RateLimitPolicy{
+			quotas: []QuotaRuntime{{
+				Name:          "throttled-apps",
+				KeyExtraction: []KeyComponent{comp},
+				Limiter:       lim,
+				Limits:        []LimitConfig{{Limit: 10, Duration: time.Minute}},
+			}},
+			routeName:      "route-main",
+			statusCode:     429,
+			responseBody:   `{"error":"limited"}`,
+			responseFormat: "json",
+			backend:        "memory",
+		}
+	}
+	comp := KeyComponent{Type: "metadata", Key: "x-wso2-application-id", Match: regexp.MustCompile("^(guest-.*|channel-partner)$")}
+
+	t.Run("matching metadata request is counted and enforced", func(t *testing.T) {
+		lim := &fakeLimiter{allowNFn: func(ctx context.Context, key string, n int64) (*limiter.Result, error) {
+			return newResult(true, 10, 9, 0, time.Minute), nil
+		}}
+		p := basePolicy(comp, lim)
+		hctx := newRequestHeaderCtx(nil, map[string]interface{}{"x-wso2-application-id": "guest-42"})
+
+		action := p.OnRequestHeaders(context.Background(), hctx, nil)
+		if _, ok := action.(policy.UpstreamRequestHeaderModifications); !ok {
+			t.Fatalf("expected UpstreamRequestHeaderModifications, got %T", action)
+		}
+		if lim.allowNCalls != 1 {
+			t.Fatalf("expected AllowN called once for matching request, got %d calls", lim.allowNCalls)
+		}
+	})
+
+	t.Run("non-matching metadata request bypasses the quota entirely", func(t *testing.T) {
+		lim := &fakeLimiter{allowNFn: func(ctx context.Context, key string, n int64) (*limiter.Result, error) {
+			return newResult(false, 10, 0, 5*time.Second, time.Minute), nil
+		}}
+		p := basePolicy(comp, lim)
+		hctx := newRequestHeaderCtx(nil, map[string]interface{}{"x-wso2-application-id": "internal-app-1"})
+
+		action := p.OnRequestHeaders(context.Background(), hctx, nil)
+		if _, ok := action.(policy.UpstreamRequestHeaderModifications); !ok {
+			t.Fatalf("expected non-matching request to be allowed through, got %T", action)
+		}
+		if lim.allowNCalls != 0 {
+			t.Fatalf("expected AllowN to never be called for a non-matching request, got %d calls", lim.allowNCalls)
+		}
+	})
+}
+
+func TestMatchCondition_SkipsQuotaWhenNotMatching(t *testing.T) {
+	basePolicy := func(comp KeyComponent, lim *fakeLimiter) *RateLimitPolicy {
+		return &RateLimitPolicy{
+			quotas: []QuotaRuntime{{
+				Name:          "throttled-apps",
+				KeyExtraction: []KeyComponent{comp},
+				Limiter:       lim,
+				Limits:        []LimitConfig{{Limit: 10, Duration: time.Minute}},
+			}},
+			routeName:      "route-main",
+			statusCode:     429,
+			responseBody:   `{"error":"limited"}`,
+			responseFormat: "json",
+			backend:        "memory",
+		}
+	}
+	comp := KeyComponent{Type: "header", Key: "X-App-ID", Match: regexp.MustCompile("^(guest-.*|channel-partner)$")}
+
+	t.Run("matching request is counted and enforced", func(t *testing.T) {
+		lim := &fakeLimiter{allowNFn: func(ctx context.Context, key string, n int64) (*limiter.Result, error) {
+			return newResult(true, 10, 9, 0, time.Minute), nil
+		}}
+		p := basePolicy(comp, lim)
+		hctx := newRequestHeaderCtx(map[string][]string{"x-app-id": {"guest-42"}}, nil)
+
+		action := p.OnRequestHeaders(context.Background(), hctx, nil)
+		if _, ok := action.(policy.UpstreamRequestHeaderModifications); !ok {
+			t.Fatalf("expected UpstreamRequestHeaderModifications, got %T", action)
+		}
+		if lim.allowNCalls != 1 {
+			t.Fatalf("expected AllowN called once for matching request, got %d calls", lim.allowNCalls)
+		}
+	})
+
+	t.Run("non-matching request bypasses the quota entirely", func(t *testing.T) {
+		lim := &fakeLimiter{allowNFn: func(ctx context.Context, key string, n int64) (*limiter.Result, error) {
+			return newResult(false, 10, 0, 5*time.Second, time.Minute), nil
+		}}
+		p := basePolicy(comp, lim)
+		hctx := newRequestHeaderCtx(map[string][]string{"x-app-id": {"internal-app-1"}}, nil)
+
+		action := p.OnRequestHeaders(context.Background(), hctx, nil)
+		if _, ok := action.(policy.UpstreamRequestHeaderModifications); !ok {
+			t.Fatalf("expected non-matching request to be allowed through, got %T", action)
+		}
+		if lim.allowNCalls != 0 {
+			t.Fatalf("expected AllowN to never be called for a non-matching request, got %d calls", lim.allowNCalls)
+		}
+	})
+
+	t.Run("non-matching request never blocked even when quota is already exhausted", func(t *testing.T) {
+		// The limiter would deny if called at all; the point of this test is that it must
+		// never be called for a non-matching request, no matter how exhausted the quota is.
+		lim := &fakeLimiter{allowNFn: func(ctx context.Context, key string, n int64) (*limiter.Result, error) {
+			return newResult(false, 10, 0, 5*time.Second, time.Minute), nil
+		}}
+		p := basePolicy(comp, lim)
+		for i := 0; i < 5; i++ {
+			hctx := newRequestHeaderCtx(map[string][]string{"x-app-id": {"internal-app-1"}}, nil)
+			action := p.OnRequestHeaders(context.Background(), hctx, nil)
+			if _, ok := action.(policy.UpstreamRequestHeaderModifications); !ok {
+				t.Fatalf("expected non-matching request %d to be allowed through, got %T", i, action)
+			}
+		}
+		if lim.allowNCalls != 0 {
+			t.Fatalf("expected AllowN never called across repeated non-matching requests, got %d calls", lim.allowNCalls)
+		}
+	})
+}
+
+func TestGetQuotaCacheKey_ChangesWithMatchValue(t *testing.T) {
+	base := "base-cache-key"
+	qNoMatch := &QuotaRuntime{
+		Name:          "q1",
+		Limits:        []LimitConfig{{Limit: 10, Duration: time.Minute}},
+		KeyExtraction: []KeyComponent{{Type: "header", Key: "X-App-ID"}},
+	}
+	qWithMatch := &QuotaRuntime{
+		Name:          "q1",
+		Limits:        []LimitConfig{{Limit: 10, Duration: time.Minute}},
+		KeyExtraction: []KeyComponent{{Type: "header", Key: "X-App-ID", MatchType: "regex", MatchValue: "^guest-.*$"}},
+	}
+	qWithDifferentMatch := &QuotaRuntime{
+		Name:          "q1",
+		Limits:        []LimitConfig{{Limit: 10, Duration: time.Minute}},
+		KeyExtraction: []KeyComponent{{Type: "header", Key: "X-App-ID", MatchType: "regex", MatchValue: "^channel-partner$"}},
+	}
+
+	keyNoMatch := getQuotaCacheKey(base, "petstore", qNoMatch, 0)
+	keyWithMatch := getQuotaCacheKey(base, "petstore", qWithMatch, 0)
+	keyWithDifferentMatch := getQuotaCacheKey(base, "petstore", qWithDifferentMatch, 0)
+
+	if keyNoMatch == keyWithMatch {
+		t.Fatalf("expected cache key to change when a match condition is added")
+	}
+	if keyWithMatch == keyWithDifferentMatch {
+		t.Fatalf("expected cache key to change when the match value changes, so a config edit doesn't reuse a stale limiter")
+	}
 }

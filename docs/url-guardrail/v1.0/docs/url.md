@@ -82,7 +82,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 Deploy an LLM provider that validates URLs in request content using HTTP HEAD requests:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: LlmProvider
 metadata:
   name: url-guardrail-provider
@@ -90,7 +90,7 @@ spec:
   displayName: URL Guardrail Provider
   version: v1.0
   template: openai
-  vhost: openai
+  context: /openai
   upstream:
     url: "https://api.openai.com/v1"
     auth:
@@ -106,7 +106,7 @@ spec:
         methods: [GET]
       - path: /models/{modelId}
         methods: [GET]
-  policies:
+  operationPolicies:
     - name: url-guardrail
       version: v1
       paths:
@@ -123,13 +123,10 @@ spec:
 
 **Test the guardrail:**
 
-**Note**: Ensure that "openai" is mapped to the appropriate IP address (e.g., 127.0.0.1) in your `/etc/hosts` file. or remove the vhost from the llm provider configuration and use localhost to invoke.
-
 ```bash
 # Valid request (should pass)
-curl -X POST http://openai:8080/chat/completions \
+curl -X POST http://localhost:8080/openai/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Host: openai" \
   -d '{
     "model": "gpt-4",
     "messages": [
@@ -141,9 +138,8 @@ curl -X POST http://openai:8080/chat/completions \
   }'
 
 # Invalid request - invalid URL (should fail with HTTP 422)
-curl -X POST http://openai:8080/chat/completions \
+curl -X POST http://localhost:8080/openai/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Host: openai" \
   -d '{
     "model": "gpt-4",
     "messages": [
@@ -197,7 +193,7 @@ If `showAssessment` is enabled, additional details including invalid URLs are in
 Validate URLs in streaming LLM responses using a custom streaming JSONPath:
 
 ```yaml
-  policies:
+  operationPolicies:
     - name: url-guardrail
       version: v1
       paths:

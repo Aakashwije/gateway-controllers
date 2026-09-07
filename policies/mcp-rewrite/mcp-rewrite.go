@@ -427,7 +427,16 @@ func parseRequestPayload(body []byte, isSse bool) (map[string]any, []sseEvent, i
 
 // isMcpPostRequest reports whether the request targets the MCP endpoint.
 func isMcpPostRequest(method, path string) bool {
-	return strings.EqualFold(method, "POST") && strings.Contains(path, mcpPathSegment)
+	if !strings.EqualFold(method, "POST") {
+		return false
+	}
+	// Segment-exact match: only "/mcp" itself or a subpath under "/mcp/", never a
+	// substring such as "/resource/mcp". Mirrors the mcp-acl-list policy.
+	cleanPath := strings.TrimSpace(path)
+	if idx := strings.Index(cleanPath, "?"); idx >= 0 {
+		cleanPath = cleanPath[:idx]
+	}
+	return cleanPath == mcpPathSegment || strings.HasPrefix(cleanPath, mcpPathSegment+"/")
 }
 
 func (p *McpRewritePolicy) Mode() policy.ProcessingMode {
@@ -445,7 +454,8 @@ func (p *McpRewritePolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Req
 }
 
 func (p *McpRewritePolicy) processRequestBody(reqCtx *policy.RequestContext) policy.RequestAction {
-	if !isMcpPostRequest(reqCtx.Method, reqCtx.Path) {
+	dsReq := reqCtx.DownstreamRequest()
+	if !isMcpPostRequest(dsReq.Method, reqCtx.OperationPath) {
 		return policy.UpstreamRequestModifications{}
 	}
 	slog.Debug("MCP Rewrite Policy: OnRequest started")
@@ -454,10 +464,12 @@ func (p *McpRewritePolicy) processRequestBody(reqCtx *policy.RequestContext) pol
 		return policy.UpstreamRequestModifications{}
 	}
 
-	requestPayload, requestEvents, requestEventIndex, err := parseRequestPayload(reqCtx.Body.Content, isEventStream(reqCtx.Headers))
+	// Read Content-Type and the session id (used for error responses) from the downstream snapshot.
+	ds := dsReq.Headers
+	requestPayload, requestEvents, requestEventIndex, err := parseRequestPayload(reqCtx.Body.Content, isEventStream(ds))
 	if err != nil {
-		slog.Debug("MCP Rewrite Policy: Failed to parse MCP request", "error", err, "path", reqCtx.Path)
-		return p.buildRequestErrorResponse(reqCtx.Headers, 400, -32700, "Invalid JSON", nil)
+		slog.Debug("MCP Rewrite Policy: Failed to parse MCP request", "error", err, "path", dsReq.Path)
+		return p.buildRequestErrorResponse(ds, 400, -32700, "Invalid JSON", nil)
 	}
 
 	requestID := requestPayload["id"]
@@ -486,21 +498,21 @@ func (p *McpRewritePolicy) processRequestBody(reqCtx *policy.RequestContext) pol
 	paramsRaw, ok := requestPayload["params"].(map[string]any)
 	if !ok {
 		slog.Debug("MCP Rewrite Policy: Invalid request params", "capabilityType", capabilityType, "requestID", requestID, "error", "params not a map")
-		return p.buildRequestErrorResponse(reqCtx.Headers, 400, -32602, "Invalid MCP request params", requestID)
+		return p.buildRequestErrorResponse(ds, 400, -32602, "Invalid MCP request params", requestID)
 	}
 
 	paramKey := getParamKey(capabilityType)
 	capabilityName, _ := paramsRaw[paramKey].(string)
 	if strings.TrimSpace(capabilityName) == "" {
 		slog.Debug("MCP Rewrite Policy: Missing capability name", "capabilityType", capabilityType, "requestID", requestID, "paramKey", paramKey)
-		return p.buildRequestErrorResponse(reqCtx.Headers, 400, -32602, fmt.Sprintf("Missing MCP %s name", capabilityType), requestID)
+		return p.buildRequestErrorResponse(ds, 400, -32602, fmt.Sprintf("Missing MCP %s name", capabilityType), requestID)
 	}
 
 	entry, exists := config.Lookup[capabilityName]
 	if !exists {
 		slog.Debug("MCP Rewrite Policy: Capability blocked by policy", "capabilityType", capabilityType, "capabilityName", capabilityName, "requestID", requestID)
 		return p.buildRequestErrorResponse(
-			reqCtx.Headers,
+			ds,
 			403,
 			-32602,
 			fmt.Sprintf("MCP %s '%s' is not allowed", capabilityType, capabilityName),
@@ -515,7 +527,7 @@ func (p *McpRewritePolicy) processRequestBody(reqCtx *policy.RequestContext) pol
 		updatedPayload, err := json.Marshal(requestPayload)
 		if err != nil {
 			slog.Debug("MCP Rewrite Policy: Failed to marshal updated request", "capabilityType", capabilityType, "capabilityName", capabilityName, "requestID", requestID, "error", err)
-			return p.buildRequestErrorResponse(reqCtx.Headers, 500, -32603, "Failed to update MCP request", requestID)
+			return p.buildRequestErrorResponse(ds, 500, -32603, "Failed to update MCP request", requestID)
 		}
 
 		if len(requestEvents) > 0 && requestEventIndex >= 0 {
@@ -613,7 +625,8 @@ func (p *McpRewritePolicy) buildEventStreamErrorResponse(statusCode int, jsonRpc
 
 // OnResponseBody applies rewrite rules to the MCP response body.
 func (p *McpRewritePolicy) OnResponseBody(ctx context.Context, respCtx *policy.ResponseContext, _ map[string]any) policy.ResponseAction {
-	if !isMcpPostRequest(respCtx.RequestMethod, respCtx.RequestPath) {
+	dsReq := respCtx.DownstreamRequest()
+	if !isMcpPostRequest(dsReq.Method, respCtx.OperationPath) {
 		return nil
 	}
 	slog.Debug("MCP Rewrite Policy: OnResponseBody started")
@@ -638,7 +651,9 @@ func (p *McpRewritePolicy) OnResponseBody(ctx context.Context, respCtx *policy.R
 		return nil
 	}
 
-	if isEventStream(respCtx.ResponseHeaders) {
+	// Detect SSE from the upstream snapshot so response-body rewriting
+	// parses the response the way the upstream actually framed it.
+	if isEventStream(respCtx.UpstreamHeaders()) {
 		events := parseEventStream(respCtx.ResponseBody.Content)
 		updated := false
 		for i, event := range events {

@@ -73,7 +73,7 @@ Inside the `api-platform` repository, add the policy package under `policies:` i
 Attach the policy to an OpenAI-compatible chat completions route and apply stronger compression as prompts get larger:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: LlmProvider
 metadata:
   name: compressed-chat-provider
@@ -81,7 +81,7 @@ spec:
   displayName: Compressed Chat Provider
   version: v1.0
   template: openai
-  vhost: openai
+  context: /openai
   upstream:
     url: "https://api.openai.com/v1"
     auth:
@@ -93,7 +93,7 @@ spec:
     exceptions:
       - path: /chat/completions
         methods: [POST]
-  policies:
+  operationPolicies:
     - name: prompt-compressor
       version: v0
       paths:
@@ -116,9 +116,8 @@ spec:
 Test the policy with a long prompt:
 
 ```bash
-curl -X POST http://openai:8080/chat/completions \
+curl -X POST http://localhost:8080/openai/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Host: openai" \
   -d '{
     "model": "gpt-4",
     "messages": [
@@ -149,7 +148,7 @@ The upstream request keeps the same JSON shape, but `messages[0].content` is rep
 Use `token` mode when the desired result is easier to express as a retained token target instead of a ratio:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: LlmProvider
 metadata:
   name: budgeted-chat-provider
@@ -157,7 +156,7 @@ spec:
   displayName: Budgeted Chat Provider
   version: v1.0
   template: openai
-  vhost: openai
+  context: /openai
   upstream:
     url: "https://api.openai.com/v1"
     auth:
@@ -169,7 +168,7 @@ spec:
     exceptions:
       - path: /chat/completions
         methods: [POST]
-  policies:
+  operationPolicies:
     - name: prompt-compressor
       version: v0
       paths:
@@ -193,7 +192,7 @@ For a selected prompt estimated at `1000` tokens, the first rule resolves to a r
 Use selective compression tags when prompt instructions must remain exact, but retrieved context can be compacted:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: LlmProvider
 metadata:
   name: rag-chat-provider
@@ -201,7 +200,7 @@ spec:
   displayName: RAG Chat Provider
   version: v1.0
   template: openai
-  vhost: openai
+  context: /openai
   upstream:
     url: "https://api.openai.com/v1"
     auth:
@@ -213,7 +212,7 @@ spec:
     exceptions:
       - path: /chat/completions
         methods: [POST]
-  policies:
+  operationPolicies:
     - name: prompt-compressor
       version: v0
       paths:

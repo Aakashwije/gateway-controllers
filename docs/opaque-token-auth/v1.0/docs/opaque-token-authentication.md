@@ -125,7 +125,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 ### Example 1: Basic Opaque Token Authentication
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: opaque-token-basic-api
@@ -152,7 +152,7 @@ spec:
 ### Example 2: Audience and Scope Validation
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: opaque-token-audience-api
@@ -181,7 +181,7 @@ spec:
 ### Example 3: Required Claim Validation
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: opaque-token-claims-api
@@ -210,7 +210,7 @@ spec:
 By default, the token is forwarded to the upstream after successful validation under the `x-forwarded-authorization` header. Set `forwardToken: false` to strip it before proxying.
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: opaque-token-strip-api

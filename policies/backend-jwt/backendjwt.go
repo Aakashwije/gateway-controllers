@@ -251,7 +251,10 @@ func (p *BackendJWTPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.
 			dialect:   dialect,
 			excluded:  sortedSetKeys(excluded),
 		}
-		cacheKey = buildTokenCacheKey(ns, authCtx, reqCtx.Path, reqCtx.Method, extras)
+		// Use the pre-mutation client snapshot for the cache key's path/method so the key
+		// reflects the original request even if a peer policy rewrote the live request.
+		ds := reqCtx.DownstreamRequest()
+		cacheKey = buildTokenCacheKey(ns, authCtx, ds.Path, ds.Method, extras)
 		if signed, ok := p.getCachedToken(ctx, cacheKey); ok {
 			slog.Debug("Backend JWT: cache hit", "authType", authTypeLabel(authCtx))
 			return policy.UpstreamRequestHeaderModifications{
@@ -832,18 +835,23 @@ func resolveClaimValue(value string, reqCtx *policy.RequestHeaderContext) (strin
 	ref := strings.TrimPrefix(value, ctxPrefix)
 	variable := strings.ToLower(ref)
 
+	// ds is the pre-mutation client snapshot; use it for the path/method/authority/scheme
+	// values stamped into the generated JWT so the client's original request is reflected
+	// even if a peer policy rewrote the live request.
+	ds := reqCtx.DownstreamRequest()
+
 	switch {
 	case variable == "request.path":
-		return reqCtx.Path, true
+		return ds.Path, true
 	case variable == "request.method":
-		return reqCtx.Method, true
+		return ds.Method, true
 	case variable == "request.authority":
-		return reqCtx.Authority, true
+		return ds.Authority, true
 	case variable == "request.scheme":
-		return reqCtx.Scheme, true
+		return ds.Scheme, true
 	case strings.HasPrefix(variable, "request.header."):
 		name := strings.TrimPrefix(variable, "request.header.")
-		vals := reqCtx.Headers.Get(name)
+		vals := reqCtx.DownstreamHeaders().Get(name)
 		if len(vals) == 0 {
 			return "", false
 		}

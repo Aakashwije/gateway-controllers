@@ -107,10 +107,10 @@ func GetPolicy(
 		if origin == "*" {
 			continue
 		}
-		regex, err := regexp.Compile(origin)
+		regex, err := compileAllowedOrigin(origin)
 		if err != nil {
-			slog.Debug("Invalid origin regex", "origin", origin, "error", err)
-			return nil, fmt.Errorf("invalid origin regex: %s", origin)
+			slog.Debug("Invalid allowed origin", "origin", origin, "error", err)
+			return nil, fmt.Errorf("invalid allowed origin %q: %w", origin, err)
 		}
 		p.CompiledAllowedOrigins = append(p.CompiledAllowedOrigins, regex)
 	}
@@ -118,6 +118,32 @@ func GetPolicy(
 	return p, nil
 }
 
+// compileAllowedOrigin matches configured origins literally, except for
+// scheme-specific subdomain wildcards. Every expression is anchored so a
+// matching origin cannot be embedded in a different host, path, or query.
+func compileAllowedOrigin(origin string) (*regexp.Regexp, error) {
+	if pattern, isWildcard := subdomainWildcardPattern(origin); isWildcard {
+		return regexp.Compile(`\A(?:` + pattern + `)\z`)
+	}
+
+	pattern := regexp.QuoteMeta(origin)
+	return regexp.Compile(`\A(?:` + pattern + `)\z`)
+}
+
+// subdomainWildcardPattern converts <scheme>://*.example.com[:port] into a
+// full-match pattern. The configured scheme and suffix remain literal, while
+// the wildcard accepts one or more subdomain levels but no URL delimiters.
+func subdomainWildcardPattern(origin string) (string, bool) {
+	const wildcardMarker = "://*."
+	scheme, suffix, isWildcard := strings.Cut(origin, wildcardMarker)
+	if !isWildcard || scheme == "" || suffix == "" {
+		return "", false
+	}
+
+	const subdomains = `[^/:?#@]+`
+	pattern := regexp.QuoteMeta(scheme) + `://` + subdomains + `\.` + regexp.QuoteMeta(suffix)
+	return pattern, true
+}
 
 func (p *CorsPolicy) Mode() policy.ProcessingMode {
 	return policy.ProcessingMode{
@@ -147,17 +173,21 @@ func getStringArrayParam(params map[string]any, key string, defaultValue []strin
 
 // OnRequestHeaders handles CORS in the request header phase.
 func (p *CorsPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.RequestHeaderContext, params map[string]any) policy.RequestHeaderAction {
-	if strings.EqualFold(reqCtx.Method, "options") {
+	// Base the Origin / preflight decision on the downstream snapshot so
+	// a peer policy that rewrites Origin during the header phase cannot change the
+	// CORS verdict for what the client actually sent.
+	ds := reqCtx.DownstreamRequest()
+	if strings.EqualFold(ds.Method, "options") {
 		slog.Debug("CORS: Preflight request detected in header phase; handling preflight")
-		return p.handlePreflightHeaders(reqCtx.Headers)
+		return p.handlePreflightHeaders(ds.Headers)
 	}
-	corsHeaders, ok := p.handleNonPreflightHeaders(reqCtx.Headers)
+	corsHeaders, ok := p.handleNonPreflightHeaders(ds.Headers)
 	if ok {
 		slog.Debug("CORS: Adding CORS headers to non-preflight request")
 		reqCtx.Metadata["cors_headers"] = corsHeaders
 	} else {
 		slog.Debug("CORS: No CORS headers to add for non-preflight request")
-		if reqCtx.Headers.Has("Origin") {
+		if ds.Headers.Has("Origin") {
 			reqCtx.Metadata["cors_strip"] = true
 		}
 	}
@@ -202,14 +232,10 @@ func (p *CorsPolicy) handlePreflightHeaders(requestHeaders *policy.Headers) poli
 		if p.AllowedOrigins[0] == "*" {
 			headers["Access-Control-Allow-Origin"] = "*"
 			originAllowed = true
-		} else if len(origin) > 0 {
-			for _, regex := range p.CompiledAllowedOrigins {
-				if regex.MatchString(origin[0]) {
-					headers["Access-Control-Allow-Origin"] = origin[0]
-					originAllowed = true
-					break
-				}
-			}
+		} else if len(origin) > 0 && p.isOriginAllowed(origin[0]) {
+			headers["Access-Control-Allow-Origin"] = origin[0]
+			headers["Vary"] = "Origin"
+			originAllowed = true
 		}
 	}
 	if !originAllowed {
@@ -295,15 +321,10 @@ func (p *CorsPolicy) handleNonPreflightHeaders(requestHeaders *policy.Headers) (
 		if p.AllowedOrigins[0] == "*" {
 			headersToInclude["Access-Control-Allow-Origin"] = "*"
 			originAllowed = true
-		} else if len(origin) > 0 {
-			for _, regex := range p.CompiledAllowedOrigins {
-				if regex.MatchString(origin[0]) {
-					headersToInclude["Access-Control-Allow-Origin"] = origin[0]
-					headersToInclude["Vary"] = "Origin"
-					originAllowed = true
-					break
-				}
-			}
+		} else if len(origin) > 0 && p.isOriginAllowed(origin[0]) {
+			headersToInclude["Access-Control-Allow-Origin"] = origin[0]
+			headersToInclude["Vary"] = "Origin"
+			originAllowed = true
 		}
 	}
 
@@ -320,4 +341,13 @@ func (p *CorsPolicy) handleNonPreflightHeaders(requestHeaders *policy.Headers) (
 	}
 
 	return headersToInclude, true
+}
+
+func (p *CorsPolicy) isOriginAllowed(origin string) bool {
+	for _, allowedOrigin := range p.CompiledAllowedOrigins {
+		if allowedOrigin.MatchString(origin) {
+			return true
+		}
+	}
+	return false
 }

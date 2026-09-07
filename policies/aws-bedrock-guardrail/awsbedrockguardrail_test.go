@@ -43,6 +43,9 @@ func baseParams() map[string]interface{} {
 		"region":           "us-east-1",
 		"guardrailID":      "gr-123",
 		"guardrailVersion": "DRAFT",
+		// awsAuth is mandatory; "system" defers to the gateway-wide credentials,
+		// which is what these tests exercise unless they override it.
+		"awsAuth": map[string]interface{}{"authenticationType": AuthTypeSystem},
 	}
 }
 
@@ -138,10 +141,12 @@ func TestValidateAWSConfigParams_RoleRegionRequirement(t *testing.T) {
 		t.Fatalf("expected missing awsRoleRegion error, got: %v", err)
 	}
 
+	// An empty string means "not configured", so it fails the same way an
+	// absent value does rather than with a distinct "cannot be empty" error.
 	params["awsRoleRegion"] = ""
 	err = validateAWSConfigParams(params)
-	if err == nil || !strings.Contains(err.Error(), "'awsRoleRegion' cannot be empty") {
-		t.Fatalf("expected empty awsRoleRegion error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "'awsRoleRegion' is required") {
+		t.Fatalf("expected empty awsRoleRegion to be treated as missing, got: %v", err)
 	}
 
 	params["awsRoleRegion"] = "us-east-1"

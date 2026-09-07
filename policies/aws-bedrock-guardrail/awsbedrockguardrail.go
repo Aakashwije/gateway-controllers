@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -47,6 +48,47 @@ const (
 	ResponseFlowEnabledByDefault = false
 )
 
+// Credential-acquisition modes selectable through awsAuth.authenticationType.
+const (
+	// AuthTypeSystem defers to the gateway-wide credential configuration in
+	// config.toml. It is the explicit way for an attachment to say "I have no
+	// AWS identity of my own", replacing the pre-v1.2.0 behaviour of simply
+	// omitting the credential block.
+	AuthTypeSystem = "system"
+	// AuthTypeIRSA obtains credentials via STS AssumeRoleWithWebIdentity using
+	// the Kubernetes projected service account token (IAM Roles for Service
+	// Accounts). Requires no credential material in the API definition.
+	AuthTypeIRSA = "irsa"
+	// AuthTypeSTSAssumeRole obtains temporary credentials via STS AssumeRole.
+	AuthTypeSTSAssumeRole = "sts-assume-role"
+	// AuthTypeDefaultCredentialChain resolves credentials from the AWS SDK's
+	// default provider chain, with no role assumption and no configured keys.
+	AuthTypeDefaultCredentialChain = "default-credential-chain"
+	// AuthTypeIAMUserAccessKey uses a static, long-lived access key/secret pair.
+	AuthTypeIAMUserAccessKey = "iam-user-access-key"
+)
+
+const (
+	defaultRoleSessionName = "bedrock-guardrail-session"
+
+	// Environment variables injected by the EKS Pod Identity Webhook, used by
+	// AuthTypeIRSA. The token file path is never taken from a policy param.
+	envRoleARN              = "AWS_ROLE_ARN"
+	envWebIdentityTokenFile = "AWS_WEB_IDENTITY_TOKEN_FILE"
+)
+
+// credentialFields holds the credential configuration resolved for one policy
+// attachment, from either its awsAuth object or the gateway-wide settings.
+type credentialFields struct {
+	accessKeyID     string
+	secretAccessKey string
+	sessionToken    string
+	roleARN         string
+	roleRegion      string
+	roleExternalID  string
+	roleSessionName string
+}
+
 var textCleanRegexCompiled = regexp.MustCompile(TextCleanRegex)
 
 type bedrockGuardrailClient interface {
@@ -56,15 +98,20 @@ type bedrockGuardrailClient interface {
 // AWSBedrockGuardrailPolicy implements AWS Bedrock Guardrail validation
 type AWSBedrockGuardrailPolicy struct {
 	// Static configuration from params
-	region             string
-	guardrailID        string
-	guardrailVersion   string
-	awsAccessKeyID     string
-	awsSecretAccessKey string
-	awsSessionToken    string
-	awsRoleARN         string
-	awsRoleRegion      string
-	awsRoleExternalID  string
+	region           string
+	guardrailID      string
+	guardrailVersion string
+
+	// Resolved credential configuration. authType is one of the AuthType*
+	// constants; creds holds only the fields that mode uses.
+	authType string
+	creds    credentialFields
+
+	// credentialsProvider is built once at policy-instance creation time and
+	// reused across requests. For the role-assumption modes it wraps an
+	// aws.CredentialsCache, so temporary credentials are refreshed near expiry
+	// rather than re-fetched from STS on every request.
+	credentialsProvider aws.CredentialsProvider
 
 	// Dynamic configuration from params
 	hasRequestParams  bool
@@ -90,52 +137,68 @@ func GetPolicy(
 	metadata policy.PolicyMetadata,
 	params map[string]interface{},
 ) (policy.Policy, error) {
-	// Validate and extract static configuration from params
-	if err := validateAWSConfigParams(params); err != nil {
+	// System-level (systemParameters, from config.toml) and user-level
+	// (parameters, from the API definition) values arrive merged into this
+	// single map, with user-level values having overwritten system-level ones
+	// for any key both levels define.
+	region, err := resolveGuardrailIdentityParam(params, "", "region")
+	if err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	guardrailID, err := resolveGuardrailIdentityParam(params, "localGuardrailID", "guardrailID")
+	if err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	guardrailVersion, err := resolveGuardrailIdentityParam(params, "localGuardrailVersion", "guardrailVersion")
+	if err != nil {
 		return nil, fmt.Errorf("invalid params: %w", err)
 	}
 
+	authType, creds, err := resolveCredentialSet(params, region, deriveRoleSessionName(metadata))
+	if err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+
+	// Regions and role ARNs accept a trailing "*" as a prefix: "us-east-*" and
+	// one ARN prefix per account are both natural to write. Guardrail IDs are
+	// opaque strings where a prefix means nothing, and authenticationType is a
+	// short enum where "s*" would silently widen to both "system" and
+	// "sts-assume-role" - so those two stay exact.
+	if err := checkAllowlist(params, "allowedRegions", "region", region, true); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if err := checkAllowlist(params, "allowedGuardrailIDs", "guardrailID", guardrailID, false); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if err := checkAllowlist(params, "allowedAuthTypes", "authenticationType", authType, false); err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
+	}
+	if creds.roleARN != "" {
+		if err := checkAllowlist(params, "allowedRoleARNs", "awsRoleARN", creds.roleARN, true); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+	}
+
 	p := &AWSBedrockGuardrailPolicy{
-		region:           getStringParam(params, "region"),
-		guardrailID:      getStringParam(params, "guardrailID"),
-		guardrailVersion: getStringParam(params, "guardrailVersion"),
+		region:           region,
+		guardrailID:      guardrailID,
+		guardrailVersion: guardrailVersion,
+		authType:         authType,
+		creds:            creds,
 	}
 	p.loadAWSConfigFunc = p.loadAWSConfig
 	p.newBedrockClientFunc = func(cfg aws.Config) bedrockGuardrailClient {
 		return bedrockruntime.NewFromConfig(cfg)
 	}
 
-	// Optional AWS credentials
-	if val, ok := params["awsAccessKeyID"]; ok {
-		if str, ok := val.(string); ok {
-			p.awsAccessKeyID = str
-		}
+	// Build the credentials provider once, so that role assumption does not
+	// repeat on every request. A failure here is a configuration failure and
+	// rejects the attachment at deploy time rather than failing open later.
+	credentialsProvider, err := buildCredentialsProvider(context.Background(), authType, creds)
+	if err != nil {
+		return nil, fmt.Errorf("invalid params: %w", err)
 	}
-	if val, ok := params["awsSecretAccessKey"]; ok {
-		if str, ok := val.(string); ok {
-			p.awsSecretAccessKey = str
-		}
-	}
-	if val, ok := params["awsSessionToken"]; ok {
-		if str, ok := val.(string); ok {
-			p.awsSessionToken = str
-		}
-	}
-	if val, ok := params["awsRoleARN"]; ok {
-		if str, ok := val.(string); ok {
-			p.awsRoleARN = str
-		}
-	}
-	if val, ok := params["awsRoleRegion"]; ok {
-		if str, ok := val.(string); ok {
-			p.awsRoleRegion = str
-		}
-	}
-	if val, ok := params["awsRoleExternalID"]; ok {
-		if str, ok := val.(string); ok {
-			p.awsRoleExternalID = str
-		}
-	}
+	p.credentialsProvider = credentialsProvider
 
 	// Extract and parse request parameters if present
 	if requestParamsRaw, ok := params["request"].(map[string]interface{}); ok {
@@ -165,7 +228,12 @@ func GetPolicy(
 		return nil, fmt.Errorf("at least one of 'request' or 'response' parameters must be provided")
 	}
 
-	slog.Debug("AWSBedrockGuardrail: Policy initialized", "region", p.region, "guardrailID", p.guardrailID, "guardrailVersion", p.guardrailVersion, "hasRequestParams", p.hasRequestParams, "hasResponseParams", p.hasResponseParams)
+	// Credential material is deliberately absent from this line: the secret
+	// access key, session token and role external ID must never be logged.
+	slog.Debug("AWSBedrockGuardrail: Policy initialized",
+		"region", p.region, "guardrailID", p.guardrailID, "guardrailVersion", p.guardrailVersion,
+		"authenticationType", p.authType, "roleARN", p.creds.roleARN,
+		"hasRequestParams", p.hasRequestParams, "hasResponseParams", p.hasResponseParams)
 
 	return p, nil
 }
@@ -249,197 +317,506 @@ func getStringParam(params map[string]interface{}, key string) string {
 	return ""
 }
 
-// validateAWSConfigParams validates AWS configuration parameters (from params)
-func validateAWSConfigParams(params map[string]interface{}) error {
-	// Validate region (required)
-	regionRaw, ok := params["region"]
+// resolveGuardrailIdentityParam returns the effective value for one guardrail
+// identity setting (region/guardrailID/guardrailVersion).
+//
+// User-level and system-level parameters share a key name and are merged
+// upstream into a single params map, with the user-level value overwriting the
+// system-level one, so canonicalKey already carries the effective value and
+// needs no fallback logic of its own.
+//
+// legacyKey, when non-empty, names the deprecated v1.1.0 spelling of the same
+// setting (localGuardrailID/localGuardrailVersion), kept for backward
+// compatibility. **The deprecated key wins when both are present**, which is the
+// order v1.1.0 used.
+func resolveGuardrailIdentityParam(params map[string]interface{}, legacyKey, canonicalKey string) (string, error) {
+	canonical, err := stringParam(params, canonicalKey)
+	if err != nil {
+		return "", err
+	}
+
+	var legacy string
+	if legacyKey != "" {
+		legacy, err = stringParam(params, legacyKey)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	if legacy != "" {
+		if canonical != "" && canonical != legacy {
+			slog.Debug("AWSBedrockGuardrail: deprecated parameter takes precedence; remove it to use the current one",
+				"deprecatedParam", legacyKey, "deprecatedValue", legacy,
+				"param", canonicalKey, "value", canonical)
+		}
+		return legacy, nil
+	}
+
+	if canonical != "" {
+		return canonical, nil
+	}
+
+	if legacyKey != "" {
+		return "", fmt.Errorf("'%s' parameter is required: set it on the policy attachment or in the gateway configuration, or supply the deprecated '%s'", canonicalKey, legacyKey)
+	}
+	return "", fmt.Errorf("'%s' parameter is required: set it on the policy attachment or in the gateway configuration", canonicalKey)
+}
+
+// stringParam reads an optional string parameter, returning "" when absent and
+// an error when present with a non-string type.
+func stringParam(params map[string]interface{}, key string) (string, error) {
+	val, ok := params[key]
+	if !ok || val == nil {
+		return "", nil
+	}
+	str, ok := val.(string)
 	if !ok {
-		return fmt.Errorf("'region' parameter is required")
+		return "", fmt.Errorf("'%s' must be a string", key)
 	}
-	region, ok := regionRaw.(string)
+	return str, nil
+}
+
+// resolveCredentialSet determines the AWS identity this policy attachment uses,
+// choosing between the user-level awsAuth object and the system-level
+// (gateway-wide) credential parameters.
+//
+// The credential configuration resolves atomically rather than field by field.
+// When the user level supplies an awsAuth object it supplies the whole thing,
+// and every system-level credential field is ignored. Per-field fallback would
+// allow a user-level role ARN to pair with a system-level external ID, which is
+// precisely the cross-tenant role hijack the external ID exists to prevent.
+//
+// With no awsAuth object, the system-level fields are read and the mode is
+// inferred from which of them are populated, exactly as before this parameter
+// existed. That inference now lives behind authenticationType "system"; every
+// other mode states itself explicitly.
+func resolveCredentialSet(params map[string]interface{}, region, defaultSessionName string) (string, credentialFields, error) {
+	raw, hasAWSAuth := params["awsAuth"]
+	if !hasAWSAuth {
+		// Omitting the credential block means "use the system-level identity",
+		// which is what every attachment authored against v1.1.0 relied on.
+		return resolveSystemCredentialSet(params, region, defaultSessionName)
+	}
+
+	awsAuth, ok := raw.(map[string]interface{})
 	if !ok {
-		return fmt.Errorf("'region' must be a string")
-	}
-	if region == "" {
-		return fmt.Errorf("'region' cannot be empty")
+		return "", credentialFields{}, fmt.Errorf("'awsAuth' must be an object")
 	}
 
-	// Validate guardrailID (required)
-	guardrailIDRaw, ok := params["guardrailID"]
-	if !ok {
-		return fmt.Errorf("'guardrailID' parameter is required")
+	authType, err := stringParam(awsAuth, "authenticationType")
+	if err != nil {
+		return "", credentialFields{}, fmt.Errorf("awsAuth: %w", err)
 	}
-	guardrailID, ok := guardrailIDRaw.(string)
-	if !ok {
-		return fmt.Errorf("'guardrailID' must be a string")
+	if authType == "" {
+		// The schema defaults authenticationType to "system"; this branch covers
+		// construction that bypasses schema validation and behaves the same way.
+		// Any credential fields present are ignored rather than rejected, which
+		// is how the policy treated fields a mode does not read before v1.2.0.
+		return resolveSystemCredentialSet(params, region, defaultSessionName)
 	}
-	if guardrailID == "" {
-		return fmt.Errorf("'guardrailID' cannot be empty")
-	}
-
-	// Validate guardrailVersion (required)
-	guardrailVersionRaw, ok := params["guardrailVersion"]
-	if !ok {
-		return fmt.Errorf("'guardrailVersion' parameter is required")
-	}
-	guardrailVersion, ok := guardrailVersionRaw.(string)
-	if !ok {
-		return fmt.Errorf("'guardrailVersion' must be a string")
-	}
-	if guardrailVersion == "" {
-		return fmt.Errorf("'guardrailVersion' cannot be empty")
+	switch authType {
+	case AuthTypeSystem, AuthTypeIRSA, AuthTypeSTSAssumeRole, AuthTypeDefaultCredentialChain, AuthTypeIAMUserAccessKey:
+	default:
+		return "", credentialFields{}, fmt.Errorf("'awsAuth.authenticationType' must be one of %q, %q, %q, %q, %q",
+			AuthTypeSystem, AuthTypeIRSA, AuthTypeSTSAssumeRole, AuthTypeDefaultCredentialChain, AuthTypeIAMUserAccessKey)
 	}
 
-	// Validate optional AWS credential parameters
-	if awsAccessKeyIDRaw, ok := params["awsAccessKeyID"]; ok {
-		awsAccessKeyID, ok := awsAccessKeyIDRaw.(string)
-		if !ok {
-			return fmt.Errorf("'awsAccessKeyID' must be a string")
+	// "system" is the one mode that reads gateway-wide credentials. Every other
+	// mode is self-contained, so a failure in it is never masked by falling back
+	// to the gateway identity.
+	if authType == AuthTypeSystem {
+		// Credential fields alongside "system" are ignored: the gateway-wide
+		// configuration supplies the identity.
+		return resolveSystemCredentialSet(params, region, defaultSessionName)
+	}
+
+	creds := credentialFields{}
+	for key, field := range map[string]*string{
+		"awsAccessKeyID":     &creds.accessKeyID,
+		"awsSecretAccessKey": &creds.secretAccessKey,
+		"awsSessionToken":    &creds.sessionToken,
+		"awsRoleARN":         &creds.roleARN,
+		"awsRoleRegion":      &creds.roleRegion,
+		"awsRoleExternalID":  &creds.roleExternalID,
+		"awsRoleSessionName": &creds.roleSessionName,
+	} {
+		value, err := stringParam(awsAuth, key)
+		if err != nil {
+			return "", credentialFields{}, fmt.Errorf("awsAuth: %w", err)
 		}
-		if awsAccessKeyID == "" {
-			return fmt.Errorf("'awsAccessKeyID' cannot be empty")
-		}
+		*field = value
 	}
 
-	if awsSecretAccessKeyRaw, ok := params["awsSecretAccessKey"]; ok {
-		awsSecretAccessKey, ok := awsSecretAccessKeyRaw.(string)
-		if !ok {
-			return fmt.Errorf("'awsSecretAccessKey' must be a string")
-		}
-		if awsSecretAccessKey == "" {
-			return fmt.Errorf("'awsSecretAccessKey' cannot be empty")
-		}
+	if err := validateCredentialFields(authType, creds); err != nil {
+		return "", credentialFields{}, err
 	}
 
-	if awsSessionTokenRaw, ok := params["awsSessionToken"]; ok {
-		_, ok := awsSessionTokenRaw.(string)
-		if !ok {
-			return fmt.Errorf("'awsSessionToken' must be a string")
-		}
+	if authType == AuthTypeIRSA && creds.roleARN == "" {
+		creds.roleARN = strings.TrimSpace(os.Getenv(envRoleARN))
 	}
 
-	if awsRoleARNRaw, ok := params["awsRoleARN"]; ok {
-		awsRoleARN, ok := awsRoleARNRaw.(string)
-		if !ok {
-			return fmt.Errorf("'awsRoleARN' must be a string")
+	applyCredentialDefaults(&creds, region, defaultSessionName)
+	return authType, creds, nil
+}
+
+// readSystemCredentialFields reads the system-level (gateway-wide) credential
+// parameters. These come from config.toml via the systemParameters block, as
+// opposed to the user-level parameters an API author sets on the attachment.
+func readSystemCredentialFields(params map[string]interface{}, region, defaultSessionName string) (credentialFields, error) {
+	creds := credentialFields{}
+	for key, field := range map[string]*string{
+		"awsAccessKeyID":     &creds.accessKeyID,
+		"awsSecretAccessKey": &creds.secretAccessKey,
+		"awsSessionToken":    &creds.sessionToken,
+		"awsRoleARN":         &creds.roleARN,
+		"awsRoleRegion":      &creds.roleRegion,
+		"awsRoleExternalID":  &creds.roleExternalID,
+	} {
+		value, err := stringParam(params, key)
+		if err != nil {
+			return credentialFields{}, err
 		}
-
-		// If role ARN is provided, validate role region
-		if awsRoleARN != "" {
-			// If role ARN is provided and not empty, validate role region
-			awsRoleRegionRaw, ok := params["awsRoleRegion"]
-			if !ok {
-				return fmt.Errorf("'awsRoleRegion' is required when 'awsRoleARN' is specified")
-			}
-
-			awsRoleRegion, ok := awsRoleRegionRaw.(string)
-			if !ok {
-				return fmt.Errorf("'awsRoleRegion' must be a string")
-			}
-
-			if awsRoleRegion == "" {
-				return fmt.Errorf("'awsRoleRegion' cannot be empty when 'awsRoleARN' is specified")
-			}
-		}
+		*field = value
 	}
 
-	if awsRoleExternalIDRaw, ok := params["awsRoleExternalID"]; ok {
-		_, ok := awsRoleExternalIDRaw.(string)
-		if !ok {
-			return fmt.Errorf("'awsRoleExternalID' must be a string")
-		}
+	if err := validateCredentialFormats(creds); err != nil {
+		return credentialFields{}, err
 	}
 
+	applyCredentialDefaults(&creds, region, defaultSessionName)
+	return creds, nil
+}
+
+// Format constraints mirroring the patterns in policy-definition.yaml. They
+// are duplicated here deliberately: the schema is only enforced as well as the
+// control plane's validator enforces it, and a malformed value that slips
+// through would otherwise fail at request time - against STS, on live traffic -
+// instead of being rejected when the attachment is deployed.
+var (
+	roleARNPattern         = regexp.MustCompile(`^arn:aws(-cn|-us-gov|-iso[a-z]?)?:iam::[0-9]{12}:role/.+$`)
+	awsRegionPattern       = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
+	roleSessionNamePattern = regexp.MustCompile(`^[\w+=,.@-]{2,64}$`)
+)
+
+// validateCredentialFields enforces the per-mode requirements that JSON Schema
+// expresses only awkwardly, as a backstop to the allOf/if/then rules in
+// policy-definition.yaml, along with the field formats.
+func validateCredentialFields(authType string, creds credentialFields) error {
+	if err := validateCredentialFormats(creds); err != nil {
+		return err
+	}
+
+	switch authType {
+	case AuthTypeIAMUserAccessKey:
+		if creds.accessKeyID == "" {
+			return fmt.Errorf("'awsAuth.awsAccessKeyID' is required when authenticationType is %q", AuthTypeIAMUserAccessKey)
+		}
+		if creds.secretAccessKey == "" {
+			return fmt.Errorf("'awsAuth.awsSecretAccessKey' is required when authenticationType is %q", AuthTypeIAMUserAccessKey)
+		}
+	case AuthTypeSTSAssumeRole:
+		if creds.roleARN == "" {
+			return fmt.Errorf("'awsAuth.awsRoleARN' is required when authenticationType is %q", AuthTypeSTSAssumeRole)
+		}
+		if creds.accessKeyID != "" && creds.secretAccessKey == "" {
+			return fmt.Errorf("'awsAuth.awsSecretAccessKey' is required when 'awsAuth.awsAccessKeyID' is set")
+		}
+		if creds.secretAccessKey != "" && creds.accessKeyID == "" {
+			return fmt.Errorf("'awsAuth.awsAccessKeyID' is required when 'awsAuth.awsSecretAccessKey' is set")
+		}
+	case AuthTypeIRSA:
+		// awsRoleARN is intentionally not required: on EKS the Pod Identity
+		// Webhook injects AWS_ROLE_ARN once the ServiceAccount carries the
+		// "eks.amazonaws.com/role-arn" annotation, so the param is commonly
+		// left unset. buildWebIdentityCredentialsProvider falls back to that
+		// variable and fails there if neither source supplies a value.
+		//
+		// awsRoleExternalID is ignored here rather than rejected:
+		// AssumeRoleWithWebIdentity has no external-ID parameter, so the value
+		// simply goes unused, consistent with every other field a mode does not
+		// read.
+	case AuthTypeDefaultCredentialChain:
+		// Resolution is delegated entirely to the AWS SDK's default provider
+		// chain, so any key configured here would be parsed and then ignored.
+	case AuthTypeSystem:
+		// Handled before this point: credential fields are rejected outright and
+		// the gateway-wide configuration supplies the identity.
+	}
 	return nil
 }
 
-// loadAWSConfig creates AWS configuration with custom credentials and role assumption
-func (p *AWSBedrockGuardrailPolicy) loadAWSConfig(ctx context.Context, region string) (aws.Config, error) {
-	// Use AWS credentials from policy instance (params)
-	accessKeyID := p.awsAccessKeyID
-	secretAccessKey := p.awsSecretAccessKey
-	sessionToken := p.awsSessionToken
-	roleARN := p.awsRoleARN
-	roleRegion := p.awsRoleRegion
-	roleExternalID := p.awsRoleExternalID
-
-	// Check if role-based authentication should be used
-	if roleARN != "" && roleRegion != "" {
-		return p.loadAWSConfigWithAssumeRole(ctx, accessKeyID, secretAccessKey, sessionToken, roleARN, roleRegion, roleExternalID, region)
-	} else if accessKeyID != "" && secretAccessKey != "" {
-		return p.loadAWSConfigWithStaticCredentials(ctx, accessKeyID, secretAccessKey, sessionToken, region)
-	} else {
-		// Use default credential chain
-		return config.LoadDefaultConfig(ctx, config.WithRegion(region))
-	}
-}
-
-// loadAWSConfigWithStaticCredentials creates AWS config with static credentials
-func (p *AWSBedrockGuardrailPolicy) loadAWSConfigWithStaticCredentials(ctx context.Context, accessKeyID, secretAccessKey, sessionToken, region string) (aws.Config, error) {
-	var credsProvider aws.CredentialsProvider
-	if sessionToken != "" {
-		credsProvider = credentials.NewStaticCredentialsProvider(accessKeyID, secretAccessKey, sessionToken)
-	} else {
-		credsProvider = credentials.NewStaticCredentialsProvider(accessKeyID, secretAccessKey, "")
+// resolveSystemCredentialSet resolves the identity from the system-level
+// configuration. Reached when authenticationType is "system" and when the
+// user level supplies no credential block at all, which is equivalent.
+func resolveSystemCredentialSet(params map[string]interface{}, region, defaultSessionName string) (string, credentialFields, error) {
+	if err := validateAWSConfigParams(params); err != nil {
+		return "", credentialFields{}, err
 	}
 
-	cfg, err := config.LoadDefaultConfig(ctx,
-		config.WithRegion(region),
-		config.WithCredentialsProvider(credsProvider),
-	)
+	creds, err := readSystemCredentialFields(params, region, defaultSessionName)
 	if err != nil {
-		return aws.Config{}, fmt.Errorf("failed to load AWS config with static credentials: %w", err)
+		return "", credentialFields{}, err
 	}
-
-	return cfg, nil
+	return AuthTypeSystem, creds, nil
 }
 
-// loadAWSConfigWithAssumeRole creates AWS config with role assumption
-func (p *AWSBedrockGuardrailPolicy) loadAWSConfigWithAssumeRole(ctx context.Context, accessKeyID, secretAccessKey, sessionToken, roleARN, roleRegion, roleExternalID, region string) (aws.Config, error) {
-	// Create base config for role assumption
-	var baseCfg aws.Config
-	var err error
+// validateCredentialFormats checks the field formats that both levels share.
+// Applied to system-level values as well as user-level ones, so a malformed
+// role ARN or region is rejected at deploy time wherever it was written rather
+// than failing against STS on live traffic.
+func validateCredentialFormats(creds credentialFields) error {
+	if creds.roleARN != "" && !roleARNPattern.MatchString(creds.roleARN) {
+		return fmt.Errorf("'awsRoleARN' is not a valid IAM role ARN: %q", creds.roleARN)
+	}
+	if creds.roleRegion != "" && !awsRegionPattern.MatchString(creds.roleRegion) {
+		return fmt.Errorf("'awsRoleRegion' is not a valid AWS region: %q", creds.roleRegion)
+	}
+	if creds.roleSessionName != "" && !roleSessionNamePattern.MatchString(creds.roleSessionName) {
+		return fmt.Errorf("'awsRoleSessionName' must match [\\w+=,.@-]{2,64}: %q", creds.roleSessionName)
+	}
+	return nil
+}
 
-	if accessKeyID != "" && secretAccessKey != "" {
-		var baseCredsProvider aws.CredentialsProvider
-		if sessionToken != "" {
-			baseCredsProvider = credentials.NewStaticCredentialsProvider(accessKeyID, secretAccessKey, sessionToken)
-		} else {
-			baseCredsProvider = credentials.NewStaticCredentialsProvider(accessKeyID, secretAccessKey, "")
+// applyCredentialDefaults fills in the fields that have a derived default.
+func applyCredentialDefaults(creds *credentialFields, region, defaultSessionName string) {
+	if creds.roleRegion == "" {
+		creds.roleRegion = region
+	}
+	if creds.roleSessionName == "" {
+		creds.roleSessionName = defaultSessionName
+	}
+}
+
+// roleSessionNameDisallowed matches every character STS rejects in a role
+// session name, which permits only [\w+=,.@-].
+var roleSessionNameDisallowed = regexp.MustCompile(`[^\w+=,.@-]`)
+
+// deriveRoleSessionName builds the default STS session name for this policy
+// attachment from the API it is attached to.
+func deriveRoleSessionName(metadata policy.PolicyMetadata) string {
+	parts := make([]string, 0, 3)
+	if metadata.APIName != "" {
+		parts = append(parts, metadata.APIName)
+	}
+	if metadata.APIVersion != "" {
+		parts = append(parts, metadata.APIVersion)
+	}
+	if len(parts) == 0 {
+		return defaultRoleSessionName
+	}
+
+	name := roleSessionNameDisallowed.ReplaceAllString("wso2-gw-"+strings.Join(parts, "-"), "-")
+	if len(name) > 64 {
+		name = name[:64]
+	}
+	name = strings.TrimRight(name, "-")
+	if len(name) < 2 {
+		return defaultRoleSessionName
+	}
+	return name
+}
+
+// checkAllowlist verifies an effective value against an operator-configured
+// allowlist. An empty or absent allowlist places no restriction.
+func checkAllowlist(params map[string]interface{}, allowlistKey, valueName, value string, allowPrefix bool) error {
+	allowed, err := stringSliceParam(params, allowlistKey)
+	if err != nil {
+		return err
+	}
+	if len(allowed) == 0 {
+		return nil
+	}
+	for _, entry := range allowed {
+		if i := strings.Index(entry, "*"); i != -1 {
+			switch {
+			case !allowPrefix:
+				return fmt.Errorf("'%s' entry %q is invalid: this list does not support wildcards, list each value in full", allowlistKey, entry)
+			case i != len(entry)-1:
+				return fmt.Errorf("'%s' entry %q is invalid: '*' is only supported as the final character, where it matches a prefix. List each value in full, or use a single trailing '*'", allowlistKey, entry)
+			}
 		}
+	}
+	for _, entry := range allowed {
+		if entry == value {
+			return nil
+		}
+		if allowPrefix && strings.HasSuffix(entry, "*") && strings.HasPrefix(value, strings.TrimSuffix(entry, "*")) {
+			return nil
+		}
+	}
+	return fmt.Errorf("'%s' value %q is not permitted by the gateway's %s configuration", valueName, value, allowlistKey)
+}
 
-		baseCfg, err = config.LoadDefaultConfig(ctx,
-			config.WithRegion(roleRegion),
-			config.WithCredentialsProvider(baseCredsProvider),
-		)
-	} else {
-		baseCfg, err = config.LoadDefaultConfig(ctx, config.WithRegion(roleRegion))
+// stringSliceParam reads an optional array-of-strings parameter.
+func stringSliceParam(params map[string]interface{}, key string) ([]string, error) {
+	val, ok := params[key]
+	if !ok || val == nil {
+		return nil, nil
+	}
+	switch typed := val.(type) {
+	case []string:
+		return typed, nil
+	case []interface{}:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			str, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("'%s' must be an array of strings", key)
+			}
+			out = append(out, str)
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("'%s' must be an array of strings", key)
+	}
+}
+
+// validateAWSConfigParams validates AWS configuration parameters (from params)
+// validateAWSConfigParams type-checks the system-level credential parameters.
+func validateAWSConfigParams(params map[string]interface{}) error {
+	for _, key := range []string{
+		"awsAccessKeyID", "awsSecretAccessKey", "awsSessionToken",
+		"awsRoleARN", "awsRoleRegion", "awsRoleExternalID",
+	} {
+		if raw, ok := params[key]; ok && raw != nil {
+			if _, ok := raw.(string); !ok {
+				return fmt.Errorf("'%s' must be a string", key)
+			}
+		}
 	}
 
+	// A role ARN still needs a region to assume it in, but only when one was
+	// actually supplied.
+	roleARN, err := stringParam(params, "awsRoleARN")
 	if err != nil {
-		return aws.Config{}, fmt.Errorf("failed to load base AWS config for role assumption: %w", err)
+		return err
+	}
+	if roleARN != "" {
+		roleRegion, err := stringParam(params, "awsRoleRegion")
+		if err != nil {
+			return err
+		}
+		if roleRegion == "" {
+			return fmt.Errorf("'awsRoleRegion' is required when 'awsRoleARN' is specified")
+		}
+	}
+	return nil
+}
+
+// buildCredentialsProvider constructs the AWS credentials provider once, at
+// policy-instance creation time, from the resolved authentication mode.
+func buildCredentialsProvider(ctx context.Context, authType string, creds credentialFields) (aws.CredentialsProvider, error) {
+	slog.Debug("AWSBedrockGuardrail: building credentials provider", "authenticationType", authType)
+
+	switch authType {
+	case AuthTypeSystem:
+		// The system-level fields were resolved into creds already; pick the
+		// provider they imply, exactly as pre-v1.2.0 behaviour did.
+		return buildSystemCredentialsProvider(ctx, creds)
+	case AuthTypeIAMUserAccessKey:
+		return credentials.NewStaticCredentialsProvider(creds.accessKeyID, creds.secretAccessKey, creds.sessionToken), nil
+	case AuthTypeSTSAssumeRole:
+		return buildAssumeRoleCredentialsProvider(ctx, creds)
+	case AuthTypeIRSA:
+		return buildWebIdentityCredentialsProvider(creds)
+	case AuthTypeDefaultCredentialChain:
+		// Resolution is delegated to the SDK's own chain when the config is
+		// loaded, so there is no provider to construct here.
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("unsupported authenticationType %q", authType)
+	}
+}
+
+// buildSystemCredentialsProvider constructs the provider implied by the
+// system-level credential fields, preserving the pre-v1.2.0 inference: a role
+// ARN with its region assumes that role, a key/secret pair signs directly, and
+// anything else defers to the AWS SDK's default provider chain.
+func buildSystemCredentialsProvider(ctx context.Context, creds credentialFields) (aws.CredentialsProvider, error) {
+	switch {
+	case creds.roleARN != "" && creds.roleRegion != "":
+		return buildAssumeRoleCredentialsProvider(ctx, creds)
+	case creds.accessKeyID != "" && creds.secretAccessKey != "":
+		return credentials.NewStaticCredentialsProvider(creds.accessKeyID, creds.secretAccessKey, creds.sessionToken), nil
+	default:
+		return nil, nil
+	}
+}
+
+// buildAssumeRoleCredentialsProvider builds a provider that calls AWS STS
+// AssumeRole and caches the resulting temporary credentials until they are
+// close to expiry, refreshing automatically thereafter.
+func buildAssumeRoleCredentialsProvider(ctx context.Context, creds credentialFields) (aws.CredentialsProvider, error) {
+	slog.Debug("AWSBedrockGuardrail: building STS AssumeRole credentials provider",
+		"roleARN", creds.roleARN, "roleSessionName", creds.roleSessionName, "roleRegion", creds.roleRegion)
+
+	baseCfgOpts := []func(*config.LoadOptions) error{config.WithRegion(creds.roleRegion)}
+	if creds.accessKeyID != "" && creds.secretAccessKey != "" {
+		baseCfgOpts = append(baseCfgOpts, config.WithCredentialsProvider(
+			credentials.NewStaticCredentialsProvider(creds.accessKeyID, creds.secretAccessKey, creds.sessionToken)))
+	}
+	// else: the default AWS SDK credential chain supplies the base credentials
+	// used to call sts:AssumeRole.
+
+	baseCfg, err := config.LoadDefaultConfig(ctx, baseCfgOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load base AWS config for role assumption: %w", err)
 	}
 
-	// Create STS client for role assumption
 	stsClient := sts.NewFromConfig(baseCfg)
-
-	// Create assume role credentials provider
-	assumeRoleProvider := stscreds.NewAssumeRoleProvider(stsClient, roleARN, func(o *stscreds.AssumeRoleOptions) {
-		if roleExternalID != "" {
-			o.ExternalID = aws.String(roleExternalID)
+	assumeRoleProvider := stscreds.NewAssumeRoleProvider(stsClient, creds.roleARN, func(o *stscreds.AssumeRoleOptions) {
+		if creds.roleExternalID != "" {
+			o.ExternalID = aws.String(creds.roleExternalID)
 		}
-		o.RoleSessionName = "bedrock-guardrail-session"
+		o.RoleSessionName = creds.roleSessionName
 	})
 
-	// Load final config with assumed role credentials for the target region
-	cfg, err := config.LoadDefaultConfig(ctx,
-		config.WithRegion(region),
-		config.WithCredentialsProvider(assumeRoleProvider),
-	)
-	if err != nil {
-		return aws.Config{}, fmt.Errorf("failed to load AWS config with assume role: %w", err)
+	return aws.NewCredentialsCache(assumeRoleProvider), nil
+}
+
+// buildWebIdentityCredentialsProvider builds a provider that calls AWS STS
+// AssumeRoleWithWebIdentity using a Kubernetes projected service account token
+// - the mechanism EKS calls IAM Roles for Service Accounts (IRSA) - and caches
+// the resulting temporary credentials until they are close to expiry.
+func buildWebIdentityCredentialsProvider(creds credentialFields) (aws.CredentialsProvider, error) {
+	roleARN := creds.roleARN
+	if roleARN == "" {
+		roleARN = strings.TrimSpace(os.Getenv(envRoleARN))
+	}
+	if roleARN == "" {
+		return nil, fmt.Errorf("'awsAuth.awsRoleARN' is required when authenticationType is %q and the %s environment variable is not set", AuthTypeIRSA, envRoleARN)
 	}
 
+	tokenFile := strings.TrimSpace(os.Getenv(envWebIdentityTokenFile))
+	if tokenFile == "" {
+		return nil, fmt.Errorf("authenticationType %q requires the %s environment variable, which is normally injected by the EKS Pod Identity Webhook", AuthTypeIRSA, envWebIdentityTokenFile)
+	}
+
+	slog.Debug("AWSBedrockGuardrail: building STS AssumeRoleWithWebIdentity (IRSA) credentials provider",
+		"roleARN", roleARN, "roleSessionName", creds.roleSessionName, "webIdentityTokenFile", tokenFile)
+
+	stsClient := sts.NewFromConfig(aws.Config{Region: creds.roleRegion})
+	webIdentityProvider := stscreds.NewWebIdentityRoleProvider(stsClient, roleARN, stscreds.IdentityTokenFile(tokenFile), func(o *stscreds.WebIdentityRoleOptions) {
+		o.RoleSessionName = creds.roleSessionName
+	})
+
+	return aws.NewCredentialsCache(webIdentityProvider), nil
+}
+
+// loadAWSConfig builds the AWS configuration used for ApplyGuardrail calls,
+// reusing the credentials provider constructed at policy-instance creation
+// time. Role assumption therefore happens on first use and on refresh, not on
+// every request.
+func (p *AWSBedrockGuardrailPolicy) loadAWSConfig(ctx context.Context, region string) (aws.Config, error) {
+	opts := []func(*config.LoadOptions) error{config.WithRegion(region)}
+	if p.credentialsProvider != nil {
+		opts = append(opts, config.WithCredentialsProvider(p.credentialsProvider))
+	}
+
+	cfg, err := config.LoadDefaultConfig(ctx, opts...)
+	if err != nil {
+		return aws.Config{}, fmt.Errorf("failed to load AWS config: %w", err)
+	}
 	return cfg, nil
 }
 
@@ -734,7 +1111,7 @@ func (p *AWSBedrockGuardrailPolicy) buildAssessmentObject(reason string, validat
 
 	if showAssessment {
 		if validationError != nil {
-			assessment["assessments"] = []string{validationError.Error()}
+			assessment["assessments"] = []string{reason}
 		} else if bedrockOutput, ok := output.(*bedrockruntime.ApplyGuardrailOutput); ok && bedrockOutput != nil {
 			if len(bedrockOutput.Assessments) > 0 {
 				firstAssessment := p.convertBedrockAssessmentToMap(bedrockOutput.Assessments[0])

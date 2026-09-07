@@ -59,7 +59,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 Return a static success message directly from the gateway:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: health-api-v1.0
@@ -105,7 +105,7 @@ content-type: application/json
 Return `503 Service Unavailable` during planned downtime:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: maintenance-api-v1.0
@@ -156,7 +156,7 @@ retry-after: 300
 Use route-level policy attachment for endpoint-specific mocks:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: mock-api-v1.0
@@ -215,7 +215,7 @@ content-type: application/json
 Return plain text with custom diagnostic headers:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: text-response-api-v1.0
@@ -258,7 +258,7 @@ Accepted by gateway
 When parameters are omitted, status defaults to `200`, body is empty, and no headers are set:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: minimal-respond-api-v1.0

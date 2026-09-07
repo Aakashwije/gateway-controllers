@@ -227,7 +227,12 @@ func (p *RedirectPolicy) OnRequestHeaders(
 	reqCtx *policy.RequestHeaderContext,
 	params map[string]interface{},
 ) policy.RequestHeaderAction {
-	scheme := reqCtx.Scheme
+	// Build the Location from the downstream snapshot so the redirect reflects
+	// the URL the client actually sent, not a value an earlier policy may have
+	// rewritten during the header phase.
+	ds := reqCtx.DownstreamRequest()
+
+	scheme := ds.Scheme
 	if scheme == "" {
 		scheme = schemeHTTP
 	}
@@ -235,7 +240,7 @@ func (p *RedirectPolicy) OnRequestHeaders(
 		scheme = *p.scheme
 	}
 
-	reqHost, reqPort := splitAuthority(reqCtx.Authority)
+	reqHost, reqPort := splitAuthority(ds.Authority)
 	host := reqHost
 	if p.hostname != nil {
 		host = *p.hostname
@@ -244,7 +249,7 @@ func (p *RedirectPolicy) OnRequestHeaders(
 		host = reqCtx.Vhost
 	}
 
-	pathOnly, query := splitPathQuery(reqCtx.Path)
+	pathOnly, query := splitPathQuery(ds.Path)
 	newPath := pathOnly
 	switch p.pathMode {
 	case pathModeFull:

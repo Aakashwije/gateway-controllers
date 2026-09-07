@@ -376,7 +376,8 @@ func TestSemanticCachePolicy_OnRequest(t *testing.T) {
 					}
 					return vectordbproviders.CacheResponse{}, nil
 				}},
-				threshold: 0.7,
+				threshold:            0.7,
+				cacheUnauthenticated: true, // exercises the api_id-only shared bucket path; per-caller scoping is covered by provenance_test.go
 			},
 			ctx: &policy.RequestContext{
 				SharedContext: &policy.SharedContext{RequestID: "r1", Metadata: map[string]interface{}{}, APIName: "Books", APIVersion: "v1"},
@@ -394,7 +395,8 @@ func TestSemanticCachePolicy_OnRequest(t *testing.T) {
 				vectorStoreProvider: &mockVectorDBProvider{retrieveFn: func(embeddings []float32, filter map[string]interface{}) (vectordbproviders.CacheResponse, error) {
 					return vectordbproviders.CacheResponse{ResponsePayload: map[string]interface{}{"answer": "cached"}}, nil
 				}},
-				threshold: 0.5,
+				threshold:            0.5,
+				cacheUnauthenticated: true, // exercises the api_id-only shared bucket path; per-caller scoping is covered by provenance_test.go
 			},
 			ctx: &policy.RequestContext{
 				SharedContext: &policy.SharedContext{RequestID: "r1", Metadata: map[string]interface{}{}, APIName: "Books", APIVersion: "v1"},
@@ -411,7 +413,8 @@ func TestSemanticCachePolicy_OnRequest(t *testing.T) {
 				vectorStoreProvider: &mockVectorDBProvider{retrieveFn: func(embeddings []float32, filter map[string]interface{}) (vectordbproviders.CacheResponse, error) {
 					return vectordbproviders.CacheResponse{}, errors.New("redis down")
 				}},
-				threshold: 0.5,
+				threshold:            0.5,
+				cacheUnauthenticated: true, // exercises the api_id-only shared bucket path; per-caller scoping is covered by provenance_test.go
 			},
 			ctx: &policy.RequestContext{
 				SharedContext: &policy.SharedContext{RequestID: "r1", Metadata: map[string]interface{}{}, APIName: "Books", APIVersion: "v1"},
@@ -513,6 +516,7 @@ func TestSemanticCachePolicy_OnResponse(t *testing.T) {
 				vectorStoreProvider: &mockVectorDBProvider{storeFn: func(embeddings []float32, response vectordbproviders.CacheResponse, filter map[string]interface{}) error {
 					return errors.New("store failed")
 				}},
+				cacheUnauthenticated: true, // exercises the api_id-only shared bucket path; per-caller scoping is covered by provenance_test.go
 			},
 			ctx:       newResponseContext(200, []byte(`{"answer":"x"}`), map[string]interface{}{MetadataKeyEmbedding: "[0.1,0.2]"}),
 			assertion: assertUpstreamResponseMods,
@@ -541,6 +545,7 @@ func TestSemanticCachePolicy_OnResponse(t *testing.T) {
 					}
 					return nil
 				}},
+				cacheUnauthenticated: true, // exercises the api_id-only shared bucket path; per-caller scoping is covered by provenance_test.go
 			},
 			ctx: &policy.ResponseContext{
 				SharedContext:  &policy.SharedContext{RequestID: "req-1", Metadata: map[string]interface{}{MetadataKeyEmbedding: "[0.1,0.2]"}},
@@ -558,6 +563,7 @@ func TestSemanticCachePolicy_OnResponse(t *testing.T) {
 					}
 					return nil
 				}},
+				cacheUnauthenticated: true, // exercises the api_id-only shared bucket path; per-caller scoping is covered by provenance_test.go
 			},
 			ctx: &policy.ResponseContext{
 				SharedContext:  &policy.SharedContext{RequestID: "req-2", Metadata: map[string]interface{}{MetadataKeyEmbedding: "[0.1,0.2]"}, APIName: "Books", APIVersion: "v2"},
@@ -685,6 +691,7 @@ func TestSemanticCachePolicy_OnResponse_SSE(t *testing.T) {
 			storedResponse = response
 			return nil
 		}},
+		cacheUnauthenticated: true, // exercises the api_id-only shared bucket path; per-caller scoping is covered by provenance_test.go
 	}
 
 	ctx := &policy.ResponseContext{

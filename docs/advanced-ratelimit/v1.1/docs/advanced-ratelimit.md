@@ -296,7 +296,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 Apply a simple rate limit to an API:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: weather-api-v1.0
@@ -327,7 +327,7 @@ spec:
 Enforce multiple rate limits simultaneously (e.g., per-second and per-hour):
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: weather-api-v1.0
@@ -360,7 +360,7 @@ spec:
 Rate limit based on user identity from a header:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: weather-api-v1.0
@@ -394,10 +394,12 @@ spec:
 Rate limit based on client IP address:
 
 ```yaml
-version: api-platform.wso2.com/v1
-kind: http/rest
+apiVersion: gateway.api-platform.wso2.com/v1
+kind: RestApi
+metadata:
+  name: public-api-v1.0
 spec:
-  name: public-api
+  displayName: Public-API
   version: v1.0
   context: /public
   upstream:
@@ -425,10 +427,12 @@ spec:
 Rate limit based on multiple factors (API name + user ID):
 
 ```yaml
-version: api-platform.wso2.com/v1
-kind: http/rest
+apiVersion: gateway.api-platform.wso2.com/v1
+kind: RestApi
+metadata:
+  name: multi-tenant-api-v1.0
 spec:
-  name: multi-tenant-api
+  displayName: Multi-Tenant-API
   version: v1.0
   context: /tenant
   upstream:
@@ -458,10 +462,12 @@ spec:
 Apply multiple independent quotas with separate limits and key extraction:
 
 ```yaml
-version: api-platform.wso2.com/v1
-kind: http/rest
+apiVersion: gateway.api-platform.wso2.com/v1
+kind: RestApi
+metadata:
+  name: analytics-api-v1.0
 spec:
-  name: analytics-api
+  displayName: Analytics-API
   version: v1.0
   context: /analytics
   upstream:
@@ -497,10 +503,12 @@ spec:
 Allow burst traffic with GCRA algorithm:
 
 ```yaml
-version: api-platform.wso2.com/v1
-kind: http/rest
+apiVersion: gateway.api-platform.wso2.com/v1
+kind: RestApi
+metadata:
+  name: burst-api-v1.0
 spec:
-  name: burst-api
+  displayName: Burst-API
   version: v1.0
   context: /burst
   upstream:
@@ -527,10 +535,12 @@ spec:
 Customize the rate limit exceeded response:
 
 ```yaml
-version: api-platform.wso2.com/v1
-kind: http/rest
+apiVersion: gateway.api-platform.wso2.com/v1
+kind: RestApi
+metadata:
+  name: custom-error-api-v1.0
 spec:
-  name: custom-error-api
+  displayName: Custom-Error-API
   version: v1.0
   context: /custom
   upstream:
@@ -558,10 +568,12 @@ spec:
 Rate limit based on actual token usage from an LLM API response:
 
 ```yaml
-version: api-platform.wso2.com/v1
-kind: http/rest
+apiVersion: gateway.api-platform.wso2.com/v1
+kind: RestApi
+metadata:
+  name: llm-api-v1.0
 spec:
-  name: llm-api
+  displayName: LLM-API
   version: v1.0
   context: /llm
   upstream:
@@ -598,10 +610,12 @@ spec:
 Rate limit based on compute units with multiple extraction sources:
 
 ```yaml
-version: api-platform.wso2.com/v1
-kind: http/rest
+apiVersion: gateway.api-platform.wso2.com/v1
+kind: RestApi
+metadata:
+  name: compute-api-v1.0
 spec:
-  name: compute-api
+  displayName: Compute-API
   version: v1.0
   context: /compute
   upstream:

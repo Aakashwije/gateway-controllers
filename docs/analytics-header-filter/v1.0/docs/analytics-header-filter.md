@@ -82,7 +82,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 ### Example 1: Analytics Header Filter policy to a LlmProvider:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: LlmProvider
 metadata:
   name: openai-provider
@@ -101,24 +101,23 @@ spec:
     exceptions:
       - path: /chat/completions
         methods: [POST]
-        policies:
-          - name: analytics-header-filter
-            version: v1
-            params:
-              request:
-                mode: deny
-                headers:
-                  - "authorization"
-                  - "x-api-key"
-              response:
-                mode: allow
-                headers:
-                  - "content-type"
       - path: /models
         methods: [GET]
       - path: /models/{modelId}
         methods: [GET]
-
+  globalPolicies:
+    - name: analytics-header-filter
+      version: v1
+      params:
+        request:
+          mode: deny
+          headers:
+            - "authorization"
+            - "x-api-key"
+        response:
+          mode: allow
+          headers:
+            - "content-type"
 ```
 
 

@@ -19,12 +19,26 @@
 package tokenbasedratelimit
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
+
+// captureSlog temporarily redirects the default slog logger to a buffer for the
+// duration of the calling test, restoring the previous logger on cleanup.
+func captureSlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
 
 // stubChunkPolicer is a minimal delegate stub that records chunk calls.
 type stubChunkPolicer struct {
@@ -135,7 +149,7 @@ func TestTransformToRatelimitParams(t *testing.T) {
 		},
 	}
 
-	result := transformToRatelimitParams(params, template)
+	result := transformToRatelimitParams(params, template, policy.LevelRoute)
 
 	// Check quotas were created
 	quotas, ok := result["quotas"].([]interface{})
@@ -224,7 +238,7 @@ func TestTransformToRatelimitParams_NoLimits(t *testing.T) {
 
 	template := map[string]interface{}{}
 
-	result := transformToRatelimitParams(params, template)
+	result := transformToRatelimitParams(params, template, policy.LevelRoute)
 
 	quotas, ok := result["quotas"].([]interface{})
 	if !ok {
@@ -267,7 +281,7 @@ func TestTransformToRatelimitParams_EmptyPromptAndCompletionLimits(t *testing.T)
 		},
 	}
 
-	result := transformToRatelimitParams(params, template)
+	result := transformToRatelimitParams(params, template, policy.LevelRoute)
 
 	quotas, ok := result["quotas"].([]interface{})
 	if !ok {
@@ -302,7 +316,7 @@ func TestTransformToRatelimitParams_NoTemplatePaths(t *testing.T) {
 	// Template without proper spec paths
 	template := map[string]interface{}{}
 
-	result := transformToRatelimitParams(params, template)
+	result := transformToRatelimitParams(params, template, policy.LevelRoute)
 
 	quotas, ok := result["quotas"].([]interface{})
 	if !ok {
@@ -357,7 +371,7 @@ func TestTokenBasedRateLimitPolicy_TransformToRatelimitParams_TemplateLocationMa
 		},
 	}
 
-	result := transformToRatelimitParams(params, template)
+	result := transformToRatelimitParams(params, template, policy.LevelRoute)
 	quotas, ok := result["quotas"].([]interface{})
 	if !ok {
 		t.Fatalf("Expected quotas to be []interface{}, got %T", result["quotas"])
@@ -407,6 +421,267 @@ func TestTokenBasedRateLimitPolicy_TransformToRatelimitParams_TemplateLocationMa
 	totalSource := getSource("total_tokens")
 	if totalSource["type"] != "metadata" || totalSource["key"] != "usage.total_tokens" {
 		t.Fatalf("Unexpected total source mapping: %v", totalSource)
+	}
+}
+
+// getQuotaSources is a shared test helper that extracts the costExtraction sources
+// for a named quota, or nil if the quota has no costExtraction configured.
+func getQuotaSources(t *testing.T, quotas []interface{}, quotaName string) []interface{} {
+	t.Helper()
+	for _, q := range quotas {
+		qm, ok := q.(map[string]interface{})
+		if !ok || qm["name"] != quotaName {
+			continue
+		}
+		ce, ok := qm["costExtraction"].(map[string]interface{})
+		if !ok {
+			return nil
+		}
+		sources, _ := ce["sources"].([]interface{})
+		return sources
+	}
+	t.Fatalf("quota %q not found", quotaName)
+	return nil
+}
+
+// TestTransformToRatelimitParams_TotalTokensFallsBackToPromptPlusCompletion covers the
+// Anthropic-shaped template (no totalTokens field): the total_tokens quota must sum
+// promptTokens + completionTokens instead of falling back to a flat cost of 1.
+func TestTransformToRatelimitParams_TotalTokensFallsBackToPromptPlusCompletion(t *testing.T) {
+	params := map[string]interface{}{
+		"totalTokenLimits": []interface{}{
+			map[string]interface{}{"count": float64(30), "duration": "1h"},
+		},
+	}
+	template := map[string]interface{}{
+		"spec": map[string]interface{}{
+			"promptTokens": map[string]interface{}{
+				"location":   "payload",
+				"identifier": "$.usage.input_tokens",
+			},
+			"completionTokens": map[string]interface{}{
+				"location":   "payload",
+				"identifier": "$.usage.output_tokens",
+			},
+			// No totalTokens field — matches the built-in anthropic template.
+		},
+	}
+
+	result := transformToRatelimitParams(params, template, policy.LevelRoute)
+	quotas, ok := result["quotas"].([]interface{})
+	if !ok {
+		t.Fatalf("Expected quotas to be []interface{}, got %T", result["quotas"])
+	}
+
+	sources := getQuotaSources(t, quotas, "total_tokens")
+	if len(sources) != 2 {
+		t.Fatalf("Expected 2 fallback sources (prompt+completion) for total_tokens, got %d: %v", len(sources), sources)
+	}
+
+	first := sources[0].(map[string]interface{})
+	if first["type"] != "response_body" || first["jsonPath"] != "$.usage.input_tokens" {
+		t.Fatalf("Unexpected first fallback source: %v", first)
+	}
+	second := sources[1].(map[string]interface{})
+	if second["type"] != "response_body" || second["jsonPath"] != "$.usage.output_tokens" {
+		t.Fatalf("Unexpected second fallback source: %v", second)
+	}
+}
+
+// TestTransformToRatelimitParams_TotalTokensPreferredOverPromptPlusCompletion guards
+// against double-counting: when a template defines totalTokens AND promptTokens/
+// completionTokens (the common case — openai, mistral, gemini, etc.), the total_tokens
+// quota must use only the totalTokens source, never sum all three.
+func TestTransformToRatelimitParams_TotalTokensPreferredOverPromptPlusCompletion(t *testing.T) {
+	params := map[string]interface{}{
+		"totalTokenLimits": []interface{}{
+			map[string]interface{}{"count": float64(1000), "duration": "1h"},
+		},
+	}
+	template := map[string]interface{}{
+		"spec": map[string]interface{}{
+			"promptTokens": map[string]interface{}{
+				"location":   "payload",
+				"identifier": "$.usage.prompt_tokens",
+			},
+			"completionTokens": map[string]interface{}{
+				"location":   "payload",
+				"identifier": "$.usage.completion_tokens",
+			},
+			"totalTokens": map[string]interface{}{
+				"location":   "payload",
+				"identifier": "$.usage.total_tokens",
+			},
+		},
+	}
+
+	result := transformToRatelimitParams(params, template, policy.LevelRoute)
+	quotas, ok := result["quotas"].([]interface{})
+	if !ok {
+		t.Fatalf("Expected quotas to be []interface{}, got %T", result["quotas"])
+	}
+
+	sources := getQuotaSources(t, quotas, "total_tokens")
+	if len(sources) != 1 {
+		t.Fatalf("Expected exactly 1 source for total_tokens when totalTokens is defined, got %d: %v", len(sources), sources)
+	}
+	source := sources[0].(map[string]interface{})
+	if source["type"] != "response_body" || source["jsonPath"] != "$.usage.total_tokens" {
+		t.Fatalf("Unexpected total_tokens source: %v", source)
+	}
+}
+
+// TestTransformToRatelimitParams_TotalTokensNoFieldsAtAll verifies that a template with
+// none of totalTokens/promptTokens/completionTokens still produces a quota with no
+// costExtraction (existing "no template paths" behavior is preserved for total_tokens).
+func TestTransformToRatelimitParams_TotalTokensNoFieldsAtAll(t *testing.T) {
+	params := map[string]interface{}{
+		"totalTokenLimits": []interface{}{
+			map[string]interface{}{"count": float64(30), "duration": "1h"},
+		},
+	}
+	template := map[string]interface{}{"spec": map[string]interface{}{}}
+
+	result := transformToRatelimitParams(params, template, policy.LevelRoute)
+	quotas, ok := result["quotas"].([]interface{})
+	if !ok {
+		t.Fatalf("Expected quotas to be []interface{}, got %T", result["quotas"])
+	}
+
+	if sources := getQuotaSources(t, quotas, "total_tokens"); sources != nil {
+		t.Fatalf("Expected no costExtraction sources when template defines no token fields, got %v", sources)
+	}
+}
+
+// TestTransformToRatelimitParams_TotalTokensPartialFallbackWarns verifies that when the
+// promptTokens+completionTokens fallback group resolves only one of its two fields, the
+// quota still uses the single resolved source (existing behavior is preserved) but a
+// warning is logged identifying the incomplete configuration, since the resulting
+// total_tokens charge will silently undercount actual usage.
+func TestTransformToRatelimitParams_TotalTokensPartialFallbackWarns(t *testing.T) {
+	buf := captureSlog(t)
+
+	params := map[string]interface{}{
+		"totalTokenLimits": []interface{}{
+			map[string]interface{}{"count": float64(30), "duration": "1h"},
+		},
+	}
+	template := map[string]interface{}{
+		"spec": map[string]interface{}{
+			"promptTokens": map[string]interface{}{
+				"location":   "payload",
+				"identifier": "$.usage.input_tokens",
+			},
+			// completionTokens intentionally omitted — partial fallback group.
+		},
+	}
+
+	result := transformToRatelimitParams(params, template, policy.LevelRoute)
+	quotas, ok := result["quotas"].([]interface{})
+	if !ok {
+		t.Fatalf("Expected quotas to be []interface{}, got %T", result["quotas"])
+	}
+
+	sources := getQuotaSources(t, quotas, "total_tokens")
+	if len(sources) != 1 {
+		t.Fatalf("Expected the single resolved source to still be used, got %d: %v", len(sources), sources)
+	}
+	source := sources[0].(map[string]interface{})
+	if source["type"] != "response_body" || source["jsonPath"] != "$.usage.input_tokens" {
+		t.Fatalf("Unexpected source for partial fallback: %v", source)
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "only part of a multi-field cost fallback group") {
+		t.Fatalf("Expected a warning about the incomplete fallback group, got log output: %s", logOutput)
+	}
+}
+
+// TestTransformToRatelimitParams_KeyExtraction_APILevel verifies that a policy attached
+// at API level (provider-wide / globalPolicies) keys quotas on apiname so all resources
+// of the provider share one bucket, mirroring basic-ratelimit's own apiname switch.
+func TestTransformToRatelimitParams_KeyExtraction_APILevel(t *testing.T) {
+	params := map[string]interface{}{
+		"totalTokenLimits": []interface{}{
+			map[string]interface{}{"count": float64(1000), "duration": "1h"},
+		},
+	}
+
+	result := transformToRatelimitParams(params, nil, policy.LevelAPI)
+	quotas, ok := result["quotas"].([]interface{})
+	if !ok || len(quotas) != 1 {
+		t.Fatal("Expected 1 quota")
+	}
+
+	quota := quotas[0].(map[string]interface{})
+	keyExtraction, ok := quota["keyExtraction"].([]interface{})
+	if !ok || len(keyExtraction) != 1 {
+		t.Fatalf("Expected 1 key extraction entry, got %v", quota["keyExtraction"])
+	}
+
+	entry := keyExtraction[0].(map[string]interface{})
+	if entry["type"] != "apiname" {
+		t.Errorf("Expected type 'apiname' for API-attached policy, got %v", entry["type"])
+	}
+}
+
+// TestTransformToRatelimitParams_KeyExtraction_RouteLevel verifies that a policy attached
+// at route level (operationPolicies / per-operation) keeps the existing routename keying,
+// giving each resource its own independent bucket.
+func TestTransformToRatelimitParams_KeyExtraction_RouteLevel(t *testing.T) {
+	params := map[string]interface{}{
+		"totalTokenLimits": []interface{}{
+			map[string]interface{}{"count": float64(1000), "duration": "1h"},
+		},
+	}
+
+	result := transformToRatelimitParams(params, nil, policy.LevelRoute)
+	quotas, ok := result["quotas"].([]interface{})
+	if !ok || len(quotas) != 1 {
+		t.Fatal("Expected 1 quota")
+	}
+
+	quota := quotas[0].(map[string]interface{})
+	keyExtraction, ok := quota["keyExtraction"].([]interface{})
+	if !ok || len(keyExtraction) != 1 {
+		t.Fatalf("Expected 1 key extraction entry, got %v", quota["keyExtraction"])
+	}
+
+	entry := keyExtraction[0].(map[string]interface{})
+	if entry["type"] != "routename" {
+		t.Errorf("Expected type 'routename' for route-attached policy, got %v", entry["type"])
+	}
+}
+
+// TestTransformToRatelimitParams_KeyExtraction_APILevel_ConsumerBased verifies that
+// consumerBased combines with API-level attachment: apiname + application-id metadata.
+func TestTransformToRatelimitParams_KeyExtraction_APILevel_ConsumerBased(t *testing.T) {
+	params := map[string]interface{}{
+		"totalTokenLimits": []interface{}{
+			map[string]interface{}{"count": float64(1000), "duration": "1h"},
+		},
+		"consumerBased": true,
+	}
+
+	result := transformToRatelimitParams(params, nil, policy.LevelAPI)
+	quotas, ok := result["quotas"].([]interface{})
+	if !ok || len(quotas) != 1 {
+		t.Fatal("Expected 1 quota")
+	}
+
+	quota := quotas[0].(map[string]interface{})
+	keyExtraction, ok := quota["keyExtraction"].([]interface{})
+	if !ok || len(keyExtraction) != 2 {
+		t.Fatalf("Expected 2 key extraction entries, got %v", quota["keyExtraction"])
+	}
+
+	first := keyExtraction[0].(map[string]interface{})
+	if first["type"] != "apiname" {
+		t.Errorf("Expected first entry type 'apiname', got %v", first["type"])
+	}
+	second := keyExtraction[1].(map[string]interface{})
+	if second["type"] != "metadata" || second["key"] != "x-wso2-application-id" {
+		t.Errorf("Expected second entry to be application-id metadata, got %v", second)
 	}
 }
 
@@ -490,7 +765,7 @@ func TestTransformToRatelimitParams_ConsumerBased_False(t *testing.T) {
 		"consumerBased": false,
 	}
 
-	result := transformToRatelimitParams(params, nil)
+	result := transformToRatelimitParams(params, nil, policy.LevelRoute)
 
 	quotas, ok := result["quotas"].([]interface{})
 	if !ok || len(quotas) != 1 {
@@ -526,7 +801,7 @@ func TestTransformToRatelimitParams_ConsumerBased_True(t *testing.T) {
 		"consumerBased": true,
 	}
 
-	result := transformToRatelimitParams(params, nil)
+	result := transformToRatelimitParams(params, nil, policy.LevelRoute)
 
 	quotas, ok := result["quotas"].([]interface{})
 	if !ok || len(quotas) != 1 {

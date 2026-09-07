@@ -1,5 +1,5 @@
 name: redirect
-version: v0.9.0
+version: v0.9.1
 description: |
   Issue an HTTP redirect to the client without forwarding the request upstream
   (Gateway-API RequestRedirect semantics).

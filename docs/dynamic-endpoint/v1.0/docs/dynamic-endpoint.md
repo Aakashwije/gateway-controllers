@@ -42,7 +42,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 Apply the policy to route requests for a specific operation to the `orders-v2` upstream definition:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: orders-api-v1.0
@@ -77,7 +77,7 @@ spec:
 Different operations can point to different named upstream definitions by using separate policy instances:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: customer-api-v1.0

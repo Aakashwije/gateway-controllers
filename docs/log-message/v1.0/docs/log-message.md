@@ -57,10 +57,12 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 
 ### Example 1: Default Behavior (No Logging)
 
-When no parameters are specified, no logging is performed (all parameters default to false):
+At least one of `request` or `response` must be supplied — the policy is rejected if `params` is
+omitted entirely. Within whichever block you supply, every individual field defaults to `false`, so
+an empty `request: {}` attaches the policy without logging anything:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: no-logging-api-v1.0
@@ -74,7 +76,8 @@ spec:
   policies:
     - name: log-message
       version: v1
-      # No params specified - defaults to all false (no logging)
+      params:
+        request: {}   # payload and headers both default to false
   operations:
     - method: GET
       path: /data
@@ -87,7 +90,7 @@ spec:
 Log both payloads and headers for all requests and responses:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: user-api-v1.0
@@ -122,7 +125,7 @@ spec:
 Log only request payloads and headers, skip response logging:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: request-only-api-v1.0
@@ -150,7 +153,7 @@ spec:
 Log only response payloads and headers, skip request logging:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: response-only-api-v1.0
@@ -178,7 +181,7 @@ spec:
 Log headers but exclude different sensitive headers for requests vs responses:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: payment-api-v1.0
@@ -218,7 +221,7 @@ spec:
 Log only request payloads and response headers:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: selective-api-v1.0
@@ -247,7 +250,7 @@ spec:
 Apply different logging configurations to different operations:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: mixed-api-v1.0
@@ -304,7 +307,7 @@ spec:
 Log streaming SSE response payloads from an LLM provider for real-time observability:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: LlmProvider
 metadata:
   name: streaming-log-provider
@@ -312,7 +315,7 @@ spec:
   displayName: Streaming Log Provider
   version: v1.0
   template: openai
-  vhost: openai
+  context: /openai
   upstream:
     url: "https://api.openai.com/v1"
     auth:
@@ -324,7 +327,7 @@ spec:
     exceptions:
       - path: /chat/completions
         methods: [POST]
-  policies:
+  operationPolicies:
     - name: log-message
       version: v1
       paths:

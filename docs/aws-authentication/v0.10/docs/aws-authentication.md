@@ -185,7 +185,7 @@ described in [Error Responses](#error-responses).
 ### Example 1: IAM User Access Keys Against an API Gateway (IAM Auth) Backend
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: inventory-api-v1.0
@@ -215,7 +215,7 @@ spec:
 ### Example 2: STS AssumeRole Against a Lambda Function URL
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: orders-api-v1.0

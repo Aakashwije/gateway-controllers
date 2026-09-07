@@ -80,7 +80,7 @@ Inside `gateway/build.yaml`, ensure the policy module is added under `policies`:
 Require a subscription token from the default `Subscription-Key` header:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: weather-api-v1.0
@@ -115,7 +115,7 @@ Subscription-Key: tok-1
 Use a custom header name for the subscription token:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: weather-api-v1.0
@@ -149,7 +149,7 @@ X-Subscription-Token: tok-1
 Read the subscription token from a cookie when the header is not present:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: weather-api-v1.0
