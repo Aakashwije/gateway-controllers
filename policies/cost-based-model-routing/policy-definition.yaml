@@ -137,6 +137,8 @@ parameters:
 
   allOf:
     - if:
+        required:
+          - onExhausted
         properties:
           onExhausted:
             const: "fallback"

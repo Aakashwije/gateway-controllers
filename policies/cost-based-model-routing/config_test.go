@@ -334,9 +334,9 @@ func TestParseConfigDefaults(t *testing.T) {
 	}
 }
 
-func TestParseConfigRejectAllowsFallbackToBeOmitted(t *testing.T) {
+func TestParseConfigDefaultRejectAllowsFallbackToBeOmitted(t *testing.T) {
 	params := validMultiRouteParams()
-	params["onExhausted"] = onExhaustedReject
+	delete(params, "onExhausted")
 	delete(params, "fallback")
 
 	cfg, err := parseConfig(params)
