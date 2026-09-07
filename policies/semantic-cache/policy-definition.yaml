@@ -1,9 +1,15 @@
 name: semantic-cache
-version: v1.0.1
+version: v1.1.0
 description: |
   Caches LLM responses using semantic similarity over request embeddings to
   reduce repeated upstream calls. Returns cached responses on similarity hits
   and stores successful upstream responses for future reuse.
+
+  Cache entries are bound to the authenticated caller (application/subscriber
+  identity), so one caller can never receive another caller's cached response.
+  Responses marked Cache-Control: no-store, private, or no-cache are never
+  cached. Requests with no resolvable caller identity are not cached unless
+  cacheUnauthenticated is explicitly enabled.
 
 parameters:
   type: object
@@ -31,6 +37,23 @@ parameters:
         delta event when caching streamed responses. Only needed if the upstream
         uses a non-OpenAI-compatible streaming format.
       default: "$.choices[0].delta.content"
+    cacheUnauthenticated:
+      type: boolean
+      x-wso2-policy-advanced-param: true
+      description: |
+        Controls caching behavior for requests with no resolvable caller
+        identity (e.g. a fully public, unauthenticated API). Defaults to false:
+        such requests are neither served from nor stored into the cache.
+
+        SECURITY WARNING: setting this to true makes all identity-less callers
+        of this API share a single cache bucket. Any caller who can influence
+        the upstream's response for a given prompt can seed an entry that is
+        later served to a DIFFERENT identity-less caller as a trusted cache
+        hit (cache poisoning), and a personalized or sensitive response
+        produced for one identity-less caller can be replayed to another.
+        Only enable this for APIs where every possible response is safe to
+        share across all unauthenticated callers.
+      default: false
   required:
   - similarityThreshold
 

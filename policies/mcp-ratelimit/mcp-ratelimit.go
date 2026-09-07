@@ -150,7 +150,8 @@ func (p *McpRateLimitPolicy) Mode() policy.ProcessingMode {
 // entries, and delegates enforcement to a per-(entry, capability) cached
 // advanced-ratelimit instance.
 func (p *McpRateLimitPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.RequestContext, params map[string]any) policy.RequestAction {
-	if !isMcpPostRequest(reqCtx.Method) {
+	ds := reqCtx.DownstreamRequest()
+	if !isMcpPostRequest(ds.Method) {
 		return policy.UpstreamRequestModifications{}
 	}
 	if reqCtx.Body == nil || len(reqCtx.Body.Content) == 0 {
@@ -160,7 +161,11 @@ func (p *McpRateLimitPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.R
 	method, capType, capName, requestID, err := p.identifyCapability(reqCtx)
 	if err != nil {
 		slog.Debug("MCP RateLimit Policy: failed to parse MCP request", "error", err)
-		return p.buildJsonRpcError(reqCtx.Headers, 400, -32700, "Invalid MCP request body", nil)
+		jsonRpcCode := -32700
+		if isAmbiguousMemberError(err) {
+			jsonRpcCode = -32600
+		}
+		return p.buildJsonRpcError(reqCtx.DownstreamHeaders(), 400, jsonRpcCode, "Invalid MCP request body", nil)
 	}
 	if method == "" {
 		return policy.UpstreamRequestModifications{}
@@ -212,7 +217,7 @@ func (p *McpRateLimitPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.R
 				"section", p.entries[m.entryIdx].section,
 				"rule", p.entries[m.entryIdx].name,
 				"capabilityID", m.capabilityID)
-			return p.rewriteRateLimitedResponse(reqCtx.Headers, immediate, requestID)
+			return p.rewriteRateLimitedResponse(reqCtx.DownstreamHeaders(), immediate, requestID)
 		}
 	}
 
@@ -275,7 +280,7 @@ func (p *McpRateLimitPolicy) OnResponseHeaders(ctx context.Context, respCtx *pol
 // text/event-stream-wrapped envelopes.
 func (p *McpRateLimitPolicy) identifyCapability(reqCtx *policy.RequestContext) (method, capType, capName string, requestID json.RawMessage, err error) {
 	body := reqCtx.Body.Content
-	if isEventStream(reqCtx.Headers) {
+	if isEventStream(reqCtx.DownstreamHeaders()) {
 		body = extractFirstSseJSON(body)
 		if len(body) == 0 {
 			return "", "", "", nil, fmt.Errorf("no JSON payload found in event stream")
@@ -284,6 +289,9 @@ func (p *McpRateLimitPolicy) identifyCapability(reqCtx *policy.RequestContext) (
 
 	var req mcpRequest
 	if err = json.Unmarshal(body, &req); err != nil {
+		return "", "", "", nil, err
+	}
+	if err = validateUnambiguousRequestMembers(body, req.Method); err != nil {
 		return "", "", "", nil, err
 	}
 
@@ -487,14 +495,16 @@ func delegateKey(entryIdx int, capabilityID string) string {
 }
 
 func synthesizeHeaderContext(reqCtx *policy.RequestContext) *policy.RequestHeaderContext {
+	ds := reqCtx.DownstreamRequest()
 	return &policy.RequestHeaderContext{
 		SharedContext: reqCtx.SharedContext,
-		Headers:       reqCtx.Headers,
-		Path:          reqCtx.Path,
-		Method:        reqCtx.Method,
-		Authority:     reqCtx.Authority,
-		Scheme:        reqCtx.Scheme,
+		Headers:       ds.Headers,
+		Path:          ds.Path,
+		Method:        ds.Method,
+		Authority:     ds.Authority,
+		Scheme:        ds.Scheme,
 		Vhost:         reqCtx.Vhost,
+		Downstream:    reqCtx.Downstream,
 	}
 }
 

@@ -286,8 +286,9 @@ func (p *InterceptorServicePolicy) OnRequestBody(ctx context.Context, reqCtx *po
 		return policy.UpstreamRequestModifications{}
 	}
 
+	ds := reqCtx.DownstreamRequest()
 	body := handleRequestBody{
-		InvocationContext: buildInvocationContext(reqCtx.SharedContext, reqCtx.Path, reqCtx.Method, reqCtx.Scheme, reqCtx.Vhost),
+		InvocationContext: buildInvocationContext(reqCtx.SharedContext, ds.Path, ds.Method, ds.Scheme, reqCtx.Vhost),
 	}
 	if p.requestCfg.IncludeRequestHeaders {
 		body.RequestHeaders = flattenHeaders(reqCtx.Headers)
@@ -325,9 +326,10 @@ func (p *InterceptorServicePolicy) OnResponseBody(ctx context.Context, respCtx *
 		return policy.DownstreamResponseModifications{}
 	}
 
+	ds := respCtx.DownstreamRequest()
 	body := handleResponseBody{
 		ResponseCode:      respCtx.ResponseStatus,
-		InvocationContext: buildInvocationContext(respCtx.SharedContext, respCtx.RequestPath, respCtx.RequestMethod, "", ""),
+		InvocationContext: buildInvocationContext(respCtx.SharedContext, ds.Path, ds.Method, "", ""),
 	}
 	if p.responseCfg.IncludeRequestHeaders {
 		body.RequestHeaders = flattenHeaders(respCtx.RequestHeaders)

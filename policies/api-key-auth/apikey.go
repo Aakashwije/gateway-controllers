@@ -108,7 +108,8 @@ func extractQueryParam(path, param string) string {
 // It performs API key authentication in the request-header phase, allowing the
 // kernel to short-circuit before any body buffering occurs.
 func (p *APIKeyPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.RequestHeaderContext, params map[string]interface{}) policy.RequestHeaderAction {
-	if errResp := p.authenticate(reqCtx.SharedContext, reqCtx.Headers, reqCtx.Path, reqCtx.Method, params); errResp != nil {
+	ds := reqCtx.DownstreamRequest()
+	if errResp := p.authenticate(reqCtx.SharedContext, ds.Headers, ds.Path, ds.Method, params); errResp != nil {
 		return *errResp
 	}
 

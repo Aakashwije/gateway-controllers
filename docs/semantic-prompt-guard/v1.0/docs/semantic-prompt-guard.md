@@ -91,7 +91,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 Deploy an LLM provider that blocks prompts similar to prohibited phrases:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: LlmProvider
 metadata:
   name: semantic-guard-provider
@@ -99,7 +99,7 @@ spec:
   displayName: Semantic Guard Provider
   version: v1.0
   template: openai
-  vhost: openai
+  context: /openai
   upstream:
     url: "https://api.openai.com/v1"
     auth:
@@ -111,7 +111,7 @@ spec:
     exceptions:
       - path: /chat/completions
         methods: [POST]
-  policies:
+  operationPolicies:
     - name: semantic-prompt-guard
       version: v1
       paths:
@@ -129,13 +129,10 @@ spec:
 
 **Test the guardrail:**
 
-**Note**: Ensure that "openai" is mapped to the appropriate IP address (e.g., 127.0.0.1) in your `/etc/hosts` file, or remove the vhost from the LLM provider configuration and use localhost to invoke.
-
 ```bash
 # Valid request (should pass)
-curl -X POST http://openai:8080/chat/completions \
+curl -X POST http://localhost:8080/openai/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Host: openai" \
   -d '{
     "model": "gpt-4",
     "messages": [
@@ -147,9 +144,8 @@ curl -X POST http://openai:8080/chat/completions \
   }'
 
 # Invalid request - similar to denied phrase (should fail with HTTP 422)
-curl -X POST http://openai:8080/chat/completions \
+curl -X POST http://localhost:8080/openai/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Host: openai" \
   -d '{
     "model": "gpt-4",
     "messages": [
@@ -211,7 +207,7 @@ If `showAssessment` is enabled, additional details are included in the `assessme
 Deploy an LLM provider that only allows prompts similar to approved phrases:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: LlmProvider
 metadata:
   name: whitelist-provider
@@ -219,7 +215,7 @@ spec:
   displayName: Whitelist Provider
   version: v1.0
   template: openai
-  vhost: openai
+  context: /openai
   upstream:
     url: "https://api.openai.com/v1"
     auth:
@@ -231,7 +227,7 @@ spec:
     exceptions:
       - path: /chat/completions
         methods: [POST]
-  policies:
+  operationPolicies:
     - name: semantic-prompt-guard
       version: v1
       paths:
@@ -268,7 +264,7 @@ For an allow list violations, the assessment message format is:
 Use both allow and deny lists for comprehensive filtering:
 
 ```yaml
-policies:
+operationPolicies:
   - name: semantic-prompt-guard
     version: v1
     paths:
@@ -294,7 +290,7 @@ policies:
 Configure semantic prompt guardrail with Azure OpenAI and extended timeout:
 
 ```yaml
-policies:
+operationPolicies:
   - name: semantic-prompt-guard
     version: v1
     paths:

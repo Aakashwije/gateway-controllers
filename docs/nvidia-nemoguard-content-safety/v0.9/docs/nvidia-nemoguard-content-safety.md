@@ -123,15 +123,15 @@ Inside the `api-platform` repository, add the policy package under `policies:` i
 Attach the policy to an LLM provider route to block unsafe requests using the default configuration (all 23 categories enabled):
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: LlmProvider
 metadata:
   name: protected-chat-provider
 spec:
   displayName: Protected Chat Provider
-  version: v0
+  version: v1.0
   template: openai
-  vhost: openai
+  context: /openai
   upstream:
     url: "https://api.openai.com/v1"
     auth:
@@ -143,7 +143,7 @@ spec:
     exceptions:
       - path: /chat/completions
         methods: [POST]
-  policies:
+  operationPolicies:
     - name: nvidia-nemoguard-content-safety
       version: v0
       paths:
@@ -158,9 +158,8 @@ spec:
 Test with a benign request (passes through):
 
 ```bash
-curl -X POST http://openai:8080/chat/completions \
+curl -X POST http://localhost:8080/openai/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Host: openai" \
   -d '{
     "model": "gpt-4",
     "messages": [
@@ -172,9 +171,8 @@ curl -X POST http://openai:8080/chat/completions \
 Test with unsafe content (blocked):
 
 ```bash
-curl -X POST http://openai:8080/chat/completions \
+curl -X POST http://localhost:8080/openai/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Host: openai" \
   -d '{
     "model": "gpt-4",
     "messages": [
@@ -202,7 +200,7 @@ When the request is blocked, the policy returns HTTP `400`:
 Enable response-phase checking and restrict blocking to a specific subset of categories. This example blocks only violence and illegal activity in both directions, ignoring all other categories:
 
 ```yaml
-policies:
+operationPolicies:
   - name: nvidia-nemoguard-content-safety
     version: v0
     paths:
@@ -264,7 +262,7 @@ When a response is replaced due to unsafe content, the policy returns HTTP `200`
 When the NeMo Guard service is unavailable, allow traffic to proceed rather than returning an error. Use this configuration only when availability takes priority over strict safety enforcement:
 
 ```yaml
-policies:
+operationPolicies:
   - name: nvidia-nemoguard-content-safety
     version: v0
     paths:

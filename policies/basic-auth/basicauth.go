@@ -97,7 +97,7 @@ func (p *BasicAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.R
 		}
 	}
 
-	authHeaders := reqCtx.Headers.Get("authorization")
+	authHeaders := reqCtx.DownstreamHeaders().Get("authorization")
 	if len(authHeaders) == 0 {
 		return p.handleAuthFailureHeaders(reqCtx.SharedContext, allowUnauthenticated, realm)
 	}

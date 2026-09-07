@@ -61,7 +61,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 Redirect all traffic for an API to a different host, preserving scheme, port, path, and query:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: store-api-v1.0
@@ -101,7 +101,7 @@ location: http://example.org/store/v1.0/products?page=2
 Return a permanent `301` redirect to a new host:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: legacy-api-v1.0
@@ -142,7 +142,7 @@ location: http://example.org/legacy/v1.0/catalog
 Redirect insecure requests to `https`. Because the scheme changes and no explicit port is set, the scheme's default port (`443`) is used and omitted from the `Location`:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: secure-api-v1.0
@@ -182,7 +182,7 @@ location: https://api.company.com/secure/v1.0/data
 Replace the entire request path while redirecting to a new host:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: moved-api-v1.0
@@ -226,7 +226,7 @@ location: http://example.org/v2/catalog
 Replace only the matched path prefix, preserving the remaining suffix (canonical URL rewrite on the same host). The operation matches a prefix, and `prefix` mode swaps `/shoes` for `/footwear`:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: catalog-api-v1.0

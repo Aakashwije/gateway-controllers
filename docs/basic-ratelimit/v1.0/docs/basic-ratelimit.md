@@ -90,7 +90,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 Allow 1000 requests per minute for a route:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: weather-api-v1.0
@@ -120,7 +120,7 @@ Enforce a short-term burst limit and a long-term quota.
 - 500 requests per hour
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: alerts-api-v1.0

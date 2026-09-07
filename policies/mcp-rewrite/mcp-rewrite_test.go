@@ -662,8 +662,9 @@ func assertJSONRPCError(t *testing.T, body []byte, code float64, message string)
 func createMockRequestContext(headers map[string][]string) *policy.RequestContext {
 	return &policy.RequestContext{
 		SharedContext: &policy.SharedContext{
-			RequestID: "test-request-id",
-			Metadata:  make(map[string]any),
+			RequestID:     "test-request-id",
+			Metadata:      make(map[string]any),
+			OperationPath: "/mcp",
 		},
 		Headers: policy.NewHeaders(headers),
 		Body:    nil,
@@ -676,8 +677,9 @@ func createMockRequestContext(headers map[string][]string) *policy.RequestContex
 func createMockResponseContext(requestHeaders, responseHeaders map[string][]string) *policy.ResponseContext {
 	return &policy.ResponseContext{
 		SharedContext: &policy.SharedContext{
-			RequestID: "test-request-id",
-			Metadata:  make(map[string]any),
+			RequestID:     "test-request-id",
+			Metadata:      make(map[string]any),
+			OperationPath: "/mcp",
 		},
 		RequestHeaders:  policy.NewHeaders(requestHeaders),
 		ResponseHeaders: policy.NewHeaders(responseHeaders),

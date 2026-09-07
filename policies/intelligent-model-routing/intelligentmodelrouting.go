@@ -418,7 +418,8 @@ func (p *IntelligentModelRoutingPolicy) callLLM(ctx context.Context, systemPromp
 // parseParams parses and validates all policy parameters from the params map.
 // This replaces the Java parseConfiguration() + init() flow.
 func parseParams(params map[string]interface{}, p *IntelligentModelRoutingPolicy) error {
-	// Parse contentPath (optional, defaults to "")
+	// Default to the final message content unless a non-empty path is configured.
+	p.contentPath = "$.messages[-1].content"
 	if contentPath, ok := params["contentPath"].(string); ok && contentPath != "" {
 		p.contentPath = contentPath
 	}

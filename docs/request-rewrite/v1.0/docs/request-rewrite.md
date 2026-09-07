@@ -119,7 +119,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 Replace an operation path prefix while preserving the remaining path:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: catalog-api-v1.0
@@ -147,7 +147,7 @@ spec:
 Normalize and enrich query parameters before forwarding:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: search-api-v1.0
@@ -183,7 +183,7 @@ spec:
 Apply rewrites only when match conditions are satisfied:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: orders-api-v1.0

@@ -118,7 +118,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 Limit calls to a single, expensive tool while leaving everything else untouched:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: Mcp
 metadata:
   name: mcp-server-api-v1.0
@@ -146,7 +146,7 @@ spec:
 Apply a blanket limit to every tool. Each tool still gets its own counter, so the limit is per-tool, not shared:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: Mcp
 metadata:
   name: mcp-server-api-v1.0
@@ -174,7 +174,7 @@ spec:
 Enforce several limit windows simultaneously on the same tool (strictest wins):
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: Mcp
 metadata:
   name: mcp-server-api-v1.0
@@ -204,7 +204,7 @@ spec:
 Apply different limits to resources and prompts in a single policy:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: Mcp
 metadata:
   name: mcp-server-api-v1.0
@@ -243,7 +243,7 @@ spec:
 Throttle raw JSON-RPC methods directly — useful for limiting discovery calls such as `tools/list`:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: Mcp
 metadata:
   name: mcp-server-api-v1.0
@@ -275,7 +275,7 @@ spec:
 Override the default JSON-RPC error envelope with a custom body:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: Mcp
 metadata:
   name: mcp-server-api-v1.0
@@ -307,7 +307,7 @@ spec:
 Throttle each user independently by extracting the identity from a header. The user ID is combined with the matched capability so each user has a separate bucket per tool:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: Mcp
 metadata:
   name: mcp-server-api-v1.0

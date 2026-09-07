@@ -43,6 +43,8 @@ These parameters are configured per LLM provider path by the API developer:
 
 > **Note:** At least one of `promptTokenLimits`, `completionTokenLimits`, or `totalTokenLimits` should be configured for the policy to enforce any limits.
 
+> **Note:** `totalTokenLimits` is charged from the LLM provider template's `totalTokens` field when one is defined. If the template has no `totalTokens` field (for example, the built-in Anthropic template, whose Messages API response has no total-token field), the policy instead sums `promptTokens` + `completionTokens` so the quota is still charged the actual token count.
+
 #### Limit Configuration
 
 Each limit entry defines a quota for a specific time window:
@@ -133,12 +135,14 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 
 This policy is designed to be attached to an `LlmProvider`. Before attaching the policy, you must create an `LlmProviderTemplate` that defines the token extraction paths for your LLM backend.
 
+Attaching the policy provider-wide (`globalPolicies`) shares one token bucket across every resource of the provider, the same way `basic-ratelimit` shares one request bucket at that level. Attaching it per operation (`operationPolicies` on a specific path) gives that resource its own independent bucket.
+
 ### LLM Provider Template
 
 The `LlmProviderTemplate` tells the policy where to find token usage information in the LLM provider's response. Here is an example template for an OpenAI-compatible provider:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: LlmProviderTemplate
 metadata:
   name: openai-template
@@ -168,7 +172,7 @@ The `identifier` fields use JSONPath expressions to locate token counts in the r
 Apply a simple total token limit to an LLM provider:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: LlmProvider
 metadata:
   name: openai-provider
@@ -178,7 +182,7 @@ spec:
   context: /openai
   template: openai-template
   upstream:
-    url: https://api.openai.com
+    url: https://api.openai.com/v1
     auth:
       type: api-key
       header: Authorization
@@ -188,7 +192,7 @@ spec:
     exceptions:
       - path: /chat/completions
         methods: [POST]
-  policies:
+  operationPolicies:
     - name: token-based-ratelimit
       version: v1
       paths:
@@ -207,7 +211,7 @@ This limits the `/chat/completions` path to 10,000 total tokens per minute. Once
 Apply independent limits for prompt (input) and completion (output) tokens:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: LlmProvider
 metadata:
   name: openai-provider
@@ -217,7 +221,7 @@ spec:
   context: /openai
   template: openai-template
   upstream:
-    url: https://api.openai.com
+    url: https://api.openai.com/v1
     auth:
       type: api-key
       header: Authorization
@@ -227,7 +231,7 @@ spec:
     exceptions:
       - path: /chat/completions
         methods: [POST]
-  policies:
+  operationPolicies:
     - name: token-based-ratelimit
       version: v1
       paths:
@@ -249,7 +253,7 @@ This enforces 5,000 prompt tokens per minute and 8,000 completion tokens per min
 Enforce both short-term and long-term token budgets:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: LlmProvider
 metadata:
   name: openai-provider
@@ -259,7 +263,7 @@ spec:
   context: /openai
   template: openai-template
   upstream:
-    url: https://api.openai.com
+    url: https://api.openai.com/v1
     auth:
       type: api-key
       header: Authorization
@@ -269,7 +273,7 @@ spec:
     exceptions:
       - path: /chat/completions
         methods: [POST]
-  policies:
+  operationPolicies:
     - name: token-based-ratelimit
       version: v1
       paths:
@@ -290,7 +294,7 @@ This enforces a burst limit of 10,000 total tokens per minute and a daily budget
 Apply limits to all three token types with multiple time windows:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: LlmProvider
 metadata:
   name: openai-provider
@@ -300,7 +304,7 @@ spec:
   context: /openai
   template: openai-template
   upstream:
-    url: https://api.openai.com
+    url: https://api.openai.com/v1
     auth:
       type: api-key
       header: Authorization
@@ -310,7 +314,7 @@ spec:
     exceptions:
       - path: /chat/completions
         methods: [POST]
-  policies:
+  operationPolicies:
     - name: token-based-ratelimit
       version: v1
       paths:
@@ -341,7 +345,7 @@ This applies per-minute and daily limits across all token types. Each token type
 Apply different token limits to different paths within the same LLM provider:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: LlmProvider
 metadata:
   name: openai-provider
@@ -351,7 +355,7 @@ spec:
   context: /openai
   template: openai-template
   upstream:
-    url: https://api.openai.com
+    url: https://api.openai.com/v1
     auth:
       type: api-key
       header: Authorization
@@ -363,7 +367,7 @@ spec:
         methods: [POST]
       - path: /completions
         methods: [POST]
-  policies:
+  operationPolicies:
     - name: token-based-ratelimit
       version: v1
       paths:

@@ -66,7 +66,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 Set authentication headers on all requests sent to upstream:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: weather-api-v1.0
@@ -121,7 +121,7 @@ x-client-version: 1.2.3
 Set security headers on all responses returned to clients:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: weather-api-v1.0
@@ -181,7 +181,7 @@ x-xss-protection: 1; mode=block
 Set headers on both requests (for upstream) and responses (for clients):
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: weather-api-v1.0
@@ -254,7 +254,7 @@ x-server-version: 2.1.0
 Apply different headers to different routes:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: weather-api-v1.0
@@ -335,7 +335,7 @@ Response to client includes: x-processing-mode: sync
 Demonstrate the default `set` behavior where existing headers with the same name are replaced. The `mode` parameter is omitted here, so it defaults to `set`:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: weather-api-v1.0
@@ -397,7 +397,7 @@ Content-Length: 256
 Set `mode: append` to add header values without removing values already present on the request or response. This is useful for multi-valued headers such as `Vary`, `Via`, or custom headers that accumulate context as a request passes through intermediaries.
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: weather-api-v1.0

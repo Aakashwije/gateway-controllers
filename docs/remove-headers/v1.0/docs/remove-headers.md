@@ -57,7 +57,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 Remove authentication headers before forwarding to upstream:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: weather-api-v1.0
@@ -111,7 +111,7 @@ User-Agent: WeatherApp/1.0
 Remove server identification headers from responses:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: weather-api-v1.0
@@ -168,7 +168,7 @@ Content-Length: 256
 Remove sensitive headers from both directions:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: weather-api-v1.0
@@ -243,7 +243,7 @@ Content-Length: 256
 Apply different header removal rules to different routes:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: weather-api-v1.0
@@ -298,7 +298,7 @@ spec:
 Use multiple remove-headers policies for different purposes:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: RestApi
 metadata:
   name: weather-api-v1.0

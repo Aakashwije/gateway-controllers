@@ -49,7 +49,7 @@ additionalProviders:
 For a single-provider proxy, attach the policy directly:
 
 ```yaml
-policies:
+operationPolicies:
   - name: openai-to-bedrock-transformer
     version: v1
     paths:

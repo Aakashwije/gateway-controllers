@@ -1,0 +1,467 @@
+# Publish Policy
+#
+# Packages a single policy version's docs/assets and publishes them to
+# Policy Hub for each selected environment. This is distinct from Release
+# Policy: this publishes documentation/metadata for an already-released
+# policy version — it does not tag or register the policy module itself.
+#
+# Validation and packaging happen once (job: build), then the resulting
+# package is published to every selected environment in parallel
+# (job: publish), each leg gated by its own GitHub Environment protection
+# rules and secrets — matching the structure of Release Policy.
+
+name: Publish Policy
+run-name: Publish Policy - ${{ inputs.policy_name }} v${{ inputs.minor_version }} (${{ inputs.publish_dev && 'Dev' || '' }}${{ inputs.publish_dev && inputs.publish_staging && ', ' || '' }}${{ inputs.publish_staging && 'Staging' || '' }}${{ inputs.publish_production && (inputs.publish_dev || inputs.publish_staging) && ', ' || '' }}${{ inputs.publish_production && 'Production' || '' }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      policy_name:
+        description: 'Name of the policy to publish'
+        required: true
+        type: string
+      minor_version:
+        description: 'Minor version (e.g., 0.1, 1.2, v0.1, or 1.2.0)'
+        required: true
+        type: string
+      publish_dev:
+        description: 'Publish to dev'
+        required: false
+        type: boolean
+        default: true
+      publish_staging:
+        description: 'Publish to staging'
+        required: false
+        type: boolean
+        default: false
+      publish_production:
+        description: 'Publish to production'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-policy-${{ github.event.inputs.policy_name }}-${{ github.event.inputs.minor_version }}
+  cancel-in-progress: false
+
+jobs:
+  # ------------------------------------------------------------
+  # Validate inputs/metadata and build the policy package once.
+  # No Policy Hub / API calls happen here at all.
+  # ------------------------------------------------------------
+  build:
+    name: Validate & Build Policy Package
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      metadata_name: ${{ steps.metadata.outputs.metadata_name }}
+      metadata_version: ${{ steps.metadata.outputs.metadata_version }}
+      zip_name: ${{ steps.package.outputs.zip_name }}
+      environments: ${{ steps.envs.outputs.environments }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Determine target environments
+        id: envs
+        shell: bash
+        env:
+          PUBLISH_DEV: ${{ inputs.publish_dev }}
+          PUBLISH_STAGING: ${{ inputs.publish_staging }}
+          PUBLISH_PRODUCTION: ${{ inputs.publish_production }}
+        run: |
+          set -euo pipefail
+
+          ENVS=()
+          [[ "$PUBLISH_DEV" == "true" ]] && ENVS+=("Dev")
+          [[ "$PUBLISH_STAGING" == "true" ]] && ENVS+=("Staging")
+          [[ "$PUBLISH_PRODUCTION" == "true" ]] && ENVS+=("Production")
+
+          if [[ ${#ENVS[@]} -eq 0 ]]; then
+            echo "ℹ️ No environment selected — nothing will be published"
+            JSON="[]"
+          else
+            echo "Selected environments: ${ENVS[*]}"
+            # printf still runs its format once even with zero args, so build the
+            # JSON array only in this branch where ENVS is guaranteed non-empty.
+            JSON=$(printf '%s\n' "${ENVS[@]}" | jq -R . | jq -sc .)
+          fi
+
+          echo "environments=$JSON" >> "$GITHUB_OUTPUT"
+
+      - name: Validate inputs and policy existence
+        env:
+          POLICY_NAME_INPUT: ${{ inputs.policy_name }}
+          MINOR_VERSION_INPUT: ${{ inputs.minor_version }}
+        run: |
+          set -euo pipefail
+
+          fail() {
+            echo "::error::$1"
+            { echo "## ❌ Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
+          # Trim whitespace from policy name
+          POLICY_NAME=$(echo "$POLICY_NAME_INPUT" | xargs)
+
+          # Trim whitespace and strip an optional leading 'v'/'V' (e.g. "v1.0" -> "1.0")
+          RAW_MINOR_VERSION=$(echo "$MINOR_VERSION_INPUT" | xargs)
+          MINOR_VERSION="${RAW_MINOR_VERSION#v}"
+          MINOR_VERSION="${MINOR_VERSION#V}"
+
+          # Drop an optional patch component (e.g. "1.0.0" -> "1.0") so a full
+          # semver input still resolves to the X.Y docs/policy directories.
+          if [[ "$MINOR_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            MINOR_VERSION="${MINOR_VERSION%.*}"
+          fi
+
+          # Validate policy name: only letters, numbers, hyphen, underscore; no slashes or traversal
+          [[ -n "$POLICY_NAME" ]] || fail "Policy name is required"
+          [[ "$POLICY_NAME" =~ ^[A-Za-z0-9_-]+$ ]] || fail "Policy name must contain only letters, numbers, hyphens, and underscores (no spaces, slashes, or special characters). Got: '$POLICY_NAME'"
+
+          # Validate minor version format
+          [[ "$MINOR_VERSION" =~ ^[0-9]+\.[0-9]+$ ]] || fail "Minor version must be in format X.Y or X.Y.Z (e.g., 0.1, 1.2, 1.2.0). Got: '$RAW_MINOR_VERSION'"
+
+          # Check if policy directory exists in docs/
+          DOCS_POLICY_DIR="docs/$POLICY_NAME"
+          [[ -d "$DOCS_POLICY_DIR" ]] || fail "Policy directory not found in docs/: $DOCS_POLICY_DIR"
+
+          # Check if version directory exists — this one gets a richer summary
+          # (available versions) since a bare mismatch message isn't actionable here.
+          VERSION_DIR="$DOCS_POLICY_DIR/v$MINOR_VERSION"
+          if [[ ! -d "$VERSION_DIR" ]]; then
+            echo "::error::Version directory not found: $VERSION_DIR"
+            {
+              echo "## ❌ Failed"
+              echo ""
+              echo "**Error:** Version directory not found: \`$VERSION_DIR\`"
+              echo ""
+              echo "**Available versions for $POLICY_NAME:**"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            ls -1 "$DOCS_POLICY_DIR/" 2>/dev/null >> "$GITHUB_STEP_SUMMARY" || echo "No versions found" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          # Check if policies directory exists
+          POLICIES_DIR="policies/$POLICY_NAME"
+          [[ -d "$POLICIES_DIR" ]] || fail "Policy directory not found in policies/: $POLICIES_DIR"
+
+          echo "✅ Policy validation passed"
+          {
+            echo "POLICY_NAME=$POLICY_NAME"
+            echo "MINOR_VERSION=$MINOR_VERSION"
+            echo "VERSION_DIR=$VERSION_DIR"
+            echo "POLICIES_DIR=$POLICIES_DIR"
+          } >> "$GITHUB_ENV"
+
+      - name: Parse and validate metadata.json
+        id: metadata
+        run: |
+          set -euo pipefail
+
+          fail() {
+            echo "::error::$1"
+            { echo "## ❌ Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
+          METADATA_FILE="$VERSION_DIR/metadata.json"
+
+          # Check if metadata.json exists
+          [[ -f "$METADATA_FILE" ]] || fail "metadata.json not found: $METADATA_FILE"
+
+          # Validate JSON syntax
+          if ! jq empty "$METADATA_FILE" 2>/dev/null; then
+            echo "::error::Invalid JSON in metadata.json"
+            {
+              echo "## ❌ Failed"
+              echo ""
+              echo "**Error:** Invalid JSON in metadata.json"
+              echo '```'
+              cat "$METADATA_FILE"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          # Extract and validate required fields
+          name=$(jq -r '.name // empty' "$METADATA_FILE")
+          version=$(jq -r '.version // empty' "$METADATA_FILE")
+          displayName=$(jq -r '.displayName // empty' "$METADATA_FILE")
+          provider=$(jq -r '.provider // empty' "$METADATA_FILE")
+          categories=$(jq -r '.categories // empty' "$METADATA_FILE")
+          description=$(jq -r '.description // empty' "$METADATA_FILE")
+
+          # Check required fields
+          MISSING_FIELDS=()
+          [[ -z "$name" ]] && MISSING_FIELDS+=("name")
+          [[ -z "$version" ]] && MISSING_FIELDS+=("version")
+          [[ -z "$displayName" ]] && MISSING_FIELDS+=("displayName")
+          [[ -z "$provider" ]] && MISSING_FIELDS+=("provider")
+          [[ -z "$categories" || "$categories" == "null" ]] && MISSING_FIELDS+=("categories")
+          [[ -z "$description" ]] && MISSING_FIELDS+=("description")
+
+          if [[ ${#MISSING_FIELDS[@]} -gt 0 ]]; then
+            fail "Missing required fields in metadata.json ($METADATA_FILE): ${MISSING_FIELDS[*]}"
+          fi
+
+          # Validate that .categories is a non-empty array
+          jq -e '.categories | type=="array" and length>0' "$METADATA_FILE" >/dev/null \
+            || fail "'categories' must be a non-empty array in metadata.json ($METADATA_FILE)"
+
+          # Validate that name matches input
+          [[ "$name" == "$POLICY_NAME" ]] \
+            || fail "Policy name mismatch: metadata.json has '$name', but workflow input is '$POLICY_NAME'"
+
+          # Validate that version matches input (remove 'v'/'V' prefix if present)
+          metadata_version=${version#v}
+          metadata_version=${metadata_version#V}
+          [[ "$metadata_version" == "$MINOR_VERSION" ]] \
+            || fail "Version mismatch: metadata.json has '$version', but workflow input is '$MINOR_VERSION'"
+
+          echo "✅ Metadata validation passed"
+          {
+            echo "METADATA_NAME=$name"
+            echo "METADATA_VERSION=$metadata_version"
+          } >> "$GITHUB_ENV"
+          {
+            echo "metadata_name=$name"
+            echo "metadata_version=$metadata_version"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create policy package
+        id: package
+        run: |
+          set -euo pipefail
+
+          fail() {
+            echo "::error::$1"
+            { echo "## ❌ Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
+          # Create temporary directory for packaging
+          TEMP_DIR=$(mktemp -d)
+          PACKAGE_DIR="$TEMP_DIR/package"
+          mkdir -p "$PACKAGE_DIR"
+
+          # Copy docs folder if it exists
+          DOCS_SOURCE="$VERSION_DIR/docs"
+          if [[ -d "$DOCS_SOURCE" ]]; then
+            cp -r "$DOCS_SOURCE" "$PACKAGE_DIR/"
+            echo "✅ Copied docs folder"
+          else
+            fail "docs folder not found: $DOCS_SOURCE"
+          fi
+
+          # Copy assets folder if it exists
+          ASSETS_SOURCE="$VERSION_DIR/assets"
+          if [[ -d "$ASSETS_SOURCE" ]]; then
+            cp -r "$ASSETS_SOURCE" "$PACKAGE_DIR/"
+            echo "✅ Copied assets folder"
+          else
+            echo "ℹ️ No assets folder found (optional)"
+          fi
+
+          # Create zip file
+          ZIP_NAME="${METADATA_NAME}-${METADATA_VERSION}.zip"
+          ZIP_PATH="$GITHUB_WORKSPACE/$ZIP_NAME"
+
+          (cd "$PACKAGE_DIR" && zip -r "$ZIP_PATH" . -x "*.DS_Store")
+
+          # Verify zip was created
+          [[ -f "$ZIP_PATH" ]] || fail "Failed to create zip file: $ZIP_PATH"
+
+          # Stage metadata.json alongside the zip so it travels in the same
+          # artifact — the publish job runs on a fresh runner with no checkout.
+          cp "$VERSION_DIR/metadata.json" "$GITHUB_WORKSPACE/metadata.json"
+
+          echo "✅ Created policy package: $ZIP_NAME"
+          {
+            echo "ZIP_NAME=$ZIP_NAME"
+            echo "TEMP_DIR=$TEMP_DIR"
+          } >> "$GITHUB_ENV"
+          echo "zip_name=$ZIP_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Upload policy package for publishing
+        uses: actions/upload-artifact@v7
+        with:
+          name: policy-package
+          path: |
+            ${{ env.ZIP_NAME }}
+            metadata.json
+          retention-days: 7
+
+      - name: Cleanup
+        if: always()
+        run: |
+          # Clean up temporary files (best-effort; do not fail the job on cleanup issues)
+          if [[ -n "${TEMP_DIR:-}" && -d "${TEMP_DIR:-}" ]]; then
+            rm -rf "$TEMP_DIR"
+          fi
+          echo "🧹 Cleanup completed"
+
+      - name: Summary
+        if: success()
+        run: |
+          set -euo pipefail
+          {
+            echo "## ✅ Validation & Packaging Passed"
+            echo ""
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| **Policy Name** | \`$METADATA_NAME\` |"
+            echo "| **Version** | \`$METADATA_VERSION\` |"
+            echo "| **Package** | \`$ZIP_NAME\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ------------------------------------------------------------
+  # Publish the built package to Policy Hub, once per selected
+  # environment, in parallel. fail-fast: false so one environment's
+  # failure doesn't cancel the others. Skipped entirely when no
+  # environment was selected.
+  #
+  # Each matrix leg runs under its own `environment:`, so per-environment
+  # GitHub Environment protection rules (required reviewers, etc.) and
+  # scoped vars/secrets still apply exactly as before.
+  # ------------------------------------------------------------
+  publish:
+    name: Publish to ${{ matrix.environment }}
+    needs: build
+    if: needs.build.outputs.environments != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: ${{ matrix.environment }}
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJson(needs.build.outputs.environments) }}
+
+    steps:
+      - name: Download policy package
+        uses: actions/download-artifact@v8
+        with:
+          name: policy-package
+
+      - name: Validate API configuration
+        env:
+          POLICY_HUB_URL: ${{ vars.POLICY_HUB_URL }}
+          POLICY_HUB_TOKEN: ${{ secrets.POLICY_HUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          fail() {
+            echo "::error::$1"
+            { echo "## ❌ Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
+          [[ -n "${POLICY_HUB_URL:-}" ]] || fail "Missing POLICY_HUB_URL environment variable"
+          [[ -n "${POLICY_HUB_TOKEN:-}" ]] || fail "Missing POLICY_HUB_TOKEN secret"
+
+          echo "✅ API configuration validated"
+          echo "API_URL=$POLICY_HUB_URL" >> "$GITHUB_ENV"
+
+      - name: Publish policy
+        env:
+          POLICY_HUB_TOKEN: ${{ secrets.POLICY_HUB_TOKEN }}
+          METADATA_NAME: ${{ needs.build.outputs.metadata_name }}
+          METADATA_VERSION: ${{ needs.build.outputs.metadata_version }}
+          ZIP_NAME: ${{ needs.build.outputs.zip_name }}
+          ENV_NAME: ${{ matrix.environment }}
+        run: |
+          set -euo pipefail
+
+          # Writes one "### Publish: <env>" block to the job summary per
+          # invocation — every matrix leg's outcome shows up on the run's
+          # Summary page without needing a separate aggregator job.
+          summarize() {
+            {
+              echo "### Publish: $ENV_NAME"
+              echo ""
+              echo "| Field | Value |"
+              echo "|-------|-------|"
+              echo "| Policy | \`$METADATA_NAME\` |"
+              echo "| Version | \`$METADATA_VERSION\` |"
+              echo "| Status | $1 |"
+              echo "| Message | $2 |"
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          # Read metadata.json content
+          METADATA_CONTENT=$(cat "$GITHUB_WORKSPACE/metadata.json")
+
+          # Build curl args array safely
+          curl_args=(
+            "-sS"
+            "-w" "%{http_code}"
+            "-o" "response.txt"
+            "-X" "POST"
+            "--max-time" "30"
+            "--connect-timeout" "10"
+            "$API_URL/policies/$METADATA_NAME/versions/$METADATA_VERSION"
+          )
+
+          curl_args+=("-H" "api-key: $POLICY_HUB_TOKEN")
+
+          # Add form fields
+          curl_args+=("--form-string" "metadata=$METADATA_CONTENT")
+          curl_args+=("-F" "docs=@$GITHUB_WORKSPACE/$ZIP_NAME")
+
+          # Execute the curl command, keeping curl's own exit code separate from the HTTP status
+          if ! HTTP_STATUS=$(curl "${curl_args[@]}"); then
+            echo "::error::Request to Policy Hub failed (network error or timeout) for $ENV_NAME"
+            summarize "❌ Failed" "Could not reach Policy Hub (network error or timeout)"
+            exit 1
+          fi
+
+          echo "HTTP Status: $HTTP_STATUS"
+
+          RESPONSE_BODY=""
+          if [[ -f response.txt ]]; then
+            RESPONSE_BODY=$(cat response.txt)
+          fi
+
+          # Check if request was successful
+          if [[ "$HTTP_STATUS" -ge 200 && "$HTTP_STATUS" -lt 300 ]]; then
+            echo "✅ Policy published successfully to $ENV_NAME!"
+            echo "📨 API Response:"
+            echo "$RESPONSE_BODY"
+
+            # Extract status from response
+            PUBLISH_STATUS=$(echo "$RESPONSE_BODY" | jq -r '.data.status // "published"' 2>/dev/null || echo "published")
+            summarize "✅ Published" "Status: \`$PUBLISH_STATUS\`"
+          elif [[ "$HTTP_STATUS" == "401" ]]; then
+            # Never echo the response body for 401s: some APIs reflect request
+            # headers/credentials back in auth-error bodies, and $GITHUB_STEP_SUMMARY
+            # is not secret-masked the way console log output is.
+            echo "::error::Policy publishing failed for $ENV_NAME: Unauthorized (HTTP 401) — check POLICY_HUB_TOKEN"
+            summarize "❌ Failed" "Unauthorized (HTTP 401) — check POLICY_HUB_TOKEN for this environment"
+            exit 1
+          else
+            # Extract just the message field if present, otherwise fall back to the raw body
+            ERROR_MESSAGE=$(echo "$RESPONSE_BODY" | jq -r '.message // empty' 2>/dev/null || true)
+            if [[ -z "$ERROR_MESSAGE" ]]; then
+              ERROR_MESSAGE="${RESPONSE_BODY:-No response body}"
+            fi
+
+            echo "::error::Policy publishing failed for $ENV_NAME with HTTP status $HTTP_STATUS: $ERROR_MESSAGE"
+            summarize "❌ Failed" "HTTP \`$HTTP_STATUS\`: $ERROR_MESSAGE"
+            exit 1
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: |
+          # Clean up downloaded files (best-effort; do not fail the job on cleanup issues)
+          rm -f "${{ needs.build.outputs.zip_name }}" metadata.json response.txt
+          echo "🧹 Cleanup completed"

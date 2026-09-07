@@ -253,7 +253,7 @@ func bedrockStream() []byte {
 	stream = append(stream, encodeFrame("contentBlockDelta", `{"contentBlockIndex":0,"delta":{"text":"Hello"}}`)...)
 	stream = append(stream, encodeFrame("contentBlockDelta", `{"contentBlockIndex":0,"delta":{"text":" world"}}`)...)
 	stream = append(stream, encodeFrame("messageStop", `{"stopReason":"end_turn"}`)...)
-	stream = append(stream, encodeFrame("metadata", `{"usage":{"inputTokens":10,"outputTokens":2,"totalTokens":12}}`)...)
+	stream = append(stream, encodeFrame("metadata", `{"usage":{"inputTokens":10,"outputTokens":2,"totalTokens":12,"cacheReadInputTokens":4,"cacheWriteInputTokens":6,"cacheDetails":[{"ttl":"1h","inputTokens":4},{"ttl":"5m","inputTokens":2}]}}`)...)
 	return stream
 }
 
@@ -265,7 +265,12 @@ func TestEventStreamToSSE_TextStream(t *testing.T) {
 		`"content":"Hello"`,
 		`"content":" world"`,
 		`"finish_reason":"stop"`,
-		`"total_tokens":12`,
+		`"prompt_tokens":20`,
+		`"total_tokens":22`,
+		`"cached_tokens":4`,
+		`"cache_write_tokens":6`,
+		`"cache_write_5m_tokens":2`,
+		`"cache_write_1h_tokens":4`,
 		"data: [DONE]\n\n",
 	} {
 		if !strings.Contains(out, want) {
@@ -444,7 +449,9 @@ func TestTranslateRequest_ToolChoiceNoneDropsTools(t *testing.T) {
 
 func TestTranslateConverseResponse_JSON(t *testing.T) {
 	converse := `{"output":{"message":{"role":"assistant","content":[{"text":"Hi there"}]}},` +
-		`"stopReason":"end_turn","usage":{"inputTokens":5,"outputTokens":3,"totalTokens":8}}`
+		`"stopReason":"end_turn","usage":{"inputTokens":5,"outputTokens":3,"totalTokens":8,` +
+		`"cacheReadInputTokens":4,"cacheWriteInputTokens":6,"cacheDetails":[` +
+		`{"ttl":"1h","inputTokens":4},{"ttl":"5m","inputTokens":2}]}}`
 	action := translateConverseResponse([]byte(converse), 200, "claude", "chatcmpl-x")
 
 	mods, ok := action.(policy.DownstreamResponseModifications)
@@ -469,6 +476,16 @@ func TestTranslateConverseResponse_JSON(t *testing.T) {
 	}
 	if choice["finish_reason"] != "stop" {
 		t.Errorf("unexpected finish_reason: %v", choice["finish_reason"])
+	}
+	usage := out["usage"].(map[string]interface{})
+	if usage["prompt_tokens"] != float64(15) || usage["total_tokens"] != float64(18) {
+		t.Fatalf("translated usage does not include cache tokens: %v", usage)
+	}
+	details := usage["prompt_tokens_details"].(map[string]interface{})
+	if details["cached_tokens"] != float64(4) || details["cache_write_tokens"] != float64(6) ||
+		details["cache_write_5m_tokens"] != float64(2) ||
+		details["cache_write_1h_tokens"] != float64(4) {
+		t.Fatalf("translated cache token details are incomplete: %v", details)
 	}
 }
 

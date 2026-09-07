@@ -58,7 +58,7 @@ service.
 ### Example 1: Basic WebSub Subscriber Endpoint (SHA-256)
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: WebSubApi
 metadata:
   name: repo-watcher-v1-0

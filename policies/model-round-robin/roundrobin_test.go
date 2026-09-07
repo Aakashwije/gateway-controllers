@@ -275,8 +275,8 @@ func TestModelRoundRobinPolicy_OnRequestHeaders_AllModelsSuspended(t *testing.T)
 	})
 
 	until := time.Now().Add(10 * time.Minute)
-	p.suspendedModels["gpt-4"] = until
-	p.suspendedModels["gpt-35"] = until
+	p.suspendedModels[suspensionKey("", "gpt-4")] = until
+	p.suspendedModels[suspensionKey("", "gpt-35")] = until
 
 	ctx := &policy.RequestHeaderContext{
 		SharedContext: rrSharedContext(),
@@ -317,7 +317,7 @@ func TestModelRoundRobinPolicy_OnResponseHeaders_SuspendsModelOnError(t *testing
 	if _, ok := action.(policy.DownstreamResponseHeaderModifications); !ok {
 		t.Fatalf("expected DownstreamResponseHeaderModifications, got %T", action)
 	}
-	until, exists := p.suspendedModels["gpt-4"]
+	until, exists := p.suspendedModels[suspensionKey("", "gpt-4")]
 	if !exists {
 		t.Fatalf("expected model to be suspended")
 	}
@@ -329,7 +329,7 @@ func TestModelRoundRobinPolicy_OnResponseHeaders_SuspendsModelOnError(t *testing
 func TestModelRoundRobinPolicy_SelectNextAvailableModel_SkipsAndRecoversSuspended(t *testing.T) {
 	p := &ModelRoundRobinPolicy{
 		currentIndex:    0,
-		suspendedModels: map[string]time.Time{"a": time.Now().Add(5 * time.Minute)},
+		suspendedModels: map[string]time.Time{suspensionKey("", "a"): time.Now().Add(5 * time.Minute)},
 	}
 	models := []ModelConfig{{Model: "a"}, {Model: "b"}}
 
@@ -338,7 +338,7 @@ func TestModelRoundRobinPolicy_SelectNextAvailableModel_SkipsAndRecoversSuspende
 		t.Fatalf("expected to skip suspended a and pick b, got %+v", got)
 	}
 
-	p.suspendedModels["a"] = time.Now().Add(-1 * time.Minute)
+	p.suspendedModels[suspensionKey("", "a")] = time.Now().Add(-1 * time.Minute)
 	got2 := p.selectNextAvailableModel(models)
 	if got2 == nil || got2.Model != "a" {
 		t.Fatalf("expected expired suspension model a to be selected, got %+v", got2)
@@ -354,6 +354,133 @@ func TestModelRoundRobinPolicy_ExtractInt(t *testing.T) {
 	}
 	if _, err := extractInt(float64(4.2)); err == nil {
 		t.Fatalf("expected error for non-integer float")
+	}
+}
+
+func TestModelRoundRobinPolicy_GetPolicy_ProviderParsing(t *testing.T) {
+	// provider must be a string when present
+	_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+		"models": []interface{}{
+			map[string]interface{}{"model": "gpt-4", "provider": 123},
+		},
+		"requestModel": map[string]interface{}{"location": "payload", "identifier": "$.model"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "'models[0].provider' must be a string") {
+		t.Fatalf("expected provider type error, got %v", err)
+	}
+
+	// omitted provider defaults to empty; explicit provider is preserved
+	p := mustGetRRPolicy(t, map[string]interface{}{
+		"models": []interface{}{
+			map[string]interface{}{"model": "gpt-4o"},
+			map[string]interface{}{"model": "claude-sonnet-4-5-20250929", "provider": "anthropic-provider"},
+		},
+		"requestModel": map[string]interface{}{"location": "payload", "identifier": "$.model"},
+	})
+	if p.params.Models[0].Provider != "" {
+		t.Fatalf("expected empty provider for first model, got %q", p.params.Models[0].Provider)
+	}
+	if p.params.Models[1].Provider != "anthropic-provider" {
+		t.Fatalf("expected anthropic-provider for second model, got %q", p.params.Models[1].Provider)
+	}
+}
+
+func TestModelRoundRobinPolicy_OnRequestHeaders_DefaultProvider(t *testing.T) {
+	// A target with no provider must not set UpstreamName or the selected_provider
+	// routing key, so the LlmProxy primary-provider fallback keeps working.
+	p := mustGetRRPolicy(t, map[string]interface{}{
+		"models":       []interface{}{map[string]interface{}{"model": "gpt-4o"}},
+		"requestModel": map[string]interface{}{"location": "payload", "identifier": "$.model"},
+	})
+
+	shared := rrSharedContext()
+	ctx := &policy.RequestHeaderContext{SharedContext: shared}
+	mods := mustRRRequestHeaderMods(t, p.OnRequestHeaders(context.Background(), ctx, nil))
+
+	if mods.UpstreamName != nil {
+		t.Fatalf("expected no UpstreamName for default provider, got %q", *mods.UpstreamName)
+	}
+	if _, ok := shared.Metadata[MetadataKeyProviderRouting]; ok {
+		t.Fatalf("expected selected_provider metadata to be unset for default provider")
+	}
+	if shared.Metadata[MetadataKeySelectedModel] != "gpt-4o" {
+		t.Fatalf("expected selected model metadata gpt-4o, got %v", shared.Metadata[MetadataKeySelectedModel])
+	}
+}
+
+func TestModelRoundRobinPolicy_OnRequestHeaders_AdditionalProvider(t *testing.T) {
+	// A target with a provider must route to its named upstream and expose the
+	// provider to conditional auth/transformers via selected_provider.
+	p := mustGetRRPolicy(t, map[string]interface{}{
+		"models": []interface{}{
+			map[string]interface{}{"model": "claude-sonnet-4-5-20250929", "provider": "anthropic-provider"},
+		},
+		"requestModel": map[string]interface{}{"location": "payload", "identifier": "$.model"},
+	})
+
+	shared := rrSharedContext()
+	ctx := &policy.RequestHeaderContext{SharedContext: shared}
+	mods := mustRRRequestHeaderMods(t, p.OnRequestHeaders(context.Background(), ctx, nil))
+
+	if mods.UpstreamName == nil || *mods.UpstreamName != "anthropic-provider" {
+		t.Fatalf("expected UpstreamName anthropic-provider, got %v", mods.UpstreamName)
+	}
+	if shared.Metadata[MetadataKeyProviderRouting] != "anthropic-provider" {
+		t.Fatalf("expected selected_provider metadata anthropic-provider, got %v", shared.Metadata[MetadataKeyProviderRouting])
+	}
+}
+
+func TestModelRoundRobinPolicy_IndependentSuspensionPerProvider(t *testing.T) {
+	// The same model name behind two providers must be suspended independently.
+	p := mustGetRRPolicy(t, map[string]interface{}{
+		"models": []interface{}{
+			map[string]interface{}{"model": "shared-model", "provider": "provider-a"},
+			map[string]interface{}{"model": "shared-model", "provider": "provider-b"},
+		},
+		"requestModel": map[string]interface{}{"location": "payload", "identifier": "$.model"},
+	})
+
+	// Suspend only provider-a/shared-model.
+	p.suspendedModels[suspensionKey("provider-a", "shared-model")] = time.Now().Add(10 * time.Minute)
+
+	got := p.selectNextAvailableModel(p.params.Models)
+	if got == nil || got.Provider != "provider-b" {
+		t.Fatalf("expected provider-b to remain available, got %+v", got)
+	}
+	if _, suspended := p.suspendedModels[suspensionKey("provider-b", "shared-model")]; suspended {
+		t.Fatalf("provider-b/shared-model should not be suspended")
+	}
+}
+
+func TestModelRoundRobinPolicy_OnResponseHeaders_SuspendsProviderModelPair(t *testing.T) {
+	// OnResponseHeaders must build the composite key from the selected provider
+	// metadata, suspending only that provider/model pair.
+	p := mustGetRRPolicy(t, map[string]interface{}{
+		"models": []interface{}{
+			map[string]interface{}{"model": "shared-model", "provider": "provider-a"},
+			map[string]interface{}{"model": "shared-model", "provider": "provider-b"},
+		},
+		"suspendDuration": 60,
+		"requestModel":    map[string]interface{}{"location": "payload", "identifier": "$.model"},
+	})
+
+	ctx := &policy.ResponseHeaderContext{
+		SharedContext: &policy.SharedContext{
+			RequestID: "id",
+			Metadata: map[string]interface{}{
+				MetadataKeySelectedModel:    "shared-model",
+				MetadataKeySelectedProvider: "provider-a",
+			},
+		},
+		ResponseStatus: 429,
+	}
+	p.OnResponseHeaders(context.Background(), ctx, nil)
+
+	if _, ok := p.suspendedModels[suspensionKey("provider-a", "shared-model")]; !ok {
+		t.Fatalf("expected provider-a/shared-model to be suspended")
+	}
+	if _, ok := p.suspendedModels[suspensionKey("provider-b", "shared-model")]; ok {
+		t.Fatalf("expected provider-b/shared-model to remain available")
 	}
 }
 

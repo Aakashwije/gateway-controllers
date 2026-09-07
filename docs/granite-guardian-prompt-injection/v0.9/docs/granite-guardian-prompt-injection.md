@@ -85,7 +85,7 @@ Inside the `api-platform` repository, add the policy package under `policies:` i
 Attach the policy to an LLM provider route to block prompt injection and jailbreak attempts using the default configuration:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: LlmProvider
 metadata:
   name: protected-chat-provider
@@ -93,7 +93,7 @@ spec:
   displayName: Protected Chat Provider
   version: v1.0
   template: openai
-  vhost: openai
+  context: /openai
   upstream:
     url: "https://api.openai.com/v1"
     auth:
@@ -105,7 +105,7 @@ spec:
     exceptions:
       - path: /chat/completions
         methods: [POST]
-  policies:
+  operationPolicies:
     - name: granite-guardian-prompt-injection
       version: v0
       paths:
@@ -122,9 +122,8 @@ spec:
 Test with a benign request (passes through):
 
 ```bash
-curl -X POST http://openai:8080/chat/completions \
+curl -X POST http://localhost:8080/openai/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Host: openai" \
   -d '{
     "model": "gpt-4",
     "messages": [
@@ -136,9 +135,8 @@ curl -X POST http://openai:8080/chat/completions \
 Test with a jailbreak attempt (blocked):
 
 ```bash
-curl -X POST http://openai:8080/chat/completions \
+curl -X POST http://localhost:8080/openai/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Host: openai" \
   -d '{
     "model": "gpt-4",
     "messages": [
@@ -166,7 +164,7 @@ When the request is blocked, the policy returns HTTP `400`:
 Lower the threshold and enable assessment details to get full verdict information in the block response:
 
 ```yaml
-policies:
+operationPolicies:
   - name: granite-guardian-prompt-injection
     version: v0
     paths:
@@ -206,7 +204,7 @@ When a request is blocked with `showAssessment: true`, the response body include
 When the Granite Guardian service is unavailable, allow traffic to proceed rather than returning an error. Use this configuration only when availability takes priority over strict security enforcement:
 
 ```yaml
-policies:
+operationPolicies:
   - name: granite-guardian-prompt-injection
     version: v0
     paths:

@@ -191,7 +191,7 @@ func (p *OpaqueTokenAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *po
 		return p.handleAuthFailureHeaders(reqCtx.SharedContext, onFailureStatusCode, errorMessageFormat, errorMessage, "no introspection provider matches configured issuers")
 	}
 
-	authHeaders := reqCtx.Headers.Get(strings.ToLower(headerName))
+	authHeaders := reqCtx.DownstreamHeaders().Get(strings.ToLower(headerName))
 	if len(authHeaders) == 0 {
 		slog.Debug("Opaque Token Auth Policy: Missing authorization header", "headerName", headerName)
 		return p.handleAuthFailureHeaders(reqCtx.SharedContext, onFailureStatusCode, errorMessageFormat, errorMessage, "missing authorization header")
