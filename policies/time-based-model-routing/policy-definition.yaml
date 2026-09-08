@@ -1,5 +1,5 @@
 name: time-based-model-routing
-version: v0.9.0
+version: v0.9.1
 displayName: Time-Based Model Routing
 description: |
   Routes an LLM request to a configured model and optional provider according
@@ -52,43 +52,35 @@ parameters:
             minLength: 1
           days:
             title: Applicable days
+            type: object
+            additionalProperties: false
             description: |
               Enable the weekdays on which this schedule starts. All days are
               enabled by default; omitted switches remain enabled. At least one
               day must be enabled. Overnight windows continue into the next day.
-            oneOf:
-              - type: object
-                additionalProperties: false
-                x-wso2-policy-property-order: [Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday]
-                properties:
-                  Monday:
-                    type: boolean
-                    default: true
-                  Tuesday:
-                    type: boolean
-                    default: true
-                  Wednesday:
-                    type: boolean
-                    default: true
-                  Thursday:
-                    type: boolean
-                    default: true
-                  Friday:
-                    type: boolean
-                    default: true
-                  Saturday:
-                    type: boolean
-                    default: true
-                  Sunday:
-                    type: boolean
-                    default: true
-              - type: array
-                description: Legacy list of weekday names.
-                minItems: 1
-                uniqueItems: true
-                items:
-                  type: string
-                  enum: [Mon, Monday, Tue, Tuesday, Wed, Wednesday, Thu, Thursday, Fri, Friday, Sat, Saturday, Sun, Sunday]
+            x-wso2-policy-property-order: [Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday]
+            properties:
+              Monday:
+                type: boolean
+                default: true
+              Tuesday:
+                type: boolean
+                default: true
+              Wednesday:
+                type: boolean
+                default: true
+              Thursday:
+                type: boolean
+                default: true
+              Friday:
+                type: boolean
+                default: true
+              Saturday:
+                type: boolean
+                default: true
+              Sunday:
+                type: boolean
+                default: true
           model:
             title: Model
             type: object
