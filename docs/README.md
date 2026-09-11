@@ -56,7 +56,7 @@ All available policies, sorted alphabetically.
 | [MCP Access Control](./mcp-acl-list/v1.0/docs/mcp-acl-list.md) | MCP | MCP ACL List policy controls access to tools, resources, and prompts using mode and exceptions. |
 | [MCP Authentication](./mcp-auth/v1.4/docs/mcp-authentication.md) | MCP, Security | This policy is used to secure traffic to Model Context Protocol server as defined in the specification (https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization). |
 | [MCP Authorization](./mcp-authz/v1.3/docs/mcp-authorization.md) | MCP, Security | MCP Authorization policy validates access to MCP resources (tools, resources, prompts) and methods based on JWT claims or OAuth scopes provided by the mcp-auth policy. |
-| [MCP Rate Limit](./mcp-ratelimit/v1.0/docs/mcp-ratelimit.md) | MCP, Security | Applies rate limits to MCP traffic per tool, resource, prompt, or JSON-RPC method. |
+| [MCP Rate Limit](./mcp-ratelimit/v1.2/docs/mcp-ratelimit.md) | MCP, Security | Applies rate limits to MCP traffic per tool, resource, prompt, or JSON-RPC method. |
 | [MCP Rewrite](./mcp-rewrite/v1.0/docs/mcp-rewrite.md) | MCP | MCP Rewrite policy defines user-facing tools, resources, and prompts and maps them to backend capability names using optional "target" fields. |
 | [MCP Spec Validation](./mcp-spec-validation/v0.9/docs/mcp-spec-validation.md) | MCP, Security | Validates incoming MCP requests for conformance with the MCP specification applicable to the declared protocol version. |
 | [Model Round Robin](./model-round-robin/v1.1/docs/model-round-robin.md) | AI | Implements round-robin load balancing for AI models. |
