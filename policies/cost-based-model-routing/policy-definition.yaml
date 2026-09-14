@@ -40,7 +40,9 @@ parameters:
           description: |
             JSONPath for payload (for example "$.model"), header name, query
             parameter name, or a regular expression with a capture group
-            selecting the model segment for pathParam.
+            selecting the model segment for pathParam. A simple leading positive
+            lookbehind expression, such as "(?<=models/)[a-zA-Z0-9.\\-]+",
+            is also supported for pathParam.
           minLength: 1
     modelBudgets:
       title: Model-budgets
