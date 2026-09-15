@@ -84,6 +84,10 @@ func (c *GeminiCalculator) fees(fields fieldLookups, current Usage) Usage {
 		}
 	}
 	current.GeminiWebSearchRequests = groundingQueryCount(fields)
+
+	// Thinking tokens are reported outside candidatesTokenCount, so the billed
+	// output is the sum of the two.
+	current.CompletionTokens += current.ReasoningTokens
 	return current
 }
 
