@@ -57,7 +57,8 @@ type McpAuthPolicy struct {
 	RequiredScopes      []string      `json:"requiredScopes"`
 	OnFailureStatusCode int           `json:"onFailureStatusCode"`
 	ErrorMessageFormat  string        `json:"errorMessageFormat"`
-	GatewayHost         string        `json:"gatewayHost"`
+	GatewayHost         string        `json:"gatewayHost"` // Deprecated: use GatewayURL.
+	GatewayURL          string        `json:"gatewayUrl"`
 }
 
 type ProtectedResourceMetadata struct {
@@ -110,8 +111,22 @@ func GetPolicy(
 	ins.OnFailureStatusCode = getIntParam(params, "onFailureStatusCode", 401)
 	ins.ErrorMessageFormat = getStringParam(params, "errorMessageFormat", "json")
 	ins.GatewayHost = getStringParam(params, "gatewayHost", "")
+	ins.GatewayURL = strings.TrimRight(getStringParam(params, "gatewayUrl", ""), "/")
+	logDeprecatedParamUsage(ins.GatewayHost, ins.GatewayURL)
 
 	return ins, nil
+}
+
+// Logs a warning for the deprecated gatewayHost param when used, noting when it's ignored in favor of gatewayUrl.
+func logDeprecatedParamUsage(gatewayHost, gatewayURL string) {
+	if gatewayHost == "" {
+		return
+	}
+	if gatewayURL != "" {
+		slog.Warn("MCP Auth Policy: 'gatewayhost' is deprecated and ignored because 'gatewayurl' is configured; remove 'gatewayhost' and use 'gatewayurl' in config.toml.")
+	} else {
+		slog.Warn("MCP Auth Policy: 'gatewayhost' is deprecated; migrate to 'gatewayurl' in config.toml.")
+	}
 }
 
 // parseAuthority extracts host and port from an authority string (e.g., "example.com:8080")
@@ -480,9 +495,10 @@ func (p *McpAuthPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Reques
 		return policy.ImmediateResponse{StatusCode: v1r.StatusCode, Headers: v1r.Headers, Body: v1r.Body}
 	}
 
-	if p.GatewayHost != "" {
+	if p.GatewayHost != "" || p.GatewayURL != "" {
 		ensureRequestMetadata(reqCtx)
 		reqCtx.Metadata["gatewayHost"] = p.GatewayHost
+		reqCtx.Metadata["gatewayUrl"] = p.GatewayURL
 	}
 
 	ds := reqCtx.DownstreamRequest()
@@ -728,6 +744,14 @@ func (p *McpAuthPolicy) handleAuth(ctx context.Context, reqCtx *policy.RequestCo
 // generateResourcePathFromFields builds the resource URL from individual context fields
 // instead of a full RequestContext, enabling use in both header and body phases.
 func generateResourcePathFromFields(scheme, authority, vhost, apiContext string, params map[string]any, resource string) string {
+	// gatewayUrl, when set, is used verbatim and overrides vhost/gatewayHost.
+	if gatewayURL := strings.TrimRight(getStringParam(params, "gatewayUrl", ""), "/"); gatewayURL != "" {
+		if apiContext != "" {
+			return fmt.Sprintf("%s%s/%s", gatewayURL, apiContext, resource)
+		}
+		return fmt.Sprintf("%s/%s", gatewayURL, resource)
+	}
+
 	_, port := parseAuthority(authority)
 
 	var host string

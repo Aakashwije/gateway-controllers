@@ -870,8 +870,16 @@ func (p *McpAuthzPolicy) checkScopes(sc ScopeConstraints, authCtx *policy.AuthCo
 }
 
 // generateResourcePath generates the full resource URL for the given resource path
-func generateResourcePath(scheme, authority, vhost, apiContext, gatewayHost, resource string) string {
+func generateResourcePath(scheme, authority, vhost, apiContext, gatewayHost, gatewayURL, resource string) string {
 	slog.Debug("MCP Authorization Policy: Generating resource path for", "resource", resource)
+
+	// gatewayUrl, when set, is used verbatim and overrides vhost/gatewayHost.
+	if gatewayURL = strings.TrimRight(gatewayURL, "/"); gatewayURL != "" {
+		if apiContext != "" {
+			return fmt.Sprintf("%s%s/%s", gatewayURL, apiContext, resource)
+		}
+		return fmt.Sprintf("%s/%s", gatewayURL, resource)
+	}
 
 	_, port := parseAuthority(authority)
 
@@ -916,7 +924,8 @@ func generateResourcePath(scheme, authority, vhost, apiContext, gatewayHost, res
 func generateWwwAuthenticateHeader(scheme, authority, vhost, apiContext string, metadata map[string]any, scopes []string, errorCode, errorDesc string) string {
 	slog.Debug("MCP Authorization Policy: Generating WWW-Authenticate header")
 	gatewayHostString, _ := metadata["gatewayHost"].(string)
-	headerValue := AuthMethodBearer + "\"" + generateResourcePath(scheme, authority, vhost, apiContext, gatewayHostString, WellKnownPath) + "\""
+	gatewayURLString, _ := metadata["gatewayUrl"].(string)
+	headerValue := AuthMethodBearer + "\"" + generateResourcePath(scheme, authority, vhost, apiContext, gatewayHostString, gatewayURLString, WellKnownPath) + "\""
 	if len(scopes) > 0 {
 		slog.Debug("MCP Authorization Policy: Adding scopes to WWW-Authenticate header")
 		headerValue += ", scope=\"" + strings.Join(scopes, " ") + "\""
