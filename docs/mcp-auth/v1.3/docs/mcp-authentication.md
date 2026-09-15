@@ -443,5 +443,5 @@ The client's token is validated by `mcp-auth`, and the MCP server receives the s
 
 ## Related Policies
 
-- [MCP Authorization Policy](../../../mcp-authz/v1.1/docs/mcp-authorization.md) - Enforces claim and scope rules on MCP tools, resources, prompts, and methods after this policy authenticates the caller
+- [MCP Authorization Policy](../../../mcp-authz/v1.2/docs/mcp-authorization.md) - Enforces claim and scope rules on MCP tools, resources, prompts, and methods after this policy authenticates the caller
 - [JWT Authentication Policy](../../../jwt-auth/v1.3/docs/jwt-authentication.md) - Base JWT token validation mechanism

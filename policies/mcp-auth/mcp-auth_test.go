@@ -60,6 +60,38 @@ func TestGetPolicy(t *testing.T) {
 	}
 }
 
+func TestGetPolicy_GatewayUrlValidation(t *testing.T) {
+	tests := []struct {
+		name       string
+		gatewayURL string
+		wantErr    bool
+	}{
+		{name: "absent", gatewayURL: "", wantErr: false},
+		{name: "valid https", gatewayURL: "https://mcp1.example.com", wantErr: false},
+		{name: "valid http", gatewayURL: "http://mcp1.example.com:8080", wantErr: false},
+		{name: "unsupported scheme", gatewayURL: "ftp://mcp1.example.com", wantErr: true},
+		{name: "no scheme", gatewayURL: "mcp1.example.com", wantErr: true},
+		{name: "no host", gatewayURL: "https://", wantErr: true},
+		{name: "has query string", gatewayURL: "https://mcp1.example.com?foo=bar", wantErr: true},
+		{name: "has fragment", gatewayURL: "https://mcp1.example.com#section", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			params := map[string]any{}
+			if tt.gatewayURL != "" {
+				params["gatewayUrl"] = tt.gatewayURL
+			}
+			_, err := GetPolicy(policy.PolicyMetadata{}, params)
+			if tt.wantErr && err == nil {
+				t.Errorf("GetPolicy(gatewayUrl=%q): expected error, got nil", tt.gatewayURL)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("GetPolicy(gatewayUrl=%q): unexpected error: %v", tt.gatewayURL, err)
+			}
+		})
+	}
+}
+
 func TestOnRequestHeaders_WellKnown_Success(t *testing.T) {
 	p, _ := GetPolicy(policy.PolicyMetadata{}, map[string]any{
 		"requiredScopes": []any{"scope1", "scope2"},

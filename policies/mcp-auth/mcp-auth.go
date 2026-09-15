@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -111,15 +112,42 @@ func GetPolicy(
 	ins.OnFailureStatusCode = getIntParam(params, "onFailureStatusCode", 401)
 	ins.ErrorMessageFormat = getStringParam(params, "errorMessageFormat", "json")
 	ins.GatewayHost = getStringParam(params, "gatewayHost", "")
-	ins.GatewayURL = strings.TrimRight(getStringParam(params, "gatewayUrl", ""), "/")
+	gatewayURL := strings.TrimRight(getStringParam(params, "gatewayUrl", ""), "/")
+	if gatewayURL != "" {
+		if err := validateGatewayURL(gatewayURL); err != nil {
+			return nil, fmt.Errorf("invalid gatewayUrl: %w", err)
+		}
+	}
+	ins.GatewayURL = gatewayURL
 	logDeprecatedParamUsage(ins.GatewayHost, ins.GatewayURL)
 
 	return ins, nil
 }
 
+// validateGatewayURL requires an absolute http(s) URL with a host and no query or fragment,
+// since both metadata producers append /.well-known/oauth-protected-resource to it verbatim.
+func validateGatewayURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("scheme must be http or https, got %q", u.Scheme)
+	}
+	if u.Host == "" {
+		return errors.New("host is required")
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return errors.New("must not include a query string or fragment")
+	}
+	return nil
+}
+
 // Logs a warning for the deprecated gatewayHost param when used, noting when it's ignored in favor of gatewayUrl.
+// "localhost" is gatewayHost's schema default, filled in by the config resolver whenever it's
+// left unset, so it's treated as not-configured here rather than as an explicit value.
 func logDeprecatedParamUsage(gatewayHost, gatewayURL string) {
-	if gatewayHost == "" {
+	if gatewayHost == "" || gatewayHost == "localhost" {
 		return
 	}
 	if gatewayURL != "" {
