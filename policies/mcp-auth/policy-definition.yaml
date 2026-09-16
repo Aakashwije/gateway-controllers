@@ -160,7 +160,7 @@ parameters:
 
 systemParameters:          
   type: object
-  additionalProperties: false
+  additionalProperties: true
   properties:
     keyManagers:
       type: array
