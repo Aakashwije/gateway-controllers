@@ -134,7 +134,7 @@ func validateGatewayURL(raw string) error {
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("scheme must be http or https, got %q", u.Scheme)
 	}
-	if u.Host == "" {
+	if u.Hostname() == "" {
 		return errors.New("host is required")
 	}
 	if u.RawQuery != "" || u.Fragment != "" {

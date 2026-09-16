@@ -72,6 +72,7 @@ func TestGetPolicy_GatewayUrlValidation(t *testing.T) {
 		{name: "unsupported scheme", gatewayURL: "ftp://mcp1.example.com", wantErr: true},
 		{name: "no scheme", gatewayURL: "mcp1.example.com", wantErr: true},
 		{name: "no host", gatewayURL: "https://", wantErr: true},
+		{name: "no host with port only", gatewayURL: "https://:8443", wantErr: true},
 		{name: "has query string", gatewayURL: "https://mcp1.example.com?foo=bar", wantErr: true},
 		{name: "has fragment", gatewayURL: "https://mcp1.example.com#section", wantErr: true},
 	}
