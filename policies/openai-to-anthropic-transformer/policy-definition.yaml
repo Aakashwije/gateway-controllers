@@ -20,8 +20,9 @@ parameters:
       type: string
       x-wso2-policy-advanced-param: false
       description: |
-        Anthropic model name used in the translated request (for example
-        claude-sonnet-4-20250514). Overrides the OpenAI "model" field.
+        Fallback Anthropic model name (for example claude-sonnet-4-20250514),
+        used only when the request payload names no model. It does not override
+        a model the client named.
       minLength: 1
     providerId:
       type: string

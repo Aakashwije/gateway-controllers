@@ -20,9 +20,10 @@ parameters:
       type: string
       x-wso2-policy-advanced-param: false
       description: |
-        Gemini model name used in the translated request (for example
-        gemini-2.5-pro). Overrides the OpenAI "model" field and is used
-        in the rewritten path.
+        Fallback Gemini model name (for example gemini-2.5-pro), used only
+        when the request payload names no model. It does not override a model
+        the client named. Whichever model is resolved is used in the rewritten
+        path.
       minLength: 1
     providerId:
       type: string

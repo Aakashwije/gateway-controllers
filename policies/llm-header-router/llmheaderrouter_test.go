@@ -156,13 +156,13 @@ func upstreamFrom(t *testing.T, action policy.RequestHeaderAction) (string, bool
 
 // TestOnRequestHeaders_RoutesAndAnnounces covers all three selection states.
 // The router must do both halves of the contract every other routing policy
-// honours: set the upstream so the request actually moves (FR-001, FR-002) and
-// publish the selection so conditional credential and transformer policies know
-// which provider was chosen (FR-005).
+// honours: set the upstream so the request actually moves, and publish the
+// selection so conditional credential and transformer policies know which
+// provider was chosen.
 //
 // The `primary` fall-through is the exception and must stay as it is: nothing
 // published, nothing routed, so the default cluster and the primary's own
-// credential condition keep working (FR-003).
+// credential condition keep working.
 func TestOnRequestHeaders_RoutesAndAnnounces(t *testing.T) {
 	cases := []struct {
 		name            string
@@ -226,7 +226,7 @@ func TestOnRequestHeaders_RoutesAndAnnounces(t *testing.T) {
 
 // TestOnRequestHeaders_DoesNotOverrideAnEarlierSelection: when an earlier policy
 // has already chosen a provider, the router leaves both halves of that decision
-// alone — it neither republishes nor re-routes (FR-004).
+// alone — it neither republishes nor re-routes.
 func TestOnRequestHeaders_DoesNotOverrideAnEarlierSelection(t *testing.T) {
 	p := &RouterPolicy{params: mustParse(t)}
 	reqCtx := &policy.RequestHeaderContext{
@@ -248,7 +248,7 @@ func TestOnRequestHeaders_DoesNotOverrideAnEarlierSelection(t *testing.T) {
 
 // TestOnRequestBody_StillPublishesAndDoesNotRoute: the body phase keeps its
 // idempotent republish and must not route — the upstream belongs to the header
-// phase, so the cluster is known before the request is forwarded (FR-002, BC-3).
+// phase, so the cluster is known before the request is forwarded.
 func TestOnRequestBody_StillPublishesAndDoesNotRoute(t *testing.T) {
 	p := &RouterPolicy{params: mustParse(t)}
 	reqCtx := &policy.RequestContext{
@@ -270,8 +270,8 @@ func TestOnRequestBody_StillPublishesAndDoesNotRoute(t *testing.T) {
 	}
 }
 
-// TestOnRequestHeaders_RoutingIsIndependentOfTransformers guards FR-006. The
-// router's entire input surface is headerName, mappings and defaultProvider —
+// TestOnRequestHeaders_RoutingIsIndependentOfTransformers: the router's entire
+// input surface is headerName, mappings and defaultProvider —
 // it cannot observe whether the selected provider carries a wire-format
 // transformer, so routing cannot depend on one. Before this fix it effectively
 // did: the router published a selection and a transformer routed on its behalf,

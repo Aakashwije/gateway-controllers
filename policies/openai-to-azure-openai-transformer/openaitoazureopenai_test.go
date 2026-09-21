@@ -167,11 +167,10 @@ func TestShouldRun_RoutingGates(t *testing.T) {
 	}
 }
 
-// TestResolveDeployment covers every row of the resolution table in
-// data-model.md. Azure OpenAI resolved configuration-first until the
-// payload-first rule was adopted for all five policies, and it coerced a
-// non-string model to "" rather than rejecting it (FR-005 through FR-010,
-// FR-007a, FR-008).
+// TestResolveDeployment covers every row of the resolution table. Azure OpenAI
+// resolved configuration-first until the payload-first rule was adopted for all
+// five policies, and it coerced a non-string model to "" rather than rejecting
+// it.
 func TestResolveDeployment(t *testing.T) {
 	const configured = "gpt-4o"
 	const requested = "gpt-4o-mini"

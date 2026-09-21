@@ -20,7 +20,7 @@ Use this policy when you need to:
 ## Features
 
 - **Path rewriting**: Rewrites the request path to `/openai/deployments/{deployment}{pathSuffix}?api-version={apiVersion}`.
-- **Deployment resolution**: Uses the `model` parameter as the deployment id, or falls back to the request body's `model` field when `model` is not pinned.
+- **Deployment resolution**: Uses the request body's `model` field as the deployment id. The configured `model` parameter is a fallback, applied only when the request body names none.
 - **api-version injection**: Adds the required Azure `api-version` query parameter.
 - **Body passthrough**: The request and response bodies are not modified, since Azure OpenAI matches the OpenAI wire format.
 

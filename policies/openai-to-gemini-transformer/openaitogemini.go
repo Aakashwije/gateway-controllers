@@ -274,6 +274,14 @@ func selectedProvider(shared *policy.SharedContext) string {
 // response phase can report it rather than the configured value, which may be
 // empty. Mirrors the Bedrock implementation; these policies share no package.
 func storeEffectiveModel(shared *policy.SharedContext, model string) {
+	// A nil shared context is not reachable through the policy engine, which
+	// gives every phase the same instance — the provider selection this policy
+	// already reads in shouldRun travels the same way, as does multi-provider
+	// routing generally. The guard is defensive only. Were it ever nil, the sole
+	// consequence here is that a response omitting "model" is passed through
+	// without the backfill; the request itself is still served with the model the
+	// client asked for. Rejecting such a request instead would defeat the point
+	// of resolving the model from the payload in the first place.
 	if shared == nil {
 		return
 	}

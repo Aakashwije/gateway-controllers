@@ -572,8 +572,8 @@ func TestDecodeEventStreamFrames_MalformedInput(t *testing.T) {
 }
 
 // TestBedrockConversePath_EscapesModel: the model is reachable from the request
-// payload, so it must not be able to alter the path structure (FR-014), while
-// an ordinary Bedrock model id produces the same path as before (FR-015).
+// payload, so it must not be able to alter the path structure, while an ordinary
+// Bedrock model id produces the same path as before.
 func TestBedrockConversePath_EscapesModel(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -597,10 +597,9 @@ func TestBedrockConversePath_EscapesModel(t *testing.T) {
 	}
 }
 
-// TestResolveModel covers every row of the resolution table in data-model.md.
-// Bedrock resolved configuration-first until the payload-first rule was adopted
-// for all five policies; these rows are the contract it now shares with them
-// (FR-005 through FR-010, FR-007a).
+// TestResolveModel covers every row of the resolution table. Bedrock resolved
+// configuration-first until the payload-first rule was adopted for all five
+// policies; these rows are the contract it now shares with them.
 func TestResolveModel(t *testing.T) {
 	const configured = "us.amazon.nova-lite-v1:0"
 	const requested = "anthropic.claude-3-5-sonnet-20241022-v2:0"

@@ -112,9 +112,9 @@ func TestTranslateResponse_JSONShape(t *testing.T) {
 
 // TestConfiguredModelIsFallback pins the compatibility guarantee that survives
 // the payload-first rule: a proxy that sets `model` behaves exactly as it did
-// for every request whose payload names no model (FR-004, FR-025, SC-004). A
-// request that does name one is covered by TestResolveModel — it is served the
-// client's model, which is the one intended behaviour change (FR-006).
+// for every request whose payload names no model. A request that does name one
+// is covered by TestResolveModel — it is served the client's model, which is the
+// one intended behaviour change.
 func TestConfiguredModelIsFallback(t *testing.T) {
 	const configured = "gemini-2.5-pro"
 	p := &TranslatorPolicy{params: PolicyParams{Model: configured, APIVersion: DefaultAPIVersion}}
@@ -169,10 +169,10 @@ func TestConfiguredModelIsFallback(t *testing.T) {
 	}
 }
 
-// TestResolveModel covers every row of the resolution table in data-model.md:
-// the configured model wins when set, the request's own model is used when it
-// is not, and a request that names no usable model is rejected naming both
-// sources (FR-005 through FR-009).
+// TestResolveModel covers every row of the resolution table: the request's own
+// model wins when it names one, the configured model is the fallback used only
+// when it does not, and a request that names no usable model is rejected naming
+// both sources.
 func TestResolveModel(t *testing.T) {
 	const configured = "gemini-2.5-pro"
 	const requested = "gemini-2.5-flash"
@@ -259,7 +259,7 @@ func geminiStreamWithoutModel() string {
 
 // TestEffectiveModel_ReportsModelThatServedRequest covers both resolution paths
 // in both response modes: whatever model actually served the request is what
-// the response reports (FR-011, FR-012).
+// the response reports.
 func TestEffectiveModel_ReportsModelThatServedRequest(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -304,7 +304,7 @@ func TestEffectiveModel_ReportsModelThatServedRequest(t *testing.T) {
 // TestEffectiveModel_FallsBackToConfigured is the guard that no response path
 // can report nothing: with no effective model recorded — a response reaching
 // this policy without its request phase having run — the configured model is
-// reported (FR-013).
+// reported.
 func TestEffectiveModel_FallsBackToConfigured(t *testing.T) {
 	const configured = "gemini-2.5-pro"
 	p := &TranslatorPolicy{params: PolicyParams{Model: configured, APIVersion: DefaultAPIVersion}}
@@ -367,8 +367,8 @@ func feedWithShared(t *testing.T, p *TranslatorPolicy, shared *policy.SharedCont
 
 // TestBuildGeminiPath covers both the shape of the path and its safety: the
 // model can arrive from the request payload, so it must not be able to alter
-// the path structure (FR-014), while an ordinary model name produces the same
-// path as before (FR-015).
+// the path structure, while an ordinary model name produces the same path as
+// before.
 func TestBuildGeminiPath(t *testing.T) {
 	cases := []struct {
 		name   string
