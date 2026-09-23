@@ -39,9 +39,11 @@ package mcptoolpoisoningguardrail
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -618,8 +620,10 @@ func (t responseTarget) rebuild(removed map[int]struct{}, toolCount int) ([]byte
 // An event stream may carry unrelated events — notifications, pings, progress —
 // so only the event whose id matches is a candidate. Exactly one event may
 // answer: if a second one does, or one that cannot be read strictly (duplicate
-// keys) does, or a batch array carries the answer, a client could act on
-// metadata this policy did not inspect, so the stream is refused as malformed.
+// keys) does, or a batch array carries the answer, or one carries an id a
+// client could coerce onto the recorded one (see payloadMayBeConfused), a
+// client could act on metadata this policy did not inspect, so the stream is
+// refused as malformed.
 func locateResponsePayload(body []byte, sse bool, encodedRequestID string) (responseTarget, error) {
 	if !sse {
 		payload, layout, err := decodeJSONObject(string(body), false)
@@ -646,7 +650,7 @@ func locateResponsePayload(body []byte, sse bool, encodedRequestID string) (resp
 		value, layout, err := decodeJSON(event.data, false)
 		if err != nil {
 			lenient, _, lenientErr := decodeJSON(event.data, true)
-			if lenientErr == nil && payloadAnswers(lenient, encodedRequestID) {
+			if lenientErr == nil && (payloadAnswers(lenient, encodedRequestID) || payloadMayBeConfused(lenient, encodedRequestID)) {
 				ambiguous = true
 			}
 			continue
@@ -655,18 +659,106 @@ func locateResponsePayload(body []byte, sse bool, encodedRequestID string) (resp
 			answering = append(answering, responseTarget{
 				payload: object, source: event.data, layout: layout, events: events, eventIndex: index,
 			})
-		} else if payloadAnswers(value, encodedRequestID) {
+		} else if payloadAnswers(value, encodedRequestID) || payloadMayBeConfused(value, encodedRequestID) {
 			ambiguous = true
 		}
 	}
 
 	if ambiguous || len(answering) > 1 {
-		return responseTarget{}, malformed("more than one event in the stream answers the tools/list request id")
+		return responseTarget{}, malformed("more than one event in the stream could answer the tools/list request")
 	}
 	if len(answering) == 0 {
 		return responseTarget{}, malformed("no event in the stream answers the tools/list request id")
 	}
 	return answering[0], nil
+}
+
+// payloadMayBeConfused reports whether a decoded value is, or contains, a
+// JSON-RPC response that a client could read as the answer to the recorded
+// request even though its id is not the recorded literal.
+//
+// This is the weaker test payloadAnswers cannot make. This policy compares ids
+// as exact JSON literals, which is the strictest reading; a client need not.
+// The MCP TypeScript SDK correlates with Number(response.id), so `5.0`, `5e0`
+// and the string `"5"` all answer a request this policy recorded as `5`. Such
+// an event is not the exact match, so it would be passed through uninspected
+// while the client acted on it. Treat it as a second possible answer instead.
+//
+// An id that no coercion brings to the recorded one — a response to a genuinely
+// different request — is unaffected: a stream may carry those, and they are not
+// this policy's to rewrite.
+func payloadMayBeConfused(value any, encodedRequestID string) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		return idMayBeConfused(typed, encodedRequestID)
+	case []any:
+		for _, entry := range typed {
+			if object, ok := entry.(map[string]any); ok && idMayBeConfused(object, encodedRequestID) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// idMayBeConfused reports whether one payload's id could be coerced onto the
+// recorded id. The exact match is not confusable — it is the answer.
+func idMayBeConfused(payload map[string]any, encodedRequestID string) bool {
+	// Only a response competes to be the answer. A server-initiated request or
+	// a notification carries method, and a client routes it by that.
+	if _, isRequest := payload["method"]; isRequest {
+		return false
+	}
+	_, hasResult := payload["result"]
+	_, hasError := payload["error"]
+	if !hasResult && !hasError {
+		return false
+	}
+
+	encoded, ok := encodeJSONRPCID(payload)
+	if !ok || encoded == encodedRequestID {
+		return false
+	}
+
+	wanted, wantedOK := decodeIDAsNumber(encodedRequestID)
+	got, gotOK := coerceIDToNumber(payload["id"])
+	return wantedOK && gotOK && wanted == got
+}
+
+// decodeIDAsNumber coerces a stored (already canonical JSON) id.
+func decodeIDAsNumber(encodedID string) (float64, bool) {
+	value, _, err := decodeJSON(encodedID, false)
+	if err != nil {
+		return 0, false
+	}
+	return coerceIDToNumber(value)
+}
+
+// coerceIDToNumber renders a JSON-RPC id the way a client that correlates
+// responses numerically sees it, following ECMAScript Number(): a numeric
+// string is its number, an empty one is zero, as are null and false, and true
+// is one. ok is false for an id no such client could match on a number.
+func coerceIDToNumber(id any) (float64, bool) {
+	switch typed := id.(type) {
+	case json.Number:
+		number, err := strconv.ParseFloat(string(typed), 64)
+		return number, err == nil
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		if trimmed == "" {
+			return 0, true
+		}
+		number, err := strconv.ParseFloat(trimmed, 64)
+		return number, err == nil
+	case nil:
+		return 0, true
+	case bool:
+		if typed {
+			return 1, true
+		}
+		return 0, true
+	}
+	return 0, false
 }
 
 // payloadAnswers reports whether a decoded value answers the request id. A

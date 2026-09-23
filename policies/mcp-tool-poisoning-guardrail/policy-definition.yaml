@@ -101,8 +101,9 @@ parameters:
           type: boolean
           x-wso2-policy-advanced-param: false
           description: |
-            Enables the static detectors. Must remain true for onClassifierError useStaticDetectors to have
-            anything to fall back to.
+            Enables the static detectors. onClassifierError useStaticDetectors requires this to be true with
+            at least one of hiddenCharacters or injectionPatterns also enabled, otherwise the configuration
+            is rejected: a pass that cannot detect anything is not a fallback.
           default: true
         severity:
           type: string
@@ -142,7 +143,9 @@ systemParameters:
       format: uri
       description: |
         Base URL of the internal tool poisoning classifier service (for example
-        http://mcp-tool-poisoning-classifier:8080). The policy appends /classify automatically.
+        https://mcp-tool-poisoning-classifier:8080). The policy appends /classify automatically. The bearer
+        token and the tool metadata being inspected travel on this hop, so use https, or http only when the
+        hop is itself encrypted and authenticated by a service mesh.
       minLength: 1
       "wso2/defaultValue": "${config.mcp_tool_poisoning_classifier_endpoint}"
     apiKey:

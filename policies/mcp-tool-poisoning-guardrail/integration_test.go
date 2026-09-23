@@ -36,7 +36,7 @@ import (
 //	docker compose up --build -d
 //	MCP_TOOL_POISONING_ENDPOINT=http://localhost:8101 \
 //	MCP_TOOL_POISONING_API_KEY="$TOOL_POISONING_API_KEY" \
-//	go test -run TestAgainstRealClassifierService -v ./..
+//	go test -run TestAgainstRealClassifierService -v ./...
 func TestAgainstRealClassifierService(t *testing.T) {
 	endpoint := os.Getenv("MCP_TOOL_POISONING_ENDPOINT")
 	if endpoint == "" {

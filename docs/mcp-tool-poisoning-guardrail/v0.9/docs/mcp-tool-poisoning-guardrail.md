@@ -106,6 +106,13 @@ that control enforcement.
 | `hiddenCharacters` | boolean | No | `true` | Detects invisible and control characters used to hide instructions. |
 | `injectionPatterns` | boolean | No | `true` | Detects explicit prompt-injection phrasing. |
 
+**`onClassifierError: useStaticDetectors` needs a detector behind it.** The
+fallback is refused at deployment time unless `enabled` is `true` and at least
+one of `hiddenCharacters` or `injectionPatterns` is on. `enabled: true` with
+both scanners off is not a fallback: the pass runs, finds nothing, and a
+classifier outage would deliver every tool uninspected under the very setting
+chosen to prevent that.
+
 **`classifierThreshold` defaults to `0.9`.** The score is a risk signal, not a
 verdict, and the right cut-off depends on the tool catalogue being served. Treat
 the default as a starting point for evaluation, then tune it against the
@@ -178,8 +185,8 @@ classifier endpoint, its credential or the limits sized against it.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `endpoint` | string (URI) | Yes | — | Base URL of the internal classifier service, e.g. `http://mcp-tool-poisoning-classifier:8080`. The policy appends `/classify` automatically. |
-| `apiKey` | string | No | — | Bearer token for the classifier service. Leave empty only if the service is configured to allow anonymous access. |
+| `endpoint` | string (URI) | Yes | — | Base URL of the internal classifier service, e.g. `https://mcp-tool-poisoning-classifier:8080`. The policy appends `/classify` automatically. A plain `http://` endpoint is acceptable only when the hop itself is encrypted — see [Protecting the classifier hop](#protecting-the-classifier-hop). |
+| `apiKey` | string | No | — | Bearer token for the classifier service. It is sent on every request as an `Authorization: Bearer` header, so the hop carrying it must be encrypted. Leave empty only if the service is configured to allow anonymous access. |
 | `requestTimeoutMillis` | integer | No | `5000` | Timeout for a single HTTP call to the classifier service. Range `100`–`120000`. |
 | `classificationDeadlineMillis` | integer | No | `10000` | Overall deadline for classifying one `tools/list` response. Every batch shares this one deadline, so total added latency stays bounded regardless of tool count. Range `100`–`300000`. |
 | `batchSize` | integer | No | `16` | Text fields per classifier request. Range `1`–`32`; the ceiling is the bundled service's `TOOL_POISONING_MAX_ITEMS` default. |
@@ -270,7 +277,7 @@ not how many run. Real concurrency comes from replicas.
 Add to `config.toml`:
 
 ```toml
-mcp_tool_poisoning_classifier_endpoint = "http://mcp-tool-poisoning-classifier.api-gateway.svc.cluster.local:8080"
+mcp_tool_poisoning_classifier_endpoint = "https://mcp-tool-poisoning-classifier.api-gateway.svc.cluster.local:8080"
 mcp_tool_poisoning_classifier_request_timeout_millis = 5000
 mcp_tool_poisoning_classification_deadline_millis = 10000
 mcp_tool_poisoning_batch_size = 16
@@ -321,11 +328,36 @@ no egress to huggingface.co at run time.
 
 Endpoint, by where the gateway runs. The policy appends `/classify` itself:
 
-| Gateway runs | `mcp_tool_poisoning_classifier_endpoint` |
-|---|---|
-| In Docker, on the classifier's Docker network | `http://mcp-tool-poisoning-classifier:8080` |
-| In Docker, classifier published on the host | `http://host.docker.internal:8101` |
-| In Kubernetes | `http://mcp-tool-poisoning-classifier.api-gateway.svc.cluster.local:8080` |
+| Gateway runs | `mcp_tool_poisoning_classifier_endpoint` | |
+|---|---|---|
+| In Docker, on the classifier's Docker network | `http://mcp-tool-poisoning-classifier:8080` | local development |
+| In Docker, classifier published on the host | `http://host.docker.internal:8101` | local development |
+| In Kubernetes, behind a mesh sidecar or TLS front | `https://mcp-tool-poisoning-classifier.api-gateway.svc.cluster.local:8080` | production |
+
+##### Protecting the classifier hop
+
+The bundled classifier service speaks plain HTTP. The policy sends `apiKey` as
+an `Authorization: Bearer` header on every `/classify` call, and it sends the
+tool metadata it is inspecting in the request body, so an `http://` endpoint
+puts both on the wire in cleartext.
+
+ClusterIP with no Ingress and a NetworkPolicy limits *who* can reach the
+service; it does not encrypt the hop. Anything that can observe traffic between
+the gateway pod and the classifier pod — a compromised node, a CNI-level tap, a
+misconfigured mirror — reads the bearer token and replays it.
+
+For any deployment where `apiKey` is set, terminate the hop encrypted:
+
+- **Service mesh** — put both workloads in a mesh with strict mTLS (Istio
+  `PeerAuthentication: STRICT`, Linkerd, or equivalent). The endpoint stays
+  `http://…`, because the sidecar encrypts and authenticates it. This is the
+  usual choice in Kubernetes.
+- **TLS on the service** — front the classifier with TLS (a sidecar proxy, or
+  the service's own certificate) and point `endpoint` at `https://…`.
+
+`http://` without one of these is appropriate only for local development, where
+the traffic does not leave the host. Leaving `apiKey` empty does not make a
+cleartext hop safe: the tool metadata in the request body is still exposed.
 
 ##### Classifier API contract
 

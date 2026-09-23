@@ -741,6 +741,12 @@ type sseEvent struct {
 // Lines are split on LF and a trailing CR is dropped, so LF and CRLF framing
 // are both understood. `data:` lines are joined with LF and lose one optional
 // leading space. A payload that is not valid UTF-8 is not an event stream.
+//
+// A bare CR is also a line terminator in the SSE grammar, but rebuilding a
+// stream that mixes all three terminators byte for byte is not worth the
+// surface: a CR inside what this parser reads as one line would be a line
+// boundary to the client, so the client would see `data:` fields this policy
+// never inspected. Such a stream is refused rather than parsed.
 func parseEventStream(body string) ([]sseEvent, error) {
 	if !utf8.ValidString(body) {
 		return nil, malformed("body is not valid UTF-8")
@@ -777,6 +783,11 @@ func parseEventStream(body string) ([]sseEvent, error) {
 	pieces := strings.Split(body, "\n")
 	last := len(pieces) - 1
 	for index, piece := range pieces {
+		// Only a CR that terminates the piece is CRLF framing. Any other CR
+		// splits the line for the client but not for this parser.
+		if strings.Contains(strings.TrimSuffix(piece, "\r"), "\r") {
+			return nil, malformed("event stream uses a bare CR line terminator")
+		}
 		if index < last {
 			rawParts = append(rawParts, piece+"\n")
 		} else if piece != "" {

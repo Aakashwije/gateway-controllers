@@ -53,6 +53,12 @@ Hugging Face token.
    mcp_tool_poisoning_classifier_api_key  = "<the service's bearer token>"
    ```
 
+   The `http://` endpoint above is for local development. The bearer token and
+   the tool metadata being inspected both travel on this hop, so outside local
+   development use `https://`, or `http://` only inside a service mesh that
+   encrypts and authenticates it. See [Protecting the classifier
+   hop](../../docs/mcp-tool-poisoning-guardrail/v0.9/docs/mcp-tool-poisoning-guardrail.md#protecting-the-classifier-hop).
+
 4. Attach the policy to an MCP proxy:
 
    ```yaml

@@ -907,17 +907,52 @@ func TestClassifierErrorHandling(t *testing.T) {
 		}
 	})
 
-	t.Run("useStaticDetectors with static detectors off has nothing to fall back to", func(t *testing.T) {
-		mock := newMockClassifier(t, failing)
-		p := newTestPolicy(t, mock.server.URL, map[string]any{
-			"onClassifierError": OnErrorUseStaticDetectors,
-			"staticDetectors":   map[string]any{"enabled": false},
-		})
+	// A useStaticDetectors fallback with no detector behind it is refused at
+	// deployment time, so there is no runtime case to cover here. See
+	// TestUseStaticDetectorsRequiresADetector.
+}
 
-		exchange := newExchange(toolsListRequest("1"), toolsListResponse("1", benignTool))
-		response := immediate(t, exchange.run(t, p))
-		if code := jsonRPCErrorCode(t, response.Body); code != jsonRPCCodeInspectionUnavailable {
-			t.Fatalf("error code = %d, want %d", code, jsonRPCCodeInspectionUnavailable)
+// TestUseStaticDetectorsRequiresADetector pins the deployment-time rejection.
+// Every one of these configurations would otherwise deliver every tool
+// uninspected on a classifier failure, under the setting chosen to prevent it.
+func TestUseStaticDetectorsRequiresADetector(t *testing.T) {
+	for name, static := range map[string]map[string]any{
+		"the whole static pass is off": {"enabled": false},
+		"both scanners are off":        {"hiddenCharacters": false, "injectionPatterns": false},
+		"enabled with no scanner":      {"enabled": true, "hiddenCharacters": false, "injectionPatterns": false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := GetPolicy(policy.PolicyMetadata{}, map[string]any{
+				"endpoint":          "http://classifier:8080",
+				"onClassifierError": OnErrorUseStaticDetectors,
+				"staticDetectors":   static,
+			})
+			if err == nil {
+				t.Fatalf("expected the configuration to be rejected")
+			}
+			if !strings.Contains(err.Error(), "onClassifierError") {
+				t.Fatalf("error = %v, want it to name the offending parameter", err)
+			}
+		})
+	}
+
+	t.Run("one scanner is enough", func(t *testing.T) {
+		if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]any{
+			"endpoint":          "http://classifier:8080",
+			"onClassifierError": OnErrorUseStaticDetectors,
+			"staticDetectors":   map[string]any{"hiddenCharacters": false},
+		}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("block does not need a static detector", func(t *testing.T) {
+		if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]any{
+			"endpoint":          "http://classifier:8080",
+			"onClassifierError": OnErrorBlock,
+			"staticDetectors":   map[string]any{"enabled": false},
+		}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
 		}
 	})
 }
@@ -1935,6 +1970,48 @@ func TestAnEventStreamMustBeValidUTF8(t *testing.T) {
 	}
 }
 
+// TestBareCRLineTerminatorsAreRefused covers the disagreement a bare CR
+// creates: this parser reads one line, an SSE client reads two, so the client
+// would see `data:` content the guardrail never inspected.
+func TestBareCRLineTerminatorsAreRefused(t *testing.T) {
+	streams := map[string]string{
+		"a bare CR splits a data line": "data: {\"a\":1}\rdata: {\"b\":2}\n\n",
+		"a bare CR inside a field":     "event: mess\rage\ndata: {\"a\":1}\n\n",
+		"a CR-only stream":             "data: {\"a\":1}\r\rdata: {\"b\":2}\r\r",
+	}
+	for name, body := range streams {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseEventStream(body); err == nil {
+				t.Fatalf("a stream with a bare CR line terminator was accepted")
+			}
+		})
+	}
+
+	t.Run("CRLF framing is still accepted", func(t *testing.T) {
+		events, err := parseEventStream("event: message\r\ndata: {\"a\":1}\r\n\r\n")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(events) != 1 || events[0].data != `{"a":1}` {
+			t.Fatalf("events = %+v", events)
+		}
+	})
+}
+
+// TestABareCRCannotHideAnAnsweringEvent is the end-to-end consequence: the
+// stream is refused rather than passed through with an uninspected event.
+func TestABareCRCannotHideAnAnsweringEvent(t *testing.T) {
+	mock := newMockClassifier(t, alwaysScore(0.01))
+	p := newTestPolicy(t, mock.server.URL, nil)
+	body := []byte("data: " + compactJSON(t, toolsListResponse("5", benignTool)) +
+		"\rdata: " + compactJSON(t, toolsListResponse("5", poisonedTool)) + "\n\n")
+
+	result := immediate(t, newExchange(toolsListRequest("5"), body).asSSE().run(t, p))
+	if code := jsonRPCErrorCode(t, extractFirstPayload(t, result.Body, true)); code != jsonRPCCodeMalformedResponse {
+		t.Fatalf("error code = %d, want %d", code, jsonRPCCodeMalformedResponse)
+	}
+}
+
 func TestParseRequestPayload(t *testing.T) {
 	t.Run("json", func(t *testing.T) {
 		payload, err := parseRequestPayload([]byte(`{"method":"tools/list"}`), false)
@@ -2748,6 +2825,55 @@ func ambiguousStreams(t *testing.T) map[string][]byte {
 			"\n\ndata: {\"jsonrpc\":\"2.0\",\"id\":5,\"id\":5,\"result\":{\"tools\":[]}}\n\n"),
 		"an answer inside a batch array": []byte("data: " + compactJSON(t, toolsListResponse("5", benignTool)) +
 			"\n\ndata: [{\"jsonrpc\":\"2.0\",\"id\":5,\"result\":{\"tools\":[]}}]\n\n"),
+		// Ids this policy compares as distinct literals but a client that
+		// correlates on Number(response.id) reads as the same request.
+		"a second answer whose id is the same number written differently": []byte(
+			"data: " + compactJSON(t, toolsListResponse("5", benignTool)) +
+				"\n\ndata: {\"jsonrpc\":\"2.0\",\"id\":5.0,\"result\":{\"tools\":[]}}\n\n"),
+		"a second answer whose id is in exponent form": []byte(
+			"data: " + compactJSON(t, toolsListResponse("5", benignTool)) +
+				"\n\ndata: {\"jsonrpc\":\"2.0\",\"id\":5e0,\"result\":{\"tools\":[]}}\n\n"),
+		"a second answer whose id is the number as a string": []byte(
+			"data: " + compactJSON(t, toolsListResponse("5", benignTool)) +
+				"\n\ndata: {\"jsonrpc\":\"2.0\",\"id\":\"5\",\"result\":{\"tools\":[]}}\n\n"),
+		"a coercible id inside a batch array": []byte(
+			"data: " + compactJSON(t, toolsListResponse("5", benignTool)) +
+				"\n\ndata: [{\"jsonrpc\":\"2.0\",\"id\":5.0,\"result\":{\"tools\":[]}}]\n\n"),
+		"a coercible id on an error response": []byte(
+			"data: " + compactJSON(t, toolsListResponse("5", benignTool)) +
+				"\n\ndata: {\"jsonrpc\":\"2.0\",\"id\":\"5\",\"error\":{\"code\":-32000,\"message\":\"x\"}}\n\n"),
+	}
+}
+
+// TestUnrelatedResponsesInAStreamAreNotAmbiguous is the other side of
+// ambiguousStreams: an id no coercion brings to the recorded one belongs to a
+// different request. Refusing those would break streams that legitimately
+// carry more than one response.
+func TestUnrelatedResponsesInAStreamAreNotAmbiguous(t *testing.T) {
+	unrelated := map[string]string{
+		"a different number":      "4",
+		"a different string":      "\"five\"",
+		"a near-miss number":      "5.5",
+		"a non-numeric string":    "\"5x\"",
+		"a server-initiated ping": "6",
+	}
+
+	for name, id := range unrelated {
+		t.Run(name, func(t *testing.T) {
+			mock := newMockClassifier(t, alwaysScore(0.01))
+			p := newTestPolicy(t, mock.server.URL, nil)
+			first := "data: {\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"tools\":[]}}\n\n"
+			body := first + "data: " + compactJSON(t, toolsListResponse("5", benignTool)) + "\n\n"
+
+			result := modifications(t, newExchange(toolsListRequest("5"), []byte(body)).asSSE().run(t, p))
+			if result.Body != nil && !strings.HasPrefix(string(result.Body), first) {
+				t.Fatalf("an unrelated response was rewritten:\n%s", result.Body)
+			}
+			if result.AnalyticsMetadata[analyticsInspectionKey] != inspectionCompleted {
+				t.Fatalf("inspection = %v, want %v",
+					result.AnalyticsMetadata[analyticsInspectionKey], inspectionCompleted)
+			}
+		})
 	}
 }
 

@@ -142,6 +142,13 @@ type StaticDetectorConfig struct {
 	InjectionPatterns bool
 }
 
+// canDetect reports whether the static pass can produce a finding at all: the
+// pass has to be on and at least one scanner behind it has to be on. A pass
+// that cannot detect anything is not a fallback for the classifier.
+func (c StaticDetectorConfig) canDetect() bool {
+	return c.Enabled && (c.HiddenCharacters || c.InjectionPatterns)
+}
+
 // PolicyParams holds the per-route policy parameters.
 type PolicyParams struct {
 	Action string
@@ -279,6 +286,17 @@ func parsePolicyParams(params map[string]any) (PolicyParams, error) {
 		return PolicyParams{}, err
 	}
 	parsed.Static = staticConfig
+
+	// onClassifierError=useStaticDetectors falls back to the static pass, so
+	// there has to be a static pass to fall back to. Enabled on its own is not
+	// enough: with both scanners off the pass runs and finds nothing, and a
+	// classifier failure would then deliver every tool uninspected under a
+	// setting chosen to prevent exactly that. Fail the deployment instead.
+	if parsed.OnClassifierError == OnErrorUseStaticDetectors && !staticConfig.canDetect() {
+		return PolicyParams{}, fmt.Errorf(
+			"'onClassifierError' %s requires 'staticDetectors.enabled' with at least one of 'hiddenCharacters' or 'injectionPatterns'",
+			OnErrorUseStaticDetectors)
+	}
 
 	return parsed, nil
 }

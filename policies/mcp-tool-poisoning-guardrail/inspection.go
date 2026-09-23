@@ -1366,10 +1366,13 @@ func (p *McpToolPoisoningGuardrailPolicy) inspect(ctx context.Context, tools []a
 				return inspectionOutcome{}, fmt.Errorf("tool metadata classification failed: %w", err)
 			}
 			// Static fallback only stands in for the model when the static pass
-			// actually ran. With static detection off there is nothing left to
-			// base a verdict on.
-			if !p.params.Static.Enabled {
-				return inspectionOutcome{}, fmt.Errorf("tool metadata classification failed and static detectors are disabled: %w", err)
+			// actually ran and could have found something. With static
+			// detection off, or on with every scanner disabled, there is
+			// nothing left to base a verdict on. GetPolicy rejects that
+			// combination, so this is the defence in depth for a policy built
+			// some other way.
+			if !p.params.Static.canDetect() {
+				return inspectionOutcome{}, fmt.Errorf("tool metadata classification failed and no static detector is enabled: %w", err)
 			}
 			scores = nil
 			outcome.ClassifierDegraded = true
