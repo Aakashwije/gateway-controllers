@@ -1,0 +1,11 @@
+{
+  "name": "jev-tool-filtering",
+  "displayName": "TypeSafe Jev Tool Filtering",
+  "version": "0.9",
+  "provider": "WSO2",
+  "categories": [
+    "AI",
+    "Transformation"
+  ],
+  "description": "Narrows an LLM request's tools array down to the tools relevant to the current user prompt, using TypeSafe AI's Jev System One model. Sends the prompt and normalized tool metadata to Jev as one Noul relevance question per tool, keeps the tools that survive the configured rank or threshold selection, and rewrites the request with their complete original definitions. Fails open, so a provider failure forwards the original request rather than a partially filtered one."
+}
