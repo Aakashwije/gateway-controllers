@@ -89,7 +89,7 @@ All available policies, sorted alphabetically.
 | [Subscription Validation](./subscription-validation/v1.0/docs/subscription-validation.md) | Security | Validates that incoming requests are associated with an active subscription for the target API. |
 | [Time-Based Model Routing](./time-based-model-routing/v0.9/docs/time-based-model-routing.md) | AI | Routes LLM requests to configured models and optional providers according to time windows evaluated in a configured timezone. |
 | [Token Based Ratelimit](./token-based-ratelimit/v1.0/docs/token-based-ratelimit.md) | AI | A specialized rate limiting policy for LLM APIs that enforces usage quotas based on token counts. |
-| [TypeSafe Jev Tool Filtering](./jev-tool-filtering/v0.9/docs/jev-tool-filtering.md) | AI, Transformation | Narrows an LLM request's tools array down to the tools relevant to the current user prompt, using TypeSafe AI's Jev System One model. |
+| [TypeSafe Jev Tool Filtering](./typesafe-jev-tool-filtering/v0.8/docs/typesafe-jev-tool-filtering.md) | AI, Transformation | Narrows an LLM request's tools array down to the tools relevant to the current user prompt, using TypeSafe AI's Jev System One model. |
 | [URL Guardrail](./url-guardrail/v1.0/docs/url.md) | Guardrails, AI | Validates URLs found in request or response body content. |
 | [WebSub HMAC Auth](./websub-hmac-auth/v1.0/docs/websub-hmac-auth.md) | Security, WebSub | Validates HMAC signatures on incoming WebSub hub event notification requests. |
 | [Word Count Guardrail](./word-count-guardrail/v1.0/docs/word-count.md) | Guardrails, AI | Validates the word count of request or response body content. |

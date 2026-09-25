@@ -244,31 +244,174 @@ func TestPlainToolsEndToEnd(t *testing.T) {
 	}
 }
 
-// TestEmptyThresholdResultIsWrittenAsEmptyArray covers requirement 25 end to
-// end: no tool qualifying is a valid outcome, not an error.
-func TestEmptyThresholdResultIsWrittenAsEmptyArray(t *testing.T) {
-	mock := newMockJev(t, respondScores(0.1, 0.05, 0.02))
-	p := newTestPolicy(t, mock.url(), map[string]interface{}{
-		"selectionMode": SelectionModeThreshold,
-		"threshold":     0.7,
-		"toolsJSONPath": "$.tools[*].function",
-	})
-
-	body := modifiedBody(t, runRequest(t, p, openAIRequest))
-	if !strings.Contains(string(body), `"tools":[]`) {
-		t.Errorf("rewritten body should carry an empty tools array, got: %s", body)
+// TestEmptySelectionRemovesTools covers requirement 25 end to end: no tool
+// qualifying is a valid outcome, not an error. When tool use is optional the
+// tools field and its companion tool-control fields are removed, and the
+// request goes out as a plain chat request.
+func TestEmptySelectionRemovesTools(t *testing.T) {
+	modes := []struct {
+		name   string
+		params map[string]interface{}
+	}{
+		{name: "By Threshold, nothing reaches it", params: map[string]interface{}{
+			"selectionMode": SelectionModeThreshold,
+			"threshold":     0.7,
+		}},
+		{name: "By Rank, minimumScore drops every tool", params: map[string]interface{}{
+			"selectionMode": SelectionModeRank,
+			"limit":         2,
+			"minimumScore":  0.5,
+		}},
+		{name: "By Rank, limit 0", params: map[string]interface{}{
+			"selectionMode": SelectionModeRank,
+			"limit":         0,
+		}},
+	}
+	choices := map[string]string{
+		"missing":              ``,
+		"tool_choice auto":     `"tool_choice": "auto",`,
+		"tool_choice none":     `"tool_choice": "none",`,
+		"toolChoice auto":      `"toolChoice": "auto",`,
+		"toolChoice none":      `"toolChoice": "none",`,
+		"both spellings, auto": `"tool_choice": "auto", "toolChoice": "auto",`,
+		"openai object auto":   `"tool_choice": {"type":"auto"},`,
 	}
 
-	var filtered map[string]interface{}
-	if err := json.Unmarshal(body, &filtered); err != nil {
-		t.Fatalf("rewritten body is not valid JSON: %v", err)
+	for _, mode := range modes {
+		for choiceName, choiceField := range choices {
+			t.Run(mode.name+"/"+choiceName, func(t *testing.T) {
+				mock := newMockJev(t, respondScores(0.1, 0.05, 0.02))
+				params := map[string]interface{}{"toolsJSONPath": "$.tools[*].function"}
+				for key, value := range mode.params {
+					params[key] = value
+				}
+				p := newTestPolicy(t, mock.url(), params)
+
+				request := `{
+					"model": "gpt-4o",
+					"temperature": 0.2,
+					"stream": true,
+					"metadata": {"trace": "abc"},
+					` + choiceField + `
+					"parallel_tool_calls": true,
+					"messages": [{"role":"user","content":"Tell me a joke about cats"}],
+					"tools": [
+						{"type":"function","function":{"name":"search_documents","description":"Search documents"}},
+						{"type":"function","function":{"name":"send_email","description":"Send an email"}},
+						{"type":"function","function":{"name":"get_weather","description":"Get the weather"}}
+					]
+				}`
+
+				filtered := mustParseBody(t, string(modifiedBody(t, runRequest(t, p, request))))
+				for _, field := range []string{"tools", "tool_choice", "toolChoice", "parallel_tool_calls"} {
+					if value, ok := filtered[field]; ok {
+						t.Errorf("%s = %v, want it removed", field, value)
+					}
+				}
+
+				original := mustParseBody(t, request)
+				for _, field := range []string{"tools", "tool_choice", "toolChoice", "parallel_tool_calls"} {
+					delete(original, field)
+				}
+				if !reflect.DeepEqual(filtered, original) {
+					t.Errorf("unrelated fields changed:\n got: %v\nwant: %v", filtered, original)
+				}
+			})
+		}
 	}
-	tools, ok := filtered["tools"].([]interface{})
-	if !ok {
-		t.Fatalf("tools = %T, want an array", filtered["tools"])
+}
+
+// TestEmptySelectionScopesRemovalToTheToolsParent asserts the tools field and
+// its companions are removed from the object that holds the tools array, and
+// same-named fields anywhere else are left alone.
+func TestEmptySelectionScopesRemovalToTheToolsParent(t *testing.T) {
+	tests := []struct {
+		name      string
+		toolsPath string
+		body      string
+		parent    func(body map[string]interface{}) map[string]interface{}
+	}{
+		{
+			name:      "nested object",
+			toolsPath: "$.request.tools[*].function",
+			body: `{
+				"tool_choice": "root-value-that-must-not-be-touched",
+				"parallel_tool_calls": false,
+				"messages": [{"role":"user","content":"Tell me a joke"}],
+				"request": {
+					"tool_choice": "auto",
+					"toolChoice": "auto",
+					"parallel_tool_calls": true,
+					"keep": "me",
+					"tools": [{"type":"function","function":{"name":"a","description":"one"}}]
+				}
+			}`,
+			parent: func(body map[string]interface{}) map[string]interface{} {
+				return body["request"].(map[string]interface{})
+			},
+		},
+		{
+			name:      "object inside an array element",
+			toolsPath: "$.batches[0].tools",
+			body: `{
+				"tool_choice": "root-value-that-must-not-be-touched",
+				"messages": [{"role":"user","content":"Tell me a joke"}],
+				"batches": [
+					{"tool_choice": "auto", "parallel_tool_calls": true, "keep": "me",
+					 "tools": [{"name":"a","description":"one"}]},
+					{"tool_choice": "auto", "tools": [{"name":"b","description":"two"}]}
+				]
+			}`,
+			parent: func(body map[string]interface{}) map[string]interface{} {
+				return body["batches"].([]interface{})[0].(map[string]interface{})
+			},
+		},
 	}
-	if len(tools) != 0 {
-		t.Errorf("got %d tools, want 0", len(tools))
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			mock := newMockJev(t, respondScores(0.1))
+			p := newTestPolicy(t, mock.url(), map[string]interface{}{
+				"selectionMode": SelectionModeThreshold,
+				"toolsJSONPath": test.toolsPath,
+			})
+
+			filtered := mustParseBody(t, string(modifiedBody(t, runRequest(t, p, test.body))))
+			parent := test.parent(filtered)
+			for _, field := range []string{"tools", "tool_choice", "toolChoice", "parallel_tool_calls"} {
+				if value, ok := parent[field]; ok {
+					t.Errorf("%s = %v, want it removed from the tools parent", field, value)
+				}
+			}
+			if parent["keep"] != "me" {
+				t.Errorf("an unrelated field in the tools parent was changed: %v", parent)
+			}
+
+			// Everything outside the tools parent is unchanged.
+			original := mustParseBody(t, test.body)
+			originalParent := test.parent(original)
+			for _, field := range []string{"tools", "tool_choice", "toolChoice", "parallel_tool_calls"} {
+				delete(originalParent, field)
+			}
+			if !reflect.DeepEqual(filtered, original) {
+				t.Errorf("data outside the tools parent changed:\n got: %v\nwant: %v", filtered, original)
+			}
+		})
+	}
+}
+
+// TestEmptySelectionEmptiesArrayElementToolsPath: a tools array that is an
+// element of another array has no key to remove, so it is emptied in place;
+// the containing array keeps its length and nothing beside it is touched.
+func TestEmptySelectionEmptiesArrayElementToolsPath(t *testing.T) {
+	body := mustParseBody(t, `{"batches": [[{"name": "a"}, {"name": "b"}], ["other"]], "tool_choice": "auto", "parallel_tool_calls": true}`)
+	if err := removeToolsAtPath(body, "$.batches[0]"); err != nil {
+		t.Fatalf("removeToolsAtPath() error = %v", err)
+	}
+
+	want := mustParseBody(t, `{"batches": [[], ["other"]], "tool_choice": "auto", "parallel_tool_calls": true}`)
+	if !reflect.DeepEqual(body, want) {
+		t.Errorf("body = %v, want %v", body, want)
 	}
 }
 
@@ -359,8 +502,8 @@ func TestLimitIsAHardCap(t *testing.T) {
 	}
 }
 
-// TestLimitZeroEmptiesTheToolsArray covers the other end of the cap.
-func TestLimitZeroEmptiesTheToolsArray(t *testing.T) {
+// TestLimitZeroRemovesTheToolsArray covers the other end of the cap.
+func TestLimitZeroRemovesTheToolsArray(t *testing.T) {
 	mock := newMockJev(t, respondScores(0.9, 0.8))
 	p := newTestPolicy(t, mock.url(), map[string]interface{}{
 		"selectionMode": SelectionModeRank,
@@ -372,8 +515,12 @@ func TestLimitZeroEmptiesTheToolsArray(t *testing.T) {
 		"tools": [{"name":"a","description":"one"},{"name":"b","description":"two"}]
 	}`
 
-	if got := toolNames(t, modifiedBody(t, runRequest(t, p, body)), "tools"); len(got) != 0 {
-		t.Errorf("got %v, want an empty tools array", got)
+	var filtered map[string]interface{}
+	if err := json.Unmarshal(modifiedBody(t, runRequest(t, p, body)), &filtered); err != nil {
+		t.Fatalf("rewritten body is not valid JSON: %v", err)
+	}
+	if tools, ok := filtered["tools"]; ok {
+		t.Errorf("tools = %v, want it removed", tools)
 	}
 }
 
@@ -1309,7 +1456,7 @@ func TestExtractUserPrompt(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := extractUserPrompt([]byte(test.body), test.path)
+			got, err := extractUserPrompt([]byte(test.body), mustParseBody(t, test.body), test.path)
 			if test.wantErr {
 				if err == nil && got != "" {
 					t.Fatalf("extractUserPrompt() = %q with no error, want an error or an empty prompt", got)
@@ -1947,65 +2094,81 @@ func choiceRequest(toolChoice string) string {
 	}`
 }
 
-// TestForcedToolNameParsing covers the tool_choice forms the policy recognises.
-func TestForcedToolNameParsing(t *testing.T) {
+// TestReadToolChoice covers the tool_choice forms the policy recognises.
+func TestReadToolChoice(t *testing.T) {
 	tests := []struct {
 		name   string
 		choice string
-		want   string
+		want   toolChoice
 	}{
-		{name: "auto forces nothing", choice: `"auto"`, want: ""},
-		{name: "none forces nothing", choice: `"none"`, want: ""},
-		{name: "required forces nothing", choice: `"required"`, want: ""},
-		{name: "any forces nothing", choice: `"any"`, want: ""},
-		{name: "openai named function", choice: `{"type":"function","function":{"name":"get_weather"}}`, want: "get_weather"},
-		{name: "anthropic named tool", choice: `{"type":"tool","name":"get_weather"}`, want: "get_weather"},
-		{name: "shorthand named function", choice: `{"type":"function","name":"get_weather"}`, want: "get_weather"},
-		{name: "empty name forces nothing", choice: `{"type":"function","function":{"name":""}}`, want: ""},
-		{name: "malformed object forces nothing", choice: `{"type":"function","function":{}}`, want: ""},
-		{name: "null forces nothing", choice: `null`, want: ""},
+		{name: "auto is optional", choice: `"auto"`, want: toolChoice{}},
+		{name: "none is optional", choice: `"none"`, want: toolChoice{}},
+		{name: "object auto is optional", choice: `{"type":"auto"}`, want: toolChoice{}},
+		{name: "required", choice: `"required"`, want: toolChoice{required: true}},
+		{name: "any", choice: `"any"`, want: toolChoice{required: true}},
+		{name: "object required", choice: `{"type":"required"}`, want: toolChoice{required: true}},
+		{name: "object any", choice: `{"type":"any"}`, want: toolChoice{required: true}},
+		{name: "openai named function", choice: `{"type":"function","function":{"name":"get_weather"}}`, want: toolChoice{name: "get_weather"}},
+		{name: "anthropic named tool", choice: `{"type":"tool","name":"get_weather"}`, want: toolChoice{name: "get_weather"}},
+		{name: "shorthand named function", choice: `{"type":"function","name":"get_weather"}`, want: toolChoice{name: "get_weather"}},
+		{name: "empty name is optional", choice: `{"type":"function","function":{"name":""}}`, want: toolChoice{}},
+		{name: "malformed object is optional", choice: `{"type":"function","function":{}}`, want: toolChoice{}},
+		{name: "null is optional", choice: `null`, want: toolChoice{}},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			body := mustParseBody(t, choiceRequest(test.choice))
-			if got := forcedToolName(body, "$.tools"); got != test.want {
-				t.Errorf("forcedToolName() = %q, want %q", got, test.want)
+			for _, field := range toolChoiceFields {
+				body := mustParseBody(t, strings.Replace(choiceRequest(test.choice), `"tool_choice"`, `"`+field+`"`, 1))
+				if got := readToolChoice(body, "$.tools"); got != test.want {
+					t.Errorf("%s: readToolChoice() = %+v, want %+v", field, got, test.want)
+				}
 			}
 		})
 	}
+
+	body := mustParseBody(t, `{"messages":[],"tools":[]}`)
+	if got := readToolChoice(body, "$.tools"); got != (toolChoice{}) {
+		t.Errorf("missing choice: readToolChoice() = %+v, want optional", got)
+	}
 }
 
-// TestForcedToolNameIsReadBesideTheToolsArray asserts the choice is looked up
+// TestReadToolChoiceIsReadBesideTheToolsArray asserts the choice is looked up
 // as a sibling of the tools array, not blindly at the root.
-func TestForcedToolNameIsReadBesideTheToolsArray(t *testing.T) {
+func TestReadToolChoiceIsReadBesideTheToolsArray(t *testing.T) {
 	body := mustParseBody(t, `{
 		"tool_choice": {"type":"function","function":{"name":"root_tool"}},
 		"request": {
 			"tool_choice": {"type":"function","function":{"name":"nested_tool"}},
 			"tools": [{"name":"nested_tool","description":"x"}]
-		}
+		},
+		"batches": [{"tool_choice": "required", "tools": []}]
 	}`)
 
-	if got := forcedToolName(body, "$.request.tools"); got != "nested_tool" {
-		t.Errorf("forcedToolName() = %q, want the choice beside the tools array", got)
+	if got := readToolChoice(body, "$.request.tools"); got.name != "nested_tool" {
+		t.Errorf("readToolChoice() = %+v, want the choice beside the tools array", got)
 	}
-	if got := forcedToolName(body, "$.tools"); got != "root_tool" {
-		t.Errorf("forcedToolName() = %q, want the root choice", got)
+	if got := readToolChoice(body, "$.tools"); got.name != "root_tool" {
+		t.Errorf("readToolChoice() = %+v, want the root choice", got)
 	}
-	if got := forcedToolName(body, "$.missing.tools"); got != "" {
-		t.Errorf("forcedToolName() = %q, want empty for an unresolvable path", got)
+	if got := readToolChoice(body, "$.batches[0].tools"); !got.required {
+		t.Errorf("readToolChoice() = %+v, want the required choice inside batches[0]", got)
+	}
+	if got := readToolChoice(body, "$.missing.tools"); got != (toolChoice{}) {
+		t.Errorf("readToolChoice() = %+v, want optional for an unresolvable path", got)
 	}
 }
 
-// TestCamelCaseToolChoiceIsRecognised covers the alternate spelling.
-func TestCamelCaseToolChoiceIsRecognised(t *testing.T) {
+// TestNamedChoiceTakesPrecedenceOverRequired asserts a request carrying both
+// spellings keeps the named tool.
+func TestNamedChoiceTakesPrecedenceOverRequired(t *testing.T) {
 	body := mustParseBody(t, `{
+		"tool_choice": "required",
 		"toolChoice": {"type":"function","function":{"name":"get_weather"}},
 		"tools": [{"name":"get_weather","description":"x"}]
 	}`)
-	if got := forcedToolName(body, "$.tools"); got != "get_weather" {
-		t.Errorf("forcedToolName() = %q, want get_weather", got)
+	if got := readToolChoice(body, "$.tools"); got != (toolChoice{name: "get_weather"}) {
+		t.Errorf("readToolChoice() = %+v, want the named tool", got)
 	}
 }
 
@@ -2123,23 +2286,6 @@ func TestForcedToolSurvivesThresholdMode(t *testing.T) {
 	got := toolNames(t, modifiedBody(t, runRequest(t, p, choiceRequest(choice))), "tools")
 	if want := []string{"search_calendar", "get_weather"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("tools = %v, want %v (the forced tool kept despite scoring 0.05)", got, want)
-	}
-}
-
-// TestForcedToolNotInTheArrayChangesNothing asserts an already-inconsistent
-// request is filtered normally rather than given special treatment.
-func TestForcedToolNotInTheArrayChangesNothing(t *testing.T) {
-	mock := newMockJev(t, respondScores(0.40, 0.90))
-	p := newTestPolicy(t, mock.url(), map[string]interface{}{
-		"selectionMode": SelectionModeRank,
-		"limit":         1,
-		"toolsJSONPath": "$.tools[*].function",
-	})
-
-	choice := `{"type":"function","function":{"name":"not_offered"}}`
-	got := toolNames(t, modifiedBody(t, runRequest(t, p, choiceRequest(choice))), "tools")
-	if want := []string{"search_calendar"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("tools = %v, want %v", got, want)
 	}
 }
 
@@ -2427,4 +2573,489 @@ func toolNames(t *testing.T, body []byte, field string) []string {
 		names = append(names, "<unnamed>")
 	}
 	return names
+}
+
+// agentLoopRequest is the regression scenario for prompt selection: the user
+// asks for two steps, the model has called get_weather, and the request ends
+// with that tool's result. Judging relevance against the tool result would
+// drop send_email, which the model needs next.
+const agentLoopRequest = `{
+	"model": "gpt-4o",
+	"temperature": 0.2,
+	"messages": [
+		{"role": "system", "content": "You are a helpful assistant."},
+		{"role": "user", "content": "What is the weather in Colombo? Then email it to bob@example.com."},
+		{"role": "assistant", "content": null, "tool_calls": [
+			{"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\":\"Colombo\"}"}}
+		]},
+		{"role": "tool", "tool_call_id": "call_1", "content": "28°C, sunny, humidity 70%."}
+	],
+	"tools": [
+		{"type":"function","function":{"name":"get_weather","description":"Get the current weather for a city."}},
+		{"type":"function","function":{"name":"send_email","description":"Send an email message to a recipient."}},
+		{"type":"function","function":{"name":"get_stock_price","description":"Get the latest stock price for a ticker."}}
+	]
+}`
+
+// TestAgentLoopUsesTheLatestUserRequest is the main prompt-selection
+// regression test: a final tool result must not become the Jev prompt.
+func TestAgentLoopUsesTheLatestUserRequest(t *testing.T) {
+	mock := newMockJev(t, respondScores(0.9, 0.95, 0.05))
+	p := newTestPolicy(t, mock.url(), map[string]interface{}{
+		"selectionMode": SelectionModeRank,
+		"limit":         2,
+		"toolsJSONPath": "$.tools[*].function",
+	})
+
+	body := modifiedBody(t, runRequest(t, p, agentLoopRequest))
+
+	prompt := mock.lastCapture(t).State.Prompt
+	if want := "What is the weather in Colombo? Then email it to bob@example.com."; prompt != want {
+		t.Errorf("prompt sent to Jev = %q, want the user's request %q", prompt, want)
+	}
+	if strings.Contains(prompt, "28°C") {
+		t.Errorf("prompt sent to Jev is the tool result: %q", prompt)
+	}
+
+	if got, want := toolNames(t, body, "tools"), []string{"send_email", "get_weather"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("tools = %v, want %v", got, want)
+	}
+
+	// Every field but tools reaches the upstream unchanged.
+	filtered := mustParseBody(t, string(body))
+	original := mustParseBody(t, agentLoopRequest)
+	delete(filtered, "tools")
+	delete(original, "tools")
+	if !reflect.DeepEqual(filtered, original) {
+		t.Errorf("unrelated fields changed:\n got: %v\nwant: %v", filtered, original)
+	}
+}
+
+// TestDefaultPromptSelection covers which message the default queryJSONPath
+// resolves to.
+func TestDefaultPromptSelection(t *testing.T) {
+	tests := []struct {
+		name     string
+		messages string
+		want     string
+	}{
+		{
+			name: "final assistant message is skipped",
+			messages: `[
+				{"role":"user","content":"Book a flight to Paris"},
+				{"role":"assistant","content":"Which date would you like?"}
+			]`,
+			want: "Book a flight to Paris",
+		},
+		{
+			name: "most recent user message wins over older ones",
+			messages: `[
+				{"role":"user","content":"What is the weather?"},
+				{"role":"assistant","content":"Where?"},
+				{"role":"user","content":"Find the sales report instead"},
+				{"role":"tool","tool_call_id":"x","content":"tool output"}
+			]`,
+			want: "Find the sales report instead",
+		},
+		{
+			name: "system and developer messages are never the prompt",
+			messages: `[
+				{"role":"user","content":"Find the report"},
+				{"role":"developer","content":"Always be brief"},
+				{"role":"system","content":"You are helpful"}
+			]`,
+			want: "Find the report",
+		},
+		{
+			name: "structured text and input_text parts in order",
+			messages: `[
+				{"role":"user","content":[
+					{"type":"text","text":"Find the report"},
+					{"type":"image_url","image_url":{"url":"https://example.com/a.png"}},
+					{"type":"input_text","text":" and email it to Alice "},
+					{"type":"input_audio","input_audio":{"data":"...","format":"wav"}},
+					{"type":"file","file":{"file_id":"f1"}},
+					{"type":"text","text":42},
+					{"type":"text"},
+					"not a part",
+					{"type":"text","text":"   "}
+				]}
+			]`,
+			want: "Find the report\nand email it to Alice",
+		},
+		{
+			name: "user message without usable text is skipped",
+			messages: `[
+				{"role":"user","content":"Summarise this chart"},
+				{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/c.png"}}]},
+				{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"42"}]},
+				{"role":"user","content":"   "}
+			]`,
+			want: "Summarise this chart",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			mock := newMockJev(t, respondScores(0.9, 0.1))
+			p := newTestPolicy(t, mock.url(), map[string]interface{}{"limit": 1})
+
+			body := `{"messages": ` + test.messages + `, "tools": [
+				{"name":"a","description":"one"},
+				{"name":"b","description":"two"}
+			]}`
+			runRequest(t, p, body)
+
+			if got := mock.lastCapture(t).State.Prompt; got != test.want {
+				t.Errorf("prompt sent to Jev = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+// TestNoUsableUserPromptSkipsJev asserts a request with no user text to judge
+// against is forwarded unchanged, without a Jev call.
+func TestNoUsableUserPromptSkipsJev(t *testing.T) {
+	tests := map[string]string{
+		"no messages":       `"messages": []`,
+		"messages missing":  `"input": "hello"`,
+		"only non-user":     `"messages": [{"role":"system","content":"x"},{"role":"assistant","content":"y"},{"role":"tool","content":"z"}]`,
+		"user without text": `"messages": [{"role":"user","content":[{"type":"image_url","image_url":{"url":"u"}}]},{"role":"user","content":"  "},{"role":"user","content":null}]`,
+		"messages not list": `"messages": {"role":"user","content":"hi"}`,
+	}
+
+	for name, field := range tests {
+		t.Run(name, func(t *testing.T) {
+			mock := newMockJev(t, respondScores(0.9, 0.1))
+			p := newTestPolicy(t, mock.url(), map[string]interface{}{
+				"limit":              1,
+				"passthroughOnError": false,
+			})
+
+			body := `{` + field + `, "tools": [{"name":"a","description":"one"},{"name":"b","description":"two"}]}`
+			assertPassthrough(t, runRequest(t, p, body))
+			if calls := mock.callCount(); calls != 0 {
+				t.Errorf("Jev was called %d times, want 0", calls)
+			}
+		})
+	}
+}
+
+// TestCustomQueryJSONPathIsReadAsConfigured asserts only the default path gets
+// the latest-user-message treatment; a custom path is read literally, even
+// when it names a tool message.
+func TestCustomQueryJSONPathIsReadAsConfigured(t *testing.T) {
+	tests := []struct {
+		path string
+		want string
+	}{
+		{path: "$.messages[3].content", want: "28°C, sunny, humidity 70%."},
+		{path: "$.messages[0].content", want: "You are a helpful assistant."},
+	}
+
+	for _, test := range tests {
+		t.Run(test.path, func(t *testing.T) {
+			mock := newMockJev(t, respondScores(0.9, 0.95, 0.05))
+			p := newTestPolicy(t, mock.url(), map[string]interface{}{
+				"limit":         2,
+				"queryJSONPath": test.path,
+				"toolsJSONPath": "$.tools[*].function",
+			})
+			runRequest(t, p, agentLoopRequest)
+
+			if got := mock.lastCapture(t).State.Prompt; got != test.want {
+				t.Errorf("prompt sent to Jev = %q, want %q", got, test.want)
+			}
+		})
+	}
+
+	mock := newMockJev(t, respondScores(0.9, 0.1))
+	p := newTestPolicy(t, mock.url(), map[string]interface{}{"limit": 1, "queryJSONPath": "$.input.text"})
+	runRequest(t, p, `{"input": {"text": "  plan my trip  "}, "tools": [{"name":"a","description":"one"},{"name":"b","description":"two"}]}`)
+	if got := mock.lastCapture(t).State.Prompt; got != "plan my trip" {
+		t.Errorf("prompt sent to Jev = %q, want %q", got, "plan my trip")
+	}
+}
+
+// requiredChoiceRequest offers three tools, none of which suits the prompt,
+// with the given choice field beside them.
+func requiredChoiceRequest(choiceField string) string {
+	return `{
+		"model": "gpt-4o",
+		"temperature": 0.2,
+		` + choiceField + `,
+		"parallel_tool_calls": false,
+		"messages": [{"role":"user","content":"Tell me a joke about cats"}],
+		"tools": [
+			{"type":"function","function":{"name":"search_documents","description":"Search documents"}},
+			{"type":"function","function":{"name":"send_email","description":"Send an email"}},
+			{"type":"function","function":{"name":"get_weather","description":"Get the weather"}}
+		]
+	}`
+}
+
+// TestRequiredChoiceKeepsTheHighestScoringTool asserts a request that must
+// call some tool is never turned into a plain chat request: when nothing
+// survives selection, the highest-scoring tool is kept.
+func TestRequiredChoiceKeepsTheHighestScoringTool(t *testing.T) {
+	modes := []struct {
+		name   string
+		params map[string]interface{}
+	}{
+		{name: "By Threshold, nothing reaches it", params: map[string]interface{}{
+			"selectionMode": SelectionModeThreshold, "threshold": 0.7,
+		}},
+		{name: "By Rank, minimumScore drops every tool", params: map[string]interface{}{
+			"selectionMode": SelectionModeRank, "limit": 2, "minimumScore": 0.5,
+		}},
+		{name: "By Rank, limit 0", params: map[string]interface{}{
+			"selectionMode": SelectionModeRank, "limit": 0,
+		}},
+	}
+	var choices []string
+	for _, field := range toolChoiceFields {
+		for _, value := range []string{`"required"`, `"any"`, `{"type":"required"}`, `{"type":"any"}`} {
+			choices = append(choices, `"`+field+`": `+value)
+		}
+	}
+
+	for _, mode := range modes {
+		for _, choice := range choices {
+			t.Run(mode.name+"/"+choice, func(t *testing.T) {
+				mock := newMockJev(t, respondScores(0.10, 0.30, 0.20))
+				params := map[string]interface{}{"toolsJSONPath": "$.tools[*].function"}
+				for key, value := range mode.params {
+					params[key] = value
+				}
+				p := newTestPolicy(t, mock.url(), params)
+
+				request := requiredChoiceRequest(choice)
+				body := modifiedBody(t, runRequest(t, p, request))
+				if got, want := toolNames(t, body, "tools"), []string{"send_email"}; !reflect.DeepEqual(got, want) {
+					t.Errorf("tools = %v, want exactly the highest-scoring tool %v", got, want)
+				}
+
+				// The choice and parallel_tool_calls are preserved verbatim,
+				// as is everything else.
+				filtered := mustParseBody(t, string(body))
+				original := mustParseBody(t, request)
+				delete(filtered, "tools")
+				delete(original, "tools")
+				if !reflect.DeepEqual(filtered, original) {
+					t.Errorf("fields besides tools changed:\n got: %v\nwant: %v", filtered, original)
+				}
+			})
+		}
+	}
+}
+
+// TestRequiredChoiceFallbackBreaksTiesByPosition asserts the fallback is
+// deterministic: equal scores go to the earlier tool.
+func TestRequiredChoiceFallbackBreaksTiesByPosition(t *testing.T) {
+	mock := newMockJev(t, respondScores(0.20, 0.30, 0.30))
+	p := newTestPolicy(t, mock.url(), map[string]interface{}{
+		"selectionMode": SelectionModeThreshold,
+		"toolsJSONPath": "$.tools[*].function",
+	})
+
+	for i := 0; i < 5; i++ {
+		body := modifiedBody(t, runRequest(t, p, requiredChoiceRequest(`"tool_choice": "required"`)))
+		if got, want := toolNames(t, body, "tools"), []string{"send_email"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("run %d: tools = %v, want %v", i, got, want)
+		}
+	}
+}
+
+// TestRequiredChoiceKeepsANormalSelection asserts the fallback only applies
+// when nothing survives: otherwise the configured selection stands.
+func TestRequiredChoiceKeepsANormalSelection(t *testing.T) {
+	mock := newMockJev(t, respondScores(0.90, 0.80, 0.10))
+	p := newTestPolicy(t, mock.url(), map[string]interface{}{
+		"selectionMode": SelectionModeThreshold,
+		"toolsJSONPath": "$.tools[*].function",
+	})
+
+	body := modifiedBody(t, runRequest(t, p, requiredChoiceRequest(`"tool_choice": "required"`)))
+	if got, want := toolNames(t, body, "tools"), []string{"search_documents", "send_email"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("tools = %v, want %v", got, want)
+	}
+}
+
+// TestNamedChoiceIsKeptAndPreservedVerbatim covers every named form in both
+// spellings: the low-scoring named tool survives a limit of 1, and the choice
+// field itself reaches the upstream unchanged.
+func TestNamedChoiceIsKeptAndPreservedVerbatim(t *testing.T) {
+	forms := []string{
+		`{"type":"function","function":{"name":"get_weather"}}`,
+		`{"type":"tool","name":"get_weather"}`,
+		`{"type":"function","name":"get_weather"}`,
+	}
+
+	for _, field := range toolChoiceFields {
+		for _, form := range forms {
+			t.Run(field+"/"+form, func(t *testing.T) {
+				mock := newMockJev(t, respondScores(0.05, 0.90))
+				p := newTestPolicy(t, mock.url(), map[string]interface{}{
+					"selectionMode": SelectionModeRank,
+					"limit":         1,
+					"toolsJSONPath": "$.tools[*].function",
+				})
+
+				request := strings.Replace(choiceRequest(form), `"tool_choice"`, `"`+field+`"`, 1)
+				body := modifiedBody(t, runRequest(t, p, request))
+				if got, want := toolNames(t, body, "tools"), []string{"get_weather"}; !reflect.DeepEqual(got, want) {
+					t.Errorf("tools = %v, want %v", got, want)
+				}
+
+				filtered := mustParseBody(t, string(body))
+				original := mustParseBody(t, request)
+				if !reflect.DeepEqual(filtered[field], original[field]) {
+					t.Errorf("%s = %v, want it unchanged (%v)", field, filtered[field], original[field])
+				}
+			})
+		}
+	}
+}
+
+// TestMissingNamedToolForwardsUnchanged asserts a request naming a tool its
+// tools array does not carry is forwarded exactly as supplied, without a Jev
+// call, whatever the other tools would score and however selection is
+// configured. Filtering it would keep the contradiction and change the tools
+// around it.
+func TestMissingNamedToolForwardsUnchanged(t *testing.T) {
+	selections := []struct {
+		name   string
+		scores []float64
+		params map[string]interface{}
+	}{
+		{name: "no other tool would survive", scores: []float64{0.05, 0.10}, params: map[string]interface{}{
+			"selectionMode": SelectionModeThreshold, "threshold": 0.7,
+		}},
+		{name: "another tool passes By Threshold", scores: []float64{0.95, 0.10}, params: map[string]interface{}{
+			"selectionMode": SelectionModeThreshold, "threshold": 0.7,
+		}},
+		{name: "another tool is selected By Rank", scores: []float64{0.40, 0.90}, params: map[string]interface{}{
+			"selectionMode": SelectionModeRank, "limit": 1,
+		}},
+		{name: "limit 0", scores: []float64{0.40, 0.90}, params: map[string]interface{}{
+			"selectionMode": SelectionModeRank, "limit": 0,
+		}},
+		{name: "minimumScore", scores: []float64{0.40, 0.90}, params: map[string]interface{}{
+			"selectionMode": SelectionModeRank, "limit": 2, "minimumScore": 0.5,
+		}},
+	}
+	forms := map[string]string{
+		"openai":    `{"type":"function","function":{"name":"missing_tool"}}`,
+		"anthropic": `{"type":"tool","name":"missing_tool"}`,
+		"shorthand": `{"type":"function","name":"missing_tool"}`,
+	}
+
+	for _, selection := range selections {
+		for formName, form := range forms {
+			for _, field := range toolChoiceFields {
+				t.Run(selection.name+"/"+formName+"/"+field, func(t *testing.T) {
+					mock := newMockJev(t, respondScores(selection.scores...))
+					params := map[string]interface{}{"toolsJSONPath": "$.tools[*].function"}
+					for key, value := range selection.params {
+						params[key] = value
+					}
+					p := newTestPolicy(t, mock.url(), params)
+
+					request := strings.Replace(choiceRequest(form), `"tool_choice"`, `"`+field+`"`, 1)
+					assertPassthrough(t, runRequest(t, p, request))
+					if calls := mock.callCount(); calls != 0 {
+						t.Errorf("Jev was called %d times, want 0", calls)
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestMissingNamedToolIsReadBesideANestedToolsArray asserts the named choice
+// is read beside a nested tools array: the nested choice names a missing tool,
+// so the request is forwarded unchanged even though the root choice names a
+// tool that exists nowhere near it.
+func TestMissingNamedToolIsReadBesideANestedToolsArray(t *testing.T) {
+	mock := newMockJev(t, respondScores(0.95, 0.10))
+	p := newTestPolicy(t, mock.url(), map[string]interface{}{
+		"selectionMode": SelectionModeThreshold,
+		"toolsJSONPath": "$.request.tools[*].function",
+	})
+
+	const request = `{
+		"messages": [{"role":"user","content":"Find the report"}],
+		"tool_choice": {"type":"function","function":{"name":"search_documents"}},
+		"request": {
+			"tool_choice": {"type":"function","function":{"name":"missing_tool"}},
+			"tools": [
+				{"type":"function","function":{"name":"search_documents","description":"Search documents"}},
+				{"type":"function","function":{"name":"get_weather","description":"Get the weather"}}
+			]
+		}
+	}`
+
+	assertPassthrough(t, runRequest(t, p, request))
+	if calls := mock.callCount(); calls != 0 {
+		t.Errorf("Jev was called %d times, want 0", calls)
+	}
+
+	// The root choice does not stand in for the nested one: with the nested
+	// choice naming a tool that exists, filtering proceeds normally.
+	const valid = `{
+		"messages": [{"role":"user","content":"Find the report"}],
+		"tool_choice": {"type":"function","function":{"name":"missing_tool"}},
+		"request": {
+			"tool_choice": {"type":"function","function":{"name":"get_weather"}},
+			"tools": [
+				{"type":"function","function":{"name":"search_documents","description":"Search documents"}},
+				{"type":"function","function":{"name":"get_weather","description":"Get the weather"}},
+				{"type":"function","function":{"name":"send_email","description":"Send an email"}}
+			]
+		}
+	}`
+	mock = newMockJev(t, respondScores(0.95, 0.10, 0.05))
+	p = newTestPolicy(t, mock.url(), map[string]interface{}{
+		"selectionMode": SelectionModeThreshold,
+		"toolsJSONPath": "$.request.tools[*].function",
+	})
+	filtered := mustParseBody(t, string(modifiedBody(t, runRequest(t, p, valid))))
+	nested := filtered["request"].(map[string]interface{})
+	var names []string
+	for _, tool := range nested["tools"].([]interface{}) {
+		names = append(names, tool.(map[string]interface{})["function"].(map[string]interface{})["name"].(string))
+	}
+	if want := []string{"search_documents", "get_weather"}; !reflect.DeepEqual(names, want) {
+		t.Errorf("request.tools = %v, want %v", names, want)
+	}
+}
+
+// TestPresentNamedToolIsStillFiltered is the regression guard for the check
+// above: a named tool that exists is kept despite a low score, the other tools
+// are filtered normally, and the request is rewritten rather than passed
+// through.
+func TestPresentNamedToolIsStillFiltered(t *testing.T) {
+	mock := newMockJev(t, respondScores(0.05, 0.90, 0.10))
+	p := newTestPolicy(t, mock.url(), map[string]interface{}{
+		"selectionMode": SelectionModeThreshold,
+		"toolsJSONPath": "$.tools[*].function",
+	})
+
+	const request = `{
+		"messages": [{"role":"user","content":"Plan my day"}],
+		"tool_choice": {"type":"function","function":{"name":"get_weather"}},
+		"tools": [
+			{"type":"function","function":{"name":"get_weather","description":"Get weather forecasts"}},
+			{"type":"function","function":{"name":"search_calendar","description":"Search calendar events"}},
+			{"type":"function","function":{"name":"send_email","description":"Send an email"}}
+		]
+	}`
+
+	body := modifiedBody(t, runRequest(t, p, request))
+	if got, want := toolNames(t, body, "tools"), []string{"search_calendar", "get_weather"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("tools = %v, want %v", got, want)
+	}
+	if calls := mock.callCount(); calls != 1 {
+		t.Errorf("Jev was called %d times, want 1", calls)
+	}
 }

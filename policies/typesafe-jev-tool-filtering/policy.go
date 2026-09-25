@@ -63,7 +63,7 @@ import (
 
 const logPrefix = "TypesafeJevToolFiltering: "
 
-const metadataKeyUsage = "jev-tool-filtering:usage"
+const metadataKeyUsage = "typesafe-jev-tool-filtering:usage"
 
 // TypesafeJevToolFilteringPolicy filters an LLM request's tools by Jev
 // relevance. Every field is set once in GetPolicy and never mutated
@@ -137,7 +137,7 @@ func (p *TypesafeJevToolFilteringPolicy) OnRequestBody(ctx context.Context, reqC
 	}
 
 	// A missing or empty prompt gives Jev nothing to judge relevance against.
-	prompt, err := extractUserPrompt(content, p.user.QueryJSONPath)
+	prompt, err := extractUserPrompt(content, requestBody, p.user.QueryJSONPath)
 	if err != nil {
 		slog.Debug(logPrefix+"No prompt at the configured queryJSONPath, forwarding unchanged",
 			"queryJSONPath", p.user.QueryJSONPath)
@@ -173,6 +173,18 @@ func (p *TypesafeJevToolFilteringPolicy) OnRequestBody(ctx context.Context, reqC
 		return policy.UpstreamRequestModifications{}
 	}
 
+	// A tool the request names in tool_choice is never filtered out: dropping
+	// it would leave the upstream request forcing a tool it no longer offers.
+	// A request naming a tool its tools array does not carry was inconsistent
+	// before the policy saw it. Filtering it would keep that contradiction and
+	// change the tools around it, so it is forwarded unchanged, without a Jev
+	// call, whatever the other tools would score.
+	choice := readToolChoice(requestBody, arrayPath)
+	if choice.name != "" && !offersTool(evaluated, choice.name) {
+		slog.Debug(logPrefix + "The tool named in tool_choice is not in the request, forwarding unchanged")
+		return policy.UpstreamRequestModifications{}
+	}
+
 	questions, questionIDs := buildQuestions(len(evaluated))
 	state := jevState{Prompt: prompt, Tools: normalizedTools(evaluated)}
 
@@ -191,17 +203,21 @@ func (p *TypesafeJevToolFilteringPolicy) OnRequestBody(ctx context.Context, reqC
 		}
 	}
 
-	// A tool the request pins via tool_choice is never filtered out: dropping
-	// it would leave the upstream request forcing a tool it no longer offers.
-	forced := forcedToolName(requestBody, arrayPath)
+	scored := mapScores(evaluated, scores, choice.name)
+	selected := selectTools(scored, p.user)
 
-	selected := selectTools(mapScores(evaluated, scores, forced), p.user)
-	tools := buildToolsArray(selected)
+	// A request that must call some tool keeps its highest-scoring one rather
+	// than being turned into a plain chat request. This overrides threshold,
+	// minimumScore and limit 0.
+	if len(selected) == 0 && choice.required {
+		selected = selectTools(scored, userConfig{SelectionMode: SelectionModeRank, Limit: 1})
+	}
 
 	slog.Debug(logPrefix+"Filtered tools",
 		"originalCount", len(entries),
 		"selectedCount", len(selected),
-		"hasForcedTool", forced != "",
+		"hasNamedTool", choice.name != "",
+		"toolRequired", choice.required,
 		"selectionMode", p.user.SelectionMode)
 
 	if isUnchanged(entries, selected) {
@@ -209,7 +225,15 @@ func (p *TypesafeJevToolFilteringPolicy) OnRequestBody(ctx context.Context, reqC
 		return policy.UpstreamRequestModifications{}
 	}
 
-	if err := setToolsAtPath(requestBody, arrayPath, tools); err != nil {
+	// Tool use is optional here, so a request no tool qualifies for goes out
+	// as a plain chat request: the tools field and its companion tool-control
+	// fields are removed rather than sent as an empty array.
+	if len(selected) == 0 {
+		err = removeToolsAtPath(requestBody, arrayPath)
+	} else {
+		err = setToolsAtPath(requestBody, arrayPath, buildToolsArray(selected))
+	}
+	if err != nil {
 		return p.handleFailure("Could not rewrite the tools array", err)
 	}
 
@@ -219,6 +243,16 @@ func (p *TypesafeJevToolFilteringPolicy) OnRequestBody(ctx context.Context, reqC
 	}
 
 	return policy.UpstreamRequestModifications{Body: modifiedBody}
+}
+
+// offersTool reports whether one of the evaluated tools has the given name.
+func offersTool(evaluated []evaluatedTool, name string) bool {
+	for _, tool := range evaluated {
+		if tool.normalized.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // normalizedTools projects the state's tools array. Its order is what the
@@ -821,12 +855,77 @@ func parseJSONArray(value interface{}) ([]interface{}, error) {
 // extractUserPrompt reads the current user prompt. A missing path is not an
 // error — it yields the empty string, which the caller treats as "nothing to
 // filter against".
-func extractUserPrompt(content []byte, queryJSONPath string) (string, error) {
+//
+// The default queryJSONPath is resolved as "the most recent user message"
+// rather than literally; see latestUserMessageText. A custom path is read
+// exactly as configured.
+func extractUserPrompt(content []byte, requestBody map[string]interface{}, queryJSONPath string) (string, error) {
+	if queryJSONPath == defaultQueryJSONPath {
+		return latestUserMessageText(requestBody), nil
+	}
+
 	prompt, err := utils.ExtractStringValueFromJsonpath(content, queryJSONPath)
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(prompt), nil
+}
+
+// latestUserMessageText returns the text of the most recent user message that
+// has any, or "" when there is none.
+//
+// The default queryJSONPath, "$.messages[-1].content", names the last
+// message. In an agent loop that is usually a tool result or an assistant
+// turn, and judging relevance against a tool result drops the tools the user's
+// next step needs. Selecting the last message whose role is "user" needs an
+// RFC 9535 filter expression, which the SDK's JSONPath evaluator does not
+// support yet (wso2/api-platform#3571), so the default path is resolved here
+// instead. Once filters are supported, the default can become a plain path
+// and this function can go.
+func latestUserMessageText(requestBody map[string]interface{}) string {
+	messages, _ := requestBody["messages"].([]interface{})
+	for i := len(messages) - 1; i >= 0; i-- {
+		message, ok := messages[i].(map[string]interface{})
+		if !ok || message["role"] != "user" {
+			continue
+		}
+		// A user message with no text, such as an image or a tool result
+		// sent in a user turn, says nothing to judge against: keep looking.
+		if text := messageText(message["content"]); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+// textPartTypes are the content part types whose "text" is part of the
+// prompt. Image, audio, file and every other part type are ignored.
+var textPartTypes = map[string]bool{"text": true, "input_text": true}
+
+// messageText returns a message's content as trimmed text. String content is
+// used as is; for an array of content parts, the text parts are joined with
+// newlines in their original order and every other part is ignored.
+func messageText(content interface{}) string {
+	switch value := content.(type) {
+	case string:
+		return strings.TrimSpace(value)
+	case []interface{}:
+		texts := make([]string, 0, len(value))
+		for _, raw := range value {
+			part, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			partType, _ := part["type"].(string)
+			text, _ := part["text"].(string)
+			if text = strings.TrimSpace(text); textPartTypes[partType] && text != "" {
+				texts = append(texts, text)
+			}
+		}
+		return strings.Join(texts, "\n")
+	default:
+		return ""
+	}
 }
 
 // extractToolEntries returns one entry per item in the configured tools array,
@@ -886,79 +985,104 @@ func extractToolEntries(requestBody map[string]interface{}, toolsPath string) ([
 // the tools array.
 var toolChoiceFields = []string{"tool_choice", "toolChoice"}
 
-// forcedToolName returns the name of the tool the request explicitly forces
-// the model to call, or "" when the choice is open.
+// requiredToolChoices are the choices that make the model call some tool
+// without naming which one: OpenAI's "required" and Anthropic's "any".
+var requiredToolChoices = map[string]bool{"required": true, "any": true}
+
+// toolChoice is what the request says about tool use, read from the
+// tool_choice (or toolChoice) field beside the tools array. It decides what
+// happens when no tool survives selection:
 //
-// A request may pin a specific tool, and every provider rejects a request that
-// forces a tool the tools array no longer contains. Filtering must therefore
-// know which tool it may not remove. The open forms ("auto", "none",
-// "required", "any") force nothing.
-//
-// Recognised named forms:
+//   - name set: the named tool is always kept, whatever its score;
+//   - required: the highest-scoring tool is kept, so the request still
+//     offers the tool it must call;
+//   - neither (missing, "auto", "none", or anything unrecognised): tool use
+//     is optional, and the tools and their companion fields are removed.
+type toolChoice struct {
+	name     string
+	required bool
+}
+
+// readToolChoice classifies the request's tool choice. Recognised named forms:
 //
 //	{"type": "function", "function": {"name": "x"}}   OpenAI
 //	{"type": "tool", "name": "x"}                     Anthropic
 //	{"type": "function", "name": "x"}                 shorthand
-func forcedToolName(requestBody map[string]interface{}, arrayPath string) string {
-	// The choice sits beside the tools array, which is not necessarily the
-	// root of the body.
-	parent := parentObjectOfPath(requestBody, arrayPath)
-	if parent == nil {
-		return ""
+//
+// and required forms: "required", "any", {"type": "required"} and
+// {"type": "any"}. A named choice takes precedence over a required one.
+func readToolChoice(requestBody map[string]interface{}, arrayPath string) toolChoice {
+	parent, _, _, err := resolveToolsPath(requestBody, arrayPath)
+	if err != nil {
+		return toolChoice{}
 	}
 
+	var choice toolChoice
 	for _, field := range toolChoiceFields {
-		raw, ok := parent[field]
-		if !ok {
-			continue
-		}
-
-		choice, ok := raw.(map[string]interface{})
-		if !ok {
-			// A string choice ("auto", "none", "required", "any") names no
-			// tool, and neither does anything else.
-			continue
-		}
-
-		if nested, ok := choice["function"].(map[string]interface{}); ok {
-			if name, ok := nested["name"].(string); ok && name != "" {
-				return name
+		switch value := parent[field].(type) {
+		case string:
+			if requiredToolChoices[value] {
+				choice.required = true
+			}
+		case map[string]interface{}:
+			if name := namedToolChoice(value); name != "" {
+				return toolChoice{name: name}
+			}
+			if choiceType, _ := value["type"].(string); requiredToolChoices[choiceType] {
+				choice.required = true
 			}
 		}
-		if name, ok := choice["name"].(string); ok && name != "" {
+	}
+	return choice
+}
+
+// namedToolChoice returns the tool an object-form choice names, or "".
+func namedToolChoice(choice map[string]interface{}) string {
+	if nested, ok := choice["function"].(map[string]interface{}); ok {
+		if name, ok := nested["name"].(string); ok && name != "" {
 			return name
 		}
 	}
-
+	if name, ok := choice["name"].(string); ok && name != "" {
+		return name
+	}
 	return ""
 }
 
-// parentObjectOfPath returns the object that directly contains the array at
-// arrayPath, or nil when the path does not resolve.
-func parentObjectOfPath(requestBody map[string]interface{}, arrayPath string) map[string]interface{} {
+// parsePathSegment splits one dotted segment of a simple JSONPath into its key
+// and array index, which is -1 when the segment has none.
+func parsePathSegment(segment string) (string, int, error) {
+	openIdx := strings.Index(segment, "[")
+	if openIdx == -1 || !strings.HasSuffix(segment, "]") {
+		return segment, -1, nil
+	}
+	index, err := strconv.Atoi(segment[openIdx+1 : len(segment)-1])
+	if err != nil || index < 0 {
+		return "", 0, fmt.Errorf("invalid array index in tools path: %s", segment)
+	}
+	return segment[:openIdx], index, nil
+}
+
+// resolveToolsPath walks arrayPath to the object that directly contains the
+// tools array, and returns that object with the last segment's key and index.
+// Every segment before the last must exist.
+func resolveToolsPath(requestBody map[string]interface{}, arrayPath string) (map[string]interface{}, string, int, error) {
 	parts := strings.Split(strings.TrimPrefix(arrayPath, "$."), ".")
 	if len(parts) == 0 || parts[0] == "" {
-		return nil
+		return nil, "", 0, fmt.Errorf("invalid tools path: %s", arrayPath)
 	}
 
 	current := requestBody
 	for _, part := range parts[:len(parts)-1] {
-		field := part
-		index := -1
-
-		if openIdx := strings.Index(part, "["); openIdx != -1 && strings.HasSuffix(part, "]") {
-			field = part[:openIdx]
-			parsed, err := strconv.Atoi(part[openIdx+1 : len(part)-1])
-			if err != nil || parsed < 0 {
-				return nil
-			}
-			index = parsed
+		field, index, err := parsePathSegment(part)
+		if err != nil {
+			return nil, "", 0, err
 		}
 
 		if index == -1 {
 			next, ok := current[field].(map[string]interface{})
 			if !ok {
-				return nil
+				return nil, "", 0, fmt.Errorf("expected an object at %q in the tools path", field)
 			}
 			current = next
 			continue
@@ -966,16 +1090,20 @@ func parentObjectOfPath(requestBody map[string]interface{}, arrayPath string) ma
 
 		array, ok := current[field].([]interface{})
 		if !ok || index >= len(array) {
-			return nil
+			return nil, "", 0, fmt.Errorf("expected an array with index %d at %q in the tools path", index, field)
 		}
 		next, ok := array[index].(map[string]interface{})
 		if !ok {
-			return nil
+			return nil, "", 0, fmt.Errorf("expected an object at index %d of %q in the tools path", index, field)
 		}
 		current = next
 	}
 
-	return current
+	field, index, err := parsePathSegment(parts[len(parts)-1])
+	if err != nil {
+		return nil, "", 0, err
+	}
+	return current, field, index, nil
 }
 
 // descriptionFields are the keys checked, in order, for a tool's prose
@@ -1395,61 +1523,48 @@ func buildToolsArray(selected []scoredTool) []interface{} {
 	return tools
 }
 
+// toolCompanionFields sit beside the tools array and are only valid while it
+// carries at least one tool, so they are removed along with it.
+var toolCompanionFields = append([]string{"parallel_tool_calls"}, toolChoiceFields...)
+
+// removeToolsAtPath deletes the tools array at arrayPath and the companion
+// fields beside it, in the same parent object, so the request goes out as a
+// plain chat request. An array that is itself an element of another array has
+// no key to delete, so it is emptied instead and nothing else is touched.
+func removeToolsAtPath(requestBody map[string]interface{}, arrayPath string) error {
+	parent, field, index, err := resolveToolsPath(requestBody, arrayPath)
+	if err != nil {
+		return err
+	}
+	if index != -1 {
+		return setToolsAtPath(requestBody, arrayPath, []interface{}{})
+	}
+
+	delete(parent, field)
+	for _, companion := range toolCompanionFields {
+		delete(parent, companion)
+	}
+	return nil
+}
+
 // setToolsAtPath replaces the array at arrayPath with tools, leaving every
 // other field of the request body untouched. The path is one the extraction
 // step already read from, so each segment must exist; a structure that no
 // longer matches is an error rather than something to create.
 func setToolsAtPath(requestBody map[string]interface{}, arrayPath string, tools []interface{}) error {
-	parts := strings.Split(strings.TrimPrefix(arrayPath, "$."), ".")
-	if len(parts) == 0 || parts[0] == "" {
-		return fmt.Errorf("invalid tools path: %s", arrayPath)
+	parent, field, index, err := resolveToolsPath(requestBody, arrayPath)
+	if err != nil {
+		return err
+	}
+	if index == -1 {
+		parent[field] = tools
+		return nil
 	}
 
-	current := requestBody
-	for idx, part := range parts {
-		field := part
-		index := -1
-
-		if openIdx := strings.Index(part, "["); openIdx != -1 && strings.HasSuffix(part, "]") {
-			field = part[:openIdx]
-			parsed, err := strconv.Atoi(part[openIdx+1 : len(part)-1])
-			if err != nil || parsed < 0 {
-				return fmt.Errorf("invalid array index in tools path: %s", part)
-			}
-			index = parsed
-		}
-
-		isLast := idx == len(parts)-1
-
-		if index == -1 {
-			if isLast {
-				current[field] = tools
-				return nil
-			}
-			next, ok := current[field].(map[string]interface{})
-			if !ok {
-				return fmt.Errorf("expected an object at %q in the tools path", field)
-			}
-			current = next
-			continue
-		}
-
-		array, ok := current[field].([]interface{})
-		if !ok || index >= len(array) {
-			return fmt.Errorf("expected an array with index %d at %q in the tools path", index, field)
-		}
-
-		if isLast {
-			array[index] = tools
-			return nil
-		}
-
-		next, ok := array[index].(map[string]interface{})
-		if !ok {
-			return fmt.Errorf("expected an object at index %d of %q in the tools path", index, field)
-		}
-		current = next
+	array, ok := parent[field].([]interface{})
+	if !ok || index >= len(array) {
+		return fmt.Errorf("expected an array with index %d at %q in the tools path", index, field)
 	}
-
-	return fmt.Errorf("invalid tools path: %s", arrayPath)
+	array[index] = tools
+	return nil
 }

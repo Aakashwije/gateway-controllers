@@ -1,7 +1,7 @@
 {
-  "name": "jev-tool-filtering",
+  "name": "typesafe-jev-tool-filtering",
   "displayName": "TypeSafe Jev Tool Filtering",
-  "version": "0.9",
+  "version": "0.8",
   "provider": "WSO2",
   "categories": [
     "AI",

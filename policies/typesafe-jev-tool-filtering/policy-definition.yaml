@@ -1,5 +1,5 @@
-name: jev-tool-filtering
-version: v0.9.0
+name: typesafe-jev-tool-filtering
+version: v0.8.0
 displayName: TypeSafe Jev Tool Filtering
 description: |
   Narrows the tools array of an LLM request down to the tools that are actually relevant to the current user
@@ -20,6 +20,11 @@ description: |
   calling it. Use mcp-acl-list or mcp-authz to enforce tool execution permissions. Because it is an
   optimization, the policy fails open by default: if Jev cannot be reached or its answer cannot be trusted, the
   original request is forwarded with its original tools rather than partially filtered.
+
+  When no tool survives selection and tool use is optional, the tools field and its companion tool-control
+  fields (tool_choice, toolChoice, parallel_tool_calls) are removed so the request goes out as a plain chat
+  request. A tool named in tool_choice is always kept, and a request whose tool_choice is "required" or "any"
+  keeps its highest-scoring tool.
 
   Privacy: the policy sends the extracted user prompt and normalized tool metadata to TypeSafe AI's hosted API.
   Operators must confirm that this is acceptable for their privacy, residency, and compliance requirements
@@ -72,9 +77,12 @@ parameters:
       x-wso2-policy-advanced-param: true
       description: |
         JSONPath expression to extract the user's prompt from the request body.
-        Supports dotted keys with an optional array index, including negative indices.
-        The path must resolve to one string; wildcards are not supported.
-        Example: "$.messages[-1].content"
+        The default, "$.messages[-1].content", is resolved as the most recent message whose role
+        is "user" and that carries text (string content, or the "text" and "input_text" parts of
+        structured content), so a final tool result or assistant turn in an agent loop is never
+        judged as the prompt. A request with no such message is forwarded unchanged.
+        Any other value is read exactly as written. It supports dotted keys with an optional array
+        index, including negative indices, and must resolve to one string; wildcards are not supported.
         A malformed expression is rejected when the policy is applied, rather than
         silently behaving as though no request ever carries a prompt.
       default: "$.messages[-1].content"
