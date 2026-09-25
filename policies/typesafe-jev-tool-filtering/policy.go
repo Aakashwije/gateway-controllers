@@ -41,6 +41,7 @@
 package typesafejevtoolfiltering
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -130,8 +131,13 @@ func (p *TypesafeJevToolFilteringPolicy) OnRequestBody(ctx context.Context, reqC
 		return policy.UpstreamRequestModifications{}
 	}
 
+	// Numbers are decoded as json.Number so that a rewritten body carries every
+	// unrelated numeric field exactly as sent, rather than rounded through
+	// float64.
 	var requestBody map[string]interface{}
-	if err := json.Unmarshal(content, &requestBody); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(content))
+	decoder.UseNumber()
+	if err := decoder.Decode(&requestBody); err != nil || decoder.More() || requestBody == nil {
 		slog.Debug(logPrefix + "Request body is not a JSON object, forwarding unchanged")
 		return policy.UpstreamRequestModifications{}
 	}
@@ -222,6 +228,15 @@ func (p *TypesafeJevToolFilteringPolicy) OnRequestBody(ctx context.Context, reqC
 
 	if isUnchanged(entries, selected) {
 		slog.Debug(logPrefix + "Every tool survived in its original order, forwarding unchanged")
+		return policy.UpstreamRequestModifications{}
+	}
+
+	// A conversation that already holds tool calls or tool results must still
+	// define tools: providers such as Anthropic reject tool_use and tool_result
+	// blocks in a request without them. Such a request is forwarded unchanged
+	// rather than stripped of its tools.
+	if len(selected) == 0 && hasToolCallHistory(requestBody, arrayPath) {
+		slog.Debug(logPrefix + "No tool qualified but the conversation holds tool calls, forwarding unchanged")
 		return policy.UpstreamRequestModifications{}
 	}
 
@@ -1511,6 +1526,63 @@ func selectTools(scored []scoredTool, cfg userConfig) []scoredTool {
 	}
 
 	return selected
+}
+
+// conversationFields hold the conversation beside the tools array: messages
+// for Chat Completions and Anthropic Messages, input for the Responses API.
+var conversationFields = []string{"messages", "input"}
+
+// toolCallItemTypes are the message, input item and content block types that
+// record a tool call or its result.
+var toolCallItemTypes = map[string]bool{
+	"tool_use":             true,
+	"tool_result":          true,
+	"function_call":        true,
+	"function_call_output": true,
+}
+
+// hasToolCallHistory reports whether the conversation beside the tools array
+// at arrayPath already holds a tool call or a tool result.
+func hasToolCallHistory(requestBody map[string]interface{}, arrayPath string) bool {
+	parent, _, _, err := resolveToolsPath(requestBody, arrayPath)
+	if err != nil {
+		return false
+	}
+	for _, field := range conversationFields {
+		items, _ := parent[field].([]interface{})
+		for _, raw := range items {
+			if item, ok := raw.(map[string]interface{}); ok && isToolCallItem(item) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isToolCallItem reports whether one message or input item is, or carries, a
+// tool call or a tool result.
+func isToolCallItem(item map[string]interface{}) bool {
+	if role, _ := item["role"].(string); role == "tool" || role == "function" {
+		return true
+	}
+	if itemType, _ := item["type"].(string); toolCallItemTypes[itemType] {
+		return true
+	}
+	if calls, ok := item["tool_calls"].([]interface{}); ok && len(calls) > 0 {
+		return true
+	}
+	if call, ok := item["function_call"]; ok && call != nil {
+		return true
+	}
+	parts, _ := item["content"].([]interface{})
+	for _, raw := range parts {
+		if part, ok := raw.(map[string]interface{}); ok {
+			if partType, _ := part["type"].(string); toolCallItemTypes[partType] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // buildToolsArray assembles the replacement tools array from the complete

@@ -415,6 +415,97 @@ func TestEmptySelectionEmptiesArrayElementToolsPath(t *testing.T) {
 	}
 }
 
+// TestEmptySelectionKeepsToolsForToolCallHistory: a conversation that already
+// holds tool calls or tool results must still define tools upstream, so when
+// no tool qualifies the request is forwarded unchanged instead of stripped.
+func TestEmptySelectionKeepsToolsForToolCallHistory(t *testing.T) {
+	histories := map[string]string{
+		"openai assistant tool_calls": `{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"get_weather","arguments":"{}"}}]}`,
+		"openai tool message":         `{"role":"tool","tool_call_id":"c1","content":"28°C"}`,
+		"openai legacy function_call": `{"role":"assistant","content":null,"function_call":{"name":"get_weather","arguments":"{}"}}`,
+		"anthropic tool_use block":    `{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"get_weather","input":{}}]}`,
+		"anthropic tool_result block": `{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"28°C"}]}`,
+	}
+
+	for name, history := range histories {
+		t.Run(name, func(t *testing.T) {
+			mock := newMockJev(t, respondScores(0.1, 0.05))
+			p := newTestPolicy(t, mock.url(), map[string]interface{}{
+				"selectionMode": SelectionModeThreshold,
+				"threshold":     0.7,
+				"toolsJSONPath": "$.tools[*].function",
+			})
+
+			request := `{
+				"model": "gpt-4o",
+				"messages": [
+					` + history + `,
+					{"role":"user","content":"Tell me a joke about cats"}
+				],
+				"tools": [
+					{"type":"function","function":{"name":"search_documents","description":"Search documents"}},
+					{"type":"function","function":{"name":"get_weather","description":"Get the weather"}}
+				]
+			}`
+
+			assertPassthrough(t, runRequest(t, p, request))
+		})
+	}
+
+	t.Run("responses api function_call input", func(t *testing.T) {
+		mock := newMockJev(t, respondScores(0.1, 0.05))
+		p := newTestPolicy(t, mock.url(), map[string]interface{}{
+			"selectionMode": SelectionModeThreshold,
+			"threshold":     0.7,
+			"queryJSONPath": "$.input[1].content",
+		})
+
+		request := `{
+			"model": "gpt-4o",
+			"input": [
+				{"type":"function_call","call_id":"c1","name":"get_weather","arguments":"{}"},
+				{"role":"user","content":"Tell me a joke about cats"}
+			],
+			"tools": [
+				{"type":"function","name":"search_documents","description":"Search documents"},
+				{"type":"function","name":"get_weather","description":"Get the weather"}
+			]
+		}`
+
+		assertPassthrough(t, runRequest(t, p, request))
+	})
+}
+
+// TestRewritePreservesNumericFields asserts a rewritten body carries unrelated
+// numbers exactly as sent, including integers beyond float64 precision.
+func TestRewritePreservesNumericFields(t *testing.T) {
+	mock := newMockJev(t, respondScores(0.97, 0.03))
+	p := newTestPolicy(t, mock.url(), map[string]interface{}{
+		"selectionMode": SelectionModeThreshold,
+		"threshold":     0.7,
+		"toolsJSONPath": "$.tools[*].function",
+	})
+
+	request := `{
+		"model": "gpt-4o",
+		"seed": 9007199254740993,
+		"temperature": 0.2,
+		"metadata": {"id": 12345678901234567890, "big": 1e21},
+		"messages": [{"role":"user","content":"Search my documents"}],
+		"tools": [
+			{"type":"function","function":{"name":"search_documents","description":"Search documents"}},
+			{"type":"function","function":{"name":"get_weather","description":"Get the weather"}}
+		]
+	}`
+
+	body := string(modifiedBody(t, runRequest(t, p, request)))
+	for _, want := range []string{`"seed":9007199254740993`, `"temperature":0.2`, `"id":12345678901234567890`, `"big":1e21`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("rewritten body does not contain %s:\n%s", want, body)
+		}
+	}
+}
+
 // TestUnchangedSelectionForwardsWithoutRewriting asserts the policy reports no
 // modification when filtering would reproduce the original array exactly.
 func TestUnchangedSelectionForwardsWithoutRewriting(t *testing.T) {
