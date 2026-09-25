@@ -30,7 +30,7 @@
 // a tool from the request hides it from the model for this call; it does not
 // stop a client that already knows the tool from calling it. Use mcp-acl-list
 // or mcp-authz to enforce tool execution permissions. Because it is an
-// optimization, the policy fails open by default: any failure to reach or
+// optimization, the policy always fails open: any failure to reach or
 // understand Jev forwards the original request with its original tools.
 //
 // It differs from the sibling semantic-tool-filtering policy in how relevance
@@ -101,8 +101,7 @@ func GetPolicy(
 		"limit", user.Limit,
 		"threshold", user.Threshold,
 		"minimumScore", user.MinimumScore,
-		"timeout", user.Timeout,
-		"passthroughOnError", user.PassthroughOnError)
+		"timeout", user.Timeout)
 
 	return p, nil
 }
@@ -294,31 +293,13 @@ func isUnchanged(entries []toolEntry, selected []scoredTool) bool {
 	return true
 }
 
-// handleFailure applies the configured failure behaviour. Tool filtering is an
-// optimization, so the default is to fail open and forward the complete
-// original request; an operator who would rather the call fail loudly sets
-// passthroughOnError to false and gets a request-phase error instead of a
-// request that was never filtered.
+// handleFailure forwards the complete original request. Tool filtering is an
+// optimization, not a safety boundary, so the policy always fails open: a
+// request that could not be filtered goes out exactly as it arrived rather
+// than being refused or partially filtered.
 func (p *TypesafeJevToolFilteringPolicy) handleFailure(reason string, err error) policy.RequestAction {
-	if p.user.PassthroughOnError {
-		slog.Debug(logPrefix+reason+", forwarding the original request unfiltered", "error", err)
-		return policy.UpstreamRequestModifications{}
-	}
-
-	slog.Warn(logPrefix+reason+", rejecting the request", "error", err)
-	body, marshalErr := json.Marshal(map[string]string{
-		"error":   "Internal Server Error",
-		"message": "Tool relevance filtering could not be completed.",
-	})
-	if marshalErr != nil {
-		body = []byte(`{"error":"Internal Server Error"}`)
-	}
-
-	return policy.ImmediateResponse{
-		StatusCode: 500,
-		Headers:    map[string]string{"Content-Type": "application/json"},
-		Body:       body,
-	}
+	slog.Debug(logPrefix+reason+", forwarding the original request unfiltered", "error", err)
+	return policy.UpstreamRequestModifications{}
 }
 
 const (
@@ -362,14 +343,13 @@ type systemConfig struct {
 
 // userConfig holds the per-attachment filtering behaviour.
 type userConfig struct {
-	SelectionMode      string
-	Limit              int
-	Threshold          float64
-	MinimumScore       float64
-	QueryJSONPath      string
-	ToolsJSONPath      string
-	PassthroughOnError bool
-	Timeout            time.Duration
+	SelectionMode string
+	Limit         int
+	Threshold     float64
+	MinimumScore  float64
+	QueryJSONPath string
+	ToolsJSONPath string
+	Timeout       time.Duration
 }
 
 // parseSystemConfig reads the TypeSafe account settings. Errors describe the
@@ -427,7 +407,7 @@ func parseSystemConfig(params map[string]interface{}) (systemConfig, error) {
 
 // parseUserConfig reads the per-attachment filtering parameters.
 func parseUserConfig(params map[string]interface{}) (userConfig, error) {
-	cfg := userConfig{PassthroughOnError: true, Timeout: defaultTimeout}
+	cfg := userConfig{Timeout: defaultTimeout}
 
 	selectionMode, err := optionalString(params, "selectionMode", SelectionModeRank)
 	if err != nil {
@@ -489,10 +469,6 @@ func parseUserConfig(params map[string]interface{}) (userConfig, error) {
 	// failing every request at runtime.
 	if err := validateSimpleJSONPath(cfg.ToolsJSONPath); err != nil {
 		return cfg, fmt.Errorf("'toolsJSONPath' validation failed: %w", err)
-	}
-
-	if cfg.PassthroughOnError, err = optionalBool(params, "passthroughOnError", true); err != nil {
-		return cfg, err
 	}
 
 	return cfg, nil
@@ -594,25 +570,6 @@ func optionalFloat(params map[string]interface{}, key string, def, minValue, max
 		return def, fmt.Errorf("'%s' must be between %g and %g, got %g", key, minValue, maxValue, value)
 	}
 	return value, nil
-}
-
-func optionalBool(params map[string]interface{}, key string, def bool) (bool, error) {
-	raw, ok := params[key]
-	if !ok || raw == nil {
-		return def, nil
-	}
-	switch v := raw.(type) {
-	case bool:
-		return v, nil
-	case string:
-		parsed, err := strconv.ParseBool(strings.ToLower(strings.TrimSpace(v)))
-		if err != nil {
-			return def, fmt.Errorf("'%s' must be a boolean, got %q", key, v)
-		}
-		return parsed, nil
-	default:
-		return def, fmt.Errorf("'%s' must be a boolean, got %T", key, raw)
-	}
 }
 
 func coerceInt(value interface{}) (int, error) {
@@ -734,8 +691,7 @@ var queryPathSegmentPattern = regexp.MustCompile(`^[^.\[\]]+(\[-?\d+\])?$`)
 // failure as a lookup failure ("key not found"), so at request time a
 // malformed expression is indistinguishable from a request that simply has no
 // prompt — and the policy forwards both unchanged. Without this check a typo
-// would silently disable filtering for an entire route, including when
-// passthroughOnError is false.
+// would silently disable filtering for an entire route.
 func validateQueryJSONPath(path string) error {
 	if path == "" {
 		return fmt.Errorf("path cannot be empty")
@@ -1289,8 +1245,7 @@ func normalizeAnnotations(inspect map[string]interface{}) map[string]string {
 
 // errUninspectableTool reports that at least one tool in the request carries
 // no metadata Jev could judge it by. It is not a provider failure, so the
-// caller forwards the request untouched rather than routing it through the
-// passthroughOnError gate.
+// caller forwards the request untouched without treating it as a failure.
 var errUninspectableTool = errors.New("the request carries a tool with no inspectable metadata")
 
 // normalizeEntries builds the compact representation of every tool in the

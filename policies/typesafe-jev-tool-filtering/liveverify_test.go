@@ -60,8 +60,7 @@ func TestLiveJevSelectsTheObviouslyRelevantTools(t *testing.T) {
 		"threshold":     0.7,
 		"toolsJSONPath": "$.tools[*].function",
 		// A live call is slower than the gateway default allows for.
-		"timeout":            "30s",
-		"passthroughOnError": false,
+		"timeout": "30s",
 	})
 	if err != nil {
 		t.Fatalf("GetPolicy() error = %v", err)

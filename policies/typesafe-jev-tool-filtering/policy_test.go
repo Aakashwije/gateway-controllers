@@ -615,9 +615,9 @@ func TestLimitZeroRemovesTheToolsArray(t *testing.T) {
 	}
 }
 
-// TestPassthroughOnErrorTrue covers requirements 44 and 46: every failure mode
+// TestFailuresPassThrough covers requirements 44 and 46: every failure mode
 // forwards the complete original request, never a partially filtered one.
-func TestPassthroughOnErrorTrue(t *testing.T) {
+func TestFailuresPassThrough(t *testing.T) {
 	tests := []struct {
 		name    string
 		status  int
@@ -649,11 +649,10 @@ func TestPassthroughOnErrorTrue(t *testing.T) {
 			})
 
 			p := newTestPolicy(t, mock.url(), map[string]interface{}{
-				"toolsJSONPath":      "$.tools[*].function",
-				"passthroughOnError": true,
-				"timeout":            "80ms",
-				"selectionMode":      SelectionModeThreshold,
-				"threshold":          0.7,
+				"toolsJSONPath": "$.tools[*].function",
+				"timeout":       "80ms",
+				"selectionMode": SelectionModeThreshold,
+				"threshold":     0.7,
 			})
 
 			// Requirement 46: the original request goes upstream untouched,
@@ -661,54 +660,6 @@ func TestPassthroughOnErrorTrue(t *testing.T) {
 			assertPassthrough(t, runRequest(t, p, openAIRequest))
 		})
 	}
-}
-
-// TestPassthroughOnErrorFalse covers requirement 45: the request is refused
-// rather than forwarded unfiltered.
-func TestPassthroughOnErrorFalse(t *testing.T) {
-	mock := newMockJev(t, respondWith(http.StatusTooManyRequests, `{"error":"slow down"}`))
-	p := newTestPolicy(t, mock.url(), map[string]interface{}{
-		"toolsJSONPath":      "$.tools[*].function",
-		"passthroughOnError": false,
-	})
-
-	action := runRequest(t, p, openAIRequest)
-
-	immediate, ok := action.(policy.ImmediateResponse)
-	if !ok {
-		t.Fatalf("action = %T, want policy.ImmediateResponse", action)
-	}
-	if immediate.StatusCode != 500 {
-		t.Errorf("status = %d, want 500", immediate.StatusCode)
-	}
-	if got := immediate.Headers["Content-Type"]; got != "application/json" {
-		t.Errorf("Content-Type = %q, want application/json", got)
-	}
-
-	var body map[string]string
-	if err := json.Unmarshal(immediate.Body, &body); err != nil {
-		t.Fatalf("error body is not valid JSON: %v", err)
-	}
-	if body["error"] == "" {
-		t.Errorf("error body = %v, want an error field", body)
-	}
-	if strings.Contains(string(immediate.Body), testAPIKey) {
-		t.Error("the error response leaked the API key")
-	}
-	if strings.Contains(string(immediate.Body), "sales report") {
-		t.Error("the error response echoed the user prompt")
-	}
-}
-
-// TestPassthroughOnErrorFalseStillPassesNonApplicableRequests asserts that
-// failing closed applies to evaluation failures, not to requests the policy
-// simply does not apply to.
-func TestPassthroughOnErrorFalseStillPassesNonApplicableRequests(t *testing.T) {
-	p := newTestPolicy(t, newForbiddenJev(t), map[string]interface{}{"passthroughOnError": false})
-
-	assertPassthrough(t, runRequest(t, p, `{"messages":[{"role":"user","content":"hi"}]}`))
-	assertPassthrough(t, runRequest(t, p, `not json`))
-	assertPassthrough(t, runRequest(t, p, ""))
 }
 
 // TestNoPartialFilteringOnProviderFailure covers requirement 46 explicitly:
@@ -727,31 +678,14 @@ func TestNoPartialFilteringOnProviderFailure(t *testing.T) {
 	action := runRequest(t, p, openAIRequest)
 	assertPassthrough(t, action)
 
-	// And with fail-closed, it is refused rather than partially filtered.
-	strict := newTestPolicy(t, mock.url(), map[string]interface{}{
-		"toolsJSONPath":      "$.tools[*].function",
-		"selectionMode":      SelectionModeThreshold,
-		"threshold":          0.7,
-		"passthroughOnError": false,
-	})
-	if _, ok := runRequest(t, strict, openAIRequest).(policy.ImmediateResponse); !ok {
-		t.Error("fail-closed mode forwarded a request after a partial Jev response")
-	}
 }
 
-// TestOversizedToolArrayFollowsFailureBehaviour exercises maxTools through the
-// request path.
-func TestOversizedToolArrayFollowsFailureBehaviour(t *testing.T) {
+// TestOversizedToolArrayPassesThrough exercises maxTools through the request
+// path.
+func TestOversizedToolArrayPassesThrough(t *testing.T) {
 	p := newTestPolicy(t, newForbiddenJev(t), map[string]interface{}{"maxTools": 2})
 	assertPassthrough(t, runRequest(t, p, openAIRequest))
 
-	strict := newTestPolicy(t, newForbiddenJev(t), map[string]interface{}{
-		"maxTools":           2,
-		"passthroughOnError": false,
-	})
-	if _, ok := runRequest(t, strict, openAIRequest).(policy.ImmediateResponse); !ok {
-		t.Error("fail-closed mode accepted a request over the maxTools budget")
-	}
 }
 
 // TestContextCancellationDuringRequest covers requirement 30 through the
@@ -917,9 +851,6 @@ func TestValidDefaultConfiguration(t *testing.T) {
 	}
 	if p.user.ToolsJSONPath != defaultToolsJSONPath {
 		t.Errorf("toolsJSONPath = %q, want %q", p.user.ToolsJSONPath, defaultToolsJSONPath)
-	}
-	if !p.user.PassthroughOnError {
-		t.Error("passthroughOnError = false, want true (tool filtering fails open by default)")
 	}
 }
 
@@ -1105,11 +1036,6 @@ func TestInvalidConfiguration(t *testing.T) {
 			params:      map[string]interface{}{"apiKey": testAPIKey, "toolsJSONPath": "$.a[*].b[*].c"},
 			wantMessage: "at most one iterator wildcard",
 		},
-		{
-			name:        "passthroughOnError of the wrong type",
-			params:      map[string]interface{}{"apiKey": testAPIKey, "passthroughOnError": 1.7},
-			wantMessage: "'passthroughOnError' must be a boolean",
-		},
 	}
 
 	for _, test := range tests {
@@ -1172,15 +1098,14 @@ func TestConfigurationErrorsNeverLeakTheAPIKey(t *testing.T) {
 // TestValidConfigurationVariants checks the accepted coercions and overrides.
 func TestValidConfigurationVariants(t *testing.T) {
 	p := newTestPolicy(t, "http://localhost:9000/", map[string]interface{}{
-		"selectionMode":      SelectionModeThreshold,
-		"limit":              float64(3), // numbers arrive from JSON as float64
-		"threshold":          "0.42",
-		"minimumScore":       0.25,
-		"timeout":            "1500ms",
-		"maxTools":           10,
-		"queryJSONPath":      "$.prompt",
-		"toolsJSONPath":      "$.tools[*].function",
-		"passthroughOnError": "false",
+		"selectionMode": SelectionModeThreshold,
+		"limit":         float64(3), // numbers arrive from JSON as float64
+		"threshold":     "0.42",
+		"minimumScore":  0.25,
+		"timeout":       "1500ms",
+		"maxTools":      10,
+		"queryJSONPath": "$.prompt",
+		"toolsJSONPath": "$.tools[*].function",
 	})
 
 	if p.system.BaseURL != "http://localhost:9000" {
@@ -1200,9 +1125,6 @@ func TestValidConfigurationVariants(t *testing.T) {
 	}
 	if p.user.Timeout != 1500*time.Millisecond {
 		t.Errorf("timeout = %v, want 1.5s", p.user.Timeout)
-	}
-	if p.user.PassthroughOnError {
-		t.Error("passthroughOnError = true, want false")
 	}
 }
 
@@ -1331,7 +1253,7 @@ func TestValidQueryJSONPaths(t *testing.T) {
 // TestInvalidQueryJSONPathIsRejectedAtConfigurationTime is the point of the
 // validator: the SDK's JSONPath evaluator reports a malformed expression as an
 // ordinary lookup failure, so without this check a typo would silently
-// disable filtering for the whole route — even with passthroughOnError false.
+// disable filtering for the whole route.
 func TestInvalidQueryJSONPathIsRejectedAtConfigurationTime(t *testing.T) {
 	invalid := []string{"", "$..[invalid", "messages.content", "$.messages[abc]", "$.a..b", "$.a[1", "$.a]b[", "$.*.content", "$.messages.*.content"}
 
@@ -2819,8 +2741,7 @@ func TestNoUsableUserPromptSkipsJev(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			mock := newMockJev(t, respondScores(0.9, 0.1))
 			p := newTestPolicy(t, mock.url(), map[string]interface{}{
-				"limit":              1,
-				"passthroughOnError": false,
+				"limit": 1,
 			})
 
 			body := `{` + field + `, "tools": [{"name":"a","description":"one"},{"name":"b","description":"two"}]}`

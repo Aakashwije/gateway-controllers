@@ -18,7 +18,7 @@ description: |
   Tool filtering is an optimization, not an authorization or safety boundary. Removing a tool from the request
   hides it from the model for that call; it does not stop a client that already knows the tool name from
   calling it. Use mcp-acl-list or mcp-authz to enforce tool execution permissions. Because it is an
-  optimization, the policy fails open by default: if Jev cannot be reached or its answer cannot be trusted, the
+  optimization, the policy always fails open: if Jev cannot be reached or its answer cannot be trusted, the
   original request is forwarded with its original tools rather than partially filtered.
 
   When no tool survives selection and tool use is optional, the tools field and its companion tool-control
@@ -98,15 +98,6 @@ parameters:
         object is what gets written back into the request.
       default: "$.tools"
       pattern: '^\$\.([A-Za-z_][A-Za-z0-9_]*(\[(\d+|\*)\])?\.)*[A-Za-z_][A-Za-z0-9_]*(\[(\d+|\*)\])?$'
-    passthroughOnError:
-      type: boolean
-      x-wso2-policy-advanced-param: true
-      description: |
-        Specifies what happens when Jev cannot be reached or returns an answer that cannot be trusted
-        (non-2xx status, timeout, cancellation, invalid JSON, a missing or malformed answer, a probability
-        outside 0 to 1). True (default) forwards the original request with its original tools. False returns a
-        request-phase error instead. Either way the request is never partially filtered.
-      default: true
     timeout:
       type: string
       x-wso2-policy-advanced-param: true
@@ -139,8 +130,8 @@ systemParameters:
     maxTools:
       type: integer
       description: |
-        Largest tools array the policy will evaluate. A request carrying more tools than this is handled
-        according to passthroughOnError.
+        Largest tools array the policy will evaluate. A request carrying more tools than this is forwarded
+        unfiltered.
       minimum: 1
       maximum: 10000
       default: 200
@@ -156,7 +147,7 @@ systemParameters:
       type: integer
       description: |
         Bounds the serialized normalized metadata of all tools in one Jev request. A request over budget is
-        handled according to passthroughOnError.
+        forwarded unfiltered.
       minimum: 64
       maximum: 16777216
       default: 131072
