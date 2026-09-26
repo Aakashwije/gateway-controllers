@@ -1,5 +1,5 @@
 name: semantic-cache
-version: v1.1.0
+version: v1.2.0
 description: |
   Caches LLM responses using semantic similarity over request embeddings to
   reduce repeated upstream calls. Returns cached responses on similarity hits
@@ -54,6 +54,68 @@ parameters:
         Only enable this for APIs where every possible response is safe to
         share across all unauthenticated callers.
       default: false
+    jevCacheCheck:
+      type: object
+      x-wso2-policy-advanced-param: true
+      additionalProperties: false
+      description: |
+        Optional TypeSafe Jev admission check for cache writes. When enabled,
+        the extracted request text and generated response text are sent to Jev
+        just before storage. A response is stored only when no configured
+        question reaches its threshold. Jev errors, timeouts, malformed
+        answers, and unreadable response text skip the cache write without
+        changing the response returned to the client.
+      properties:
+        enabled:
+          type: boolean
+          default: false
+        timeout:
+          type: string
+          description: Maximum duration of the Jev call, including one retry on HTTP 429 or 529.
+          default: "5s"
+          pattern: '^[0-9]+(ns|us|µs|ms|s|m)$'
+        questions:
+          type: array
+          description: |
+            Questions used to reject cache writes. An omitted or empty array
+            uses the built-in time-sensitive, context-dependent, unhelpful,
+            and sensitive-data questions.
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              key:
+                type: string
+                minLength: 1
+              type:
+                type: string
+                enum: [noul, score, choice]
+              instructions:
+                type: string
+                minLength: 1
+              criteria:
+                description: |
+                  For score, an ordered array of 2 to 10 scale descriptions
+                  (low to high). For choice, an object mapping 2 to 255 option
+                  names to descriptions.
+                oneOf:
+                  - type: array
+                    items:
+                      type: string
+                      minLength: 1
+                  - type: object
+                    additionalProperties:
+                      type: string
+                      minLength: 1
+              blockOn:
+                type: array
+                items:
+                  type: string
+                  minLength: 1
+              threshold:
+                type: number
+            required: [key, type, instructions, threshold]
+      required: [enabled]
   required:
   - similarityThreshold
 
@@ -132,6 +194,19 @@ systemParameters:
       type: integer
       description: Vector database TTL (optional)
       "wso2/defaultValue": "${config.vector_db_provider_ttl}"
+    jevApiKey:
+      type: string
+      description: TypeSafe AI API key. Required only when jevCacheCheck.enabled is true.
+      "wso2/defaultValue": "${config.jev_apikey}"
+    jevBaseURL:
+      type: string
+      format: uri
+      description: TypeSafe Jev API base URL.
+      "wso2/defaultValue": "${config.jev_base_url}"
+    jevModel:
+      type: string
+      description: TypeSafe Jev model identifier.
+      "wso2/defaultValue": "${config.jev_model}"
   required:
   - embeddingProvider
   - embeddingEndpoint

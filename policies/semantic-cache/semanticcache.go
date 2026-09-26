@@ -72,6 +72,8 @@ type SemanticCachePolicy struct {
 	threshold           float64
 	// cacheUnauthenticated allows caching for callers with no resolvable identity
 	cacheUnauthenticated bool
+	jevCacheCheck        jevCacheCheckConfig
+	jevClient            *jevClient
 }
 
 // callerIdentity resolves the caller principal from metadata, falling back to
@@ -148,6 +150,9 @@ func GetPolicy(
 	if err := parseParams(params, p); err != nil {
 		return nil, fmt.Errorf("invalid params: %w", err)
 	}
+	if p.jevCacheCheck.Enabled {
+		p.jevClient = newJevClient(p.jevCacheCheck)
+	}
 
 	// Initialize embedding provider
 	embeddingProvider, err := createEmbeddingProvider(p.embeddingConfig)
@@ -172,7 +177,6 @@ func GetPolicy(
 
 	return p, nil
 }
-
 
 // Mode returns the processing mode for the semantic cache policy.
 func (p *SemanticCachePolicy) Mode() policy.ProcessingMode {
@@ -326,6 +330,12 @@ func parseParams(params map[string]interface{}, p *SemanticCachePolicy) error {
 		p.cacheUnauthenticated = cacheUnauthenticated
 	}
 
+	jevConfig, err := parseJevCacheCheck(params)
+	if err != nil {
+		return err
+	}
+	p.jevCacheCheck = jevConfig
+
 	return nil
 }
 
@@ -416,6 +426,15 @@ func createVectorDBProvider(config vectordbproviders.VectorDBProviderConfig) (ve
 	return provider, nil
 }
 
+// extractRequestText returns the text at jsonPath, or the whole body when no
+// jsonPath is configured.
+func (p *SemanticCachePolicy) extractRequestText(content []byte) (string, error) {
+	if p.jsonPath == "" || len(content) == 0 {
+		return string(content), nil
+	}
+	return utils.ExtractStringValueFromJsonpath(content, p.jsonPath)
+}
+
 // OnRequestBody implements the v1alpha2 body-phase request handler.
 func (p *SemanticCachePolicy) OnRequestBody(ctx context.Context, reqCtx *policy.RequestContext, params map[string]interface{}) policy.RequestAction {
 	var content []byte
@@ -424,14 +443,10 @@ func (p *SemanticCachePolicy) OnRequestBody(ctx context.Context, reqCtx *policy.
 	}
 
 	// Extract text from request body using JSONPath if specified
-	textToEmbed := string(content)
-	if p.jsonPath != "" && len(content) > 0 {
-		extracted, err := utils.ExtractStringValueFromJsonpath(content, p.jsonPath)
-		if err != nil {
-			// JSONPath extraction failed - return error response
-			return p.buildErrorResponse("Error extracting value from JSONPath", err)
-		}
-		textToEmbed = extracted
+	textToEmbed, err := p.extractRequestText(content)
+	if err != nil {
+		// JSONPath extraction failed - return error response
+		return p.buildErrorResponse("Error extracting value from JSONPath", err)
 	}
 
 	// If no content to embed, continue to upstream
@@ -515,11 +530,11 @@ func (p *SemanticCachePolicy) OnRequestBody(ctx context.Context, reqCtx *policy.
 
 // OnResponseBody handles response body processing for semantic caching.
 func (p *SemanticCachePolicy) OnResponseBody(ctx context.Context, respCtx *policy.ResponseContext, _ map[string]interface{}) policy.ResponseAction {
-	return p.processResponseBody(respCtx)
+	return p.processResponseBody(ctx, respCtx)
 }
 
 // processResponseBody handles response body processing for semantic caching.
-func (p *SemanticCachePolicy) processResponseBody(respCtx *policy.ResponseContext) policy.ResponseAction {
+func (p *SemanticCachePolicy) processResponseBody(ctx context.Context, respCtx *policy.ResponseContext) policy.ResponseAction {
 	// Only cache successful responses (200 status code)
 	if respCtx.ResponseStatus != 200 {
 		slog.Debug("SemanticCache: Skipping cache for non-200 response", "statusCode", respCtx.ResponseStatus)
@@ -591,6 +606,38 @@ func (p *SemanticCachePolicy) processResponseBody(respCtx *policy.ResponseContex
 	if !cacheable {
 		slog.Debug("SemanticCache: No caller identity resolved and cacheUnauthenticated is disabled, skipping cache storage", "apiID", apiID)
 		return policy.DownstreamResponseModifications{}
+	}
+
+	if p.jevCacheCheck.Enabled {
+		// Re-extract the request text from the request body the kernel carries into the
+		// response phase rather than passing it through SharedContext.Metadata, which is
+		// exported unmasked to analytics and would leak the prompt.
+		var requestContent []byte
+		if respCtx.RequestBody != nil {
+			requestContent = respCtx.RequestBody.Content
+		}
+		requestText, err := p.extractRequestText(requestContent)
+		if err != nil || strings.TrimSpace(requestText) == "" {
+			p.recordJevDecision(respCtx.SharedContext, jevDecision{Decision: jevDecisionSkip, Error: "request text is unavailable"}, nil)
+			return policy.DownstreamResponseModifications{}
+		}
+		respText, err := responseText(responseData)
+		if err != nil || strings.TrimSpace(respText) == "" {
+			p.recordJevDecision(respCtx.SharedContext, jevDecision{Decision: jevDecisionSkip, Error: "response text is unavailable"}, nil)
+			return policy.DownstreamResponseModifications{}
+		}
+
+		decision, usage, err := p.jevClient.shouldStore(ctx, requestText, respText, p.jevCacheCheck.Questions)
+		if err != nil {
+			slog.Debug("SemanticCache: Jev cache check failed, skipping cache storage", "error", err, "apiID", apiID)
+			p.recordJevDecision(respCtx.SharedContext, jevDecision{Decision: jevDecisionSkip, Error: err.Error()}, usage)
+			return policy.DownstreamResponseModifications{}
+		}
+		p.recordJevDecision(respCtx.SharedContext, decision, usage)
+		if decision.Decision == jevDecisionSkip {
+			slog.Debug("SemanticCache: Jev cache check rejected response", "questions", decision.Fired, "apiID", apiID)
+			return policy.DownstreamResponseModifications{}
+		}
 	}
 
 	// RequestHash records the resolved caller identity as meaningful provenance
