@@ -1,6 +1,6 @@
 name: typesafe-jev-mcp-tool-guardrail
 version: v0.8.0
-displayName: TypeSafe Jev MCP Tool Guardrail
+displayName: Typesafe Jev MCP Tool Intent Verification
 description: |
   Screens MCP tools/call requests using TypeSafe AI's Jev "System One" model.
   Sends the tool name and arguments to Jev with a configurable battery of
