@@ -73,7 +73,7 @@ parameters:
           type: string
           description: Maximum duration of the Jev call, including one retry on HTTP 429 or 529.
           default: "5s"
-          pattern: '^[0-9]+(ns|us|µs|ms|s|m)$'
+          pattern: '^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$'
         questions:
           type: array
           description: |
