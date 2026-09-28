@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
-	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -15,6 +14,7 @@ import (
 
 	vectordbproviders "github.com/wso2/api-platform/sdk/ai/vectordb"
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
+	"gopkg.in/yaml.v3"
 )
 
 func TestParseJevCacheCheck(t *testing.T) {
@@ -108,16 +108,45 @@ func TestDefaultJevCacheQuestionsMatchPolicyDefinition(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	def := string(definition)
+	type questionDefault struct {
+		Key          string `yaml:"key"`
+		Instructions string `yaml:"instructions"`
+	}
+	var parsed struct {
+		Parameters struct {
+			Properties struct {
+				JevCacheCheck struct {
+					Properties struct {
+						Questions struct {
+							Default []questionDefault `yaml:"default"`
+						} `yaml:"questions"`
+					} `yaml:"properties"`
+				} `yaml:"jevCacheCheck"`
+			} `yaml:"properties"`
+		} `yaml:"parameters"`
+	}
+	if err := yaml.Unmarshal(definition, &parsed); err != nil {
+		t.Fatalf("parse policy-definition.yaml: %v", err)
+	}
+
+	defaults := parsed.Parameters.Properties.JevCacheCheck.Properties.Questions.Default
+	byKey := make(map[string]string, len(defaults))
+	for _, question := range defaults {
+		if _, exists := byKey[question.Key]; exists {
+			t.Fatalf("policy definition has duplicate default question key %q", question.Key)
+		}
+		byKey[question.Key] = question.Instructions
+	}
+
 	questions := defaultJevCacheQuestions()
-	if got := len(regexp.MustCompile(`(?m)^ +instructions: "`).FindAllString(def, -1)); got != len(questions) {
+	if got := len(byKey); got != len(questions) {
 		t.Fatalf("policy definition lists %d default questions, want %d", got, len(questions))
 	}
 	for _, question := range questions {
-		if !strings.Contains(def, "- key: "+question.Key+"\n") {
+		instruction, exists := byKey[question.Key]
+		if !exists {
 			t.Errorf("policy definition default is missing key %q", question.Key)
-		}
-		if !strings.Contains(def, "instructions: \""+question.Instructions+"\"\n") {
+		} else if instruction != question.Instructions {
 			t.Errorf("policy definition default for %q does not match the code", question.Key)
 		}
 	}
