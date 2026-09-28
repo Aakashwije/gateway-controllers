@@ -77,9 +77,10 @@ parameters:
         questions:
           type: array
           description: |
-            Questions used to reject cache writes. An omitted or empty array
-            uses the built-in time-sensitive, context-dependent, unhelpful,
-            and sensitive-data questions.
+            Questions used to reject cache writes, pre-filled with the default
+            time-sensitive, context-dependent, unhelpful, and sensitive-data
+            questions. Edit, remove, or add questions as needed. An omitted or
+            empty array uses the defaults.
           items:
             type: object
             additionalProperties: false
@@ -115,6 +116,23 @@ parameters:
               threshold:
                 type: number
             required: [key, type, instructions, threshold]
+          default:
+          - key: time_sensitive
+            type: noul
+            instructions: "Does the answer in `response` depend on the current date or time, or on live information such as news, prices, weather, or stock levels?"
+            threshold: 0.7
+          - key: needs_context
+            type: noul
+            instructions: "Does `request` only make sense together with earlier messages in the conversation, for example a follow-up like 'tell me more' or 'what about the second one'?"
+            threshold: 0.7
+          - key: unhelpful_response
+            type: noul
+            instructions: "Is `response` a refusal, an error, or a reply saying the request couldn't be completed?"
+            threshold: 0.7
+          - key: sensitive_data
+            type: noul
+            instructions: "Do `request` or `response` contain secrets, credentials, or personal data such as passwords, card numbers, or ID numbers?"
+            threshold: 0.7
       required: [enabled]
   required:
   - similarityThreshold

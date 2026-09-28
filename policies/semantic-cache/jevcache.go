@@ -87,6 +87,8 @@ type jevUsage struct {
 }
 
 func defaultJevCacheQuestions() []jevQuestion {
+	// Keep these questions in sync with the default shown in policy-definition.yaml.
+	// TestDefaultJevCacheQuestionsMatchPolicyDefinition guards against drift.
 	return []jevQuestion{
 		{Key: "time_sensitive", Type: jevQuestionNoul, Instructions: "Does the answer in `response` depend on the current date or time, or on live information such as news, prices, weather, or stock levels?", Threshold: 0.7},
 		{Key: "needs_context", Type: jevQuestionNoul, Instructions: "Does `request` only make sense together with earlier messages in the conversation, for example a follow-up like 'tell me more' or 'what about the second one'?", Threshold: 0.7},

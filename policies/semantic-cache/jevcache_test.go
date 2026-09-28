@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -95,6 +97,29 @@ func TestParseJevCacheCheck(t *testing.T) {
 				test.assert(t, cfg)
 			}
 		})
+	}
+}
+
+// The policy definition shows the default questions in the UI, so they must
+// match the questions used by the policy when none are configured.
+func TestDefaultJevCacheQuestionsMatchPolicyDefinition(t *testing.T) {
+	definition, err := os.ReadFile("policy-definition.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	def := string(definition)
+	questions := defaultJevCacheQuestions()
+	if got := len(regexp.MustCompile(`(?m)^ +instructions: "`).FindAllString(def, -1)); got != len(questions) {
+		t.Fatalf("policy definition lists %d default questions, want %d", got, len(questions))
+	}
+	for _, question := range questions {
+		if !strings.Contains(def, "- key: "+question.Key+"\n") {
+			t.Errorf("policy definition default is missing key %q", question.Key)
+		}
+		if !strings.Contains(def, "instructions: \""+question.Instructions+"\"\n") {
+			t.Errorf("policy definition default for %q does not match the code", question.Key)
+		}
 	}
 }
 
