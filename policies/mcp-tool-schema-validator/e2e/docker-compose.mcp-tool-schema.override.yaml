@@ -1,0 +1,47 @@
+# --------------------------------------------------------------------
+# Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com).
+#
+# WSO2 LLC. licenses this file to you under the Apache License,
+# Version 2.0 (the "License"); you may not use this file except
+# in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+# --------------------------------------------------------------------
+# Layered on docker-compose.test.yaml by e2e/setup.sh. Adds the scripted MCP server
+# the mcp-tool-schema-validator feature needs for tool-result shapes a real server
+# does not produce on demand.
+
+services:
+  schema-mcp-backend:
+    image: python:3.12-alpine
+    pull_policy: missing
+    container_name: it-schema-mcp-backend
+    command:
+      - python
+      - -u
+      - /app/mock_mcp_schema_backend.py
+    volumes:
+      - ./mock_mcp_schema_backend.py:/app/mock_mcp_schema_backend.py:ro
+    ports:
+      - "3021:3001"
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - --quiet
+        - --tries=1
+        - --spider
+        - http://127.0.0.1:3001/health
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    networks:
+      - it-gateway-runtime-network
