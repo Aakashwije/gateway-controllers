@@ -125,5 +125,5 @@ To check compatibility with a running classifier service:
 ```bash
 MCP_TOOL_POISONING_ENDPOINT=http://localhost:8101 \
 MCP_TOOL_POISONING_API_KEY="$TOOL_POISONING_API_KEY" \
-go test -count=1 -run 'Live|AgainstRealClassifierService' -v ./...
+go test -count=1 -run TestAgainstRealClassifierService -v ./...
 ```
