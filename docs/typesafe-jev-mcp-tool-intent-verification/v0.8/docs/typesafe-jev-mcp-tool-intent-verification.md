@@ -5,7 +5,7 @@ title: "Overview"
 
 ## Overview
 
-The Typesafe Jev MCP Tool Intent Verification policy screens MCP `tools/call` requests using [TypeSafe AI's Jev](https://typesafe.ai/) "System One" model before they reach the MCP server. Jev doesn't generate text: it takes a state and a battery of typed questions, and returns calibrated structured answers. A `noul` question returns a yes/no probability, a `score` question returns a position on a scale you define, and a `choice` question returns a probability for each option you define.
+The TypeSafe Jev MCP Tool Intent Verification policy screens MCP `tools/call` requests using [TypeSafe AI's Jev](https://typesafe.ai/) "System One" model before they reach the MCP server. Jev doesn't generate text: it takes a state and a battery of typed questions, and returns calibrated structured answers. A `noul` question returns a yes/no probability, a `score` question returns a position on a scale you define, and a `choice` question returns a probability for each option you define.
 
 For each screened tool call, the policy sends Jev a JSON state holding the tool name, its arguments and the scope from the matching [tool rule](#tool-rules), a plain description of what the agent is for:
 
