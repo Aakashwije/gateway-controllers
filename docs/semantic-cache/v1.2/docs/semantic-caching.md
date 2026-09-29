@@ -106,7 +106,7 @@ jev_model = "jev-latest"
 |-----------------------|------|----------|---------|-------------|
 | `enabled` | boolean | Yes when the object is present | `false` | Enables the Jev check. When `false`, the other fields are ignored and behavior remains compatible with v1.1. |
 | `timeout` | string | No | `"5s"` | Go duration greater than zero and no more than `30s`. Covers the initial call, retry delay, and one retry after HTTP 429 or 529. |
-| `questions` | array | No | Built-in questions | Custom question battery. An omitted or empty array uses all four built-in questions. |
+| `questions` | array | No | Built-in questions | Questions used to reject cache writes. The UI starts with the four built-in questions. A non-empty array is evaluated exactly as configured; adding questions keeps the built-ins that remain in the array, while removing a built-in disables that check. An omitted or empty array restores all four built-ins. |
 
 ### Jev Cache Admission
 
@@ -122,6 +122,29 @@ An omitted or empty `questions` array uses these `noul` questions:
 | `needs_context` | `0.7` | Does `request` only make sense together with earlier messages in the conversation, for example a follow-up like “tell me more” or “what about the second one”? |
 | `unhelpful_response` | `0.7` | Is `response` a refusal, an error, or a reply saying the request couldn't be completed? |
 | `sensitive_data` | `0.7` | Do `request` or `response` contain secrets, credentials, or personal data such as passwords, card numbers, or ID numbers? |
+
+#### Configured Question List Behavior
+
+The UI pre-populates `questions` with the four built-in questions above. The
+policy evaluates exactly the questions present in a non-empty array:
+
+- Adding two custom questions without removing any built-ins evaluates all six
+  questions.
+- Removing a built-in question from the array disables that check; the policy
+  does not add it back automatically.
+- Omitting `questions`, or submitting an empty array, restores and evaluates all
+  four built-in questions.
+- If any evaluated question reaches its threshold, the cache write is skipped.
+  The response is cached only when every evaluated question stays below its
+  threshold.
+
+For example, if the four pre-populated questions remain and the user adds
+`creative_output` and `personalized_advice`, the decision is:
+
+```text
+Any of the 6 questions reaches its threshold → SKIP the cache write
+All 6 questions stay below their thresholds → CACHE the response
+```
 
 Custom questions support the following fields:
 
@@ -254,7 +277,10 @@ For example, a current-weather response that triggers `time_sensitive` is still 
 
 ### Example 3: Add a Custom Creative-Output Question
 
-Providing a non-empty `questions` array replaces the default battery. Include every question the attachment needs:
+Providing a non-empty `questions` array makes that array the complete question
+battery. This example intentionally evaluates only `creative_output`. To keep
+the built-in checks as well, leave the four pre-populated questions in the
+array and append this custom question:
 
 ```yaml
 operationPolicies:

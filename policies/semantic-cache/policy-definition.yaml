@@ -79,8 +79,12 @@ parameters:
           description: |
             Questions used to reject cache writes, pre-filled with the default
             time-sensitive, context-dependent, unhelpful, and sensitive-data
-            questions. Edit, remove, or add questions as needed. An omitted or
-            empty array uses the defaults.
+            questions. The policy evaluates exactly the questions in a
+            non-empty array, so adding two questions to the four pre-filled
+            defaults evaluates all six, while removing a pre-filled question
+            disables that check. Any configured question that reaches its
+            threshold skips the cache write. An omitted or empty array restores
+            and evaluates all four defaults.
           items:
             type: object
             additionalProperties: false
