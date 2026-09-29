@@ -2322,9 +2322,8 @@ func TestForcedToolIsPreservedVerbatim(t *testing.T) {
 	}
 }
 
-// testAPIKey is the only credential these tests ever use. No test in this
-// package requires a real TypeSafe API key; the live verification test is
-// opt-in and skipped by default (see liveverify_test.go).
+// testAPIKey is the only credential these tests use. No test in this package
+// requires a real TypeSafe API key.
 const testAPIKey = "test-jev-api-key"
 
 // jevCapture is one request the mock TypeSafe server received, decoded.
