@@ -1,7 +1,7 @@
 ---
 title: "Overview"
 ---
-# Typesafe Jev MCP Tool Intent Verification
+# TypeSafe Jev MCP Tool Intent Verification
 
 ## Overview
 
