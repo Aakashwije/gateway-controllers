@@ -110,7 +110,7 @@ jev_model = "jev-latest"
 
 ### Jev Cache Admission
 
-When enabled, the policy sends a JSON state containing the extracted request and response text to TypeSafe Jev immediately before an otherwise eligible cache write. It stores the response only when every configured answer stays below its threshold. A timeout, provider error, malformed answer, or missing response text skips the write; it never blocks or changes the response returned to the client. Existing cache lookups and entries are unaffected.
+When enabled, the policy sends a JSON state containing the extracted request and response text to TypeSafe Jev immediately before an otherwise eligible cache write. It stores the response only when every configured answer stays below its threshold. The check runs inline during response processing, so delivery to the client waits until Jev completes or reaches the configured timeout. A timeout, provider error, malformed answer, or missing response text skips the cache write, but the policy does not change the upstream response returned to the client. Existing cache lookups and entries are unaffected.
 
 Jev receives the state `{"request":"<text at jsonPath>","response":"<choices[0].message.content>"}`. For streamed responses, the policy first reassembles the configured SSE content fragments into the same response shape.
 
