@@ -1,4 +1,0 @@
-# Go test artefacts.
-coverage.out
-*.test
-*.prof
