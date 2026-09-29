@@ -1,11 +1,11 @@
 ---
 title: "Overview"
 ---
-# TypeSafe Jev MCP Tool Guardrail
+# TypeSafe Jev MCP Tool Intent Verification
 
 ## Overview
 
-The TypeSafe Jev MCP Tool Guardrail policy screens MCP `tools/call` requests using [TypeSafe AI's Jev](https://typesafe.ai/) "System One" model before they reach the MCP server. Jev doesn't generate text: it takes a state and a battery of typed questions, and returns calibrated structured answers. A `noul` question returns a yes/no probability, a `score` question returns a position on a scale you define, and a `choice` question returns a probability for each option you define.
+The TypeSafe Jev MCP Tool Intent Verification policy screens MCP `tools/call` requests using [TypeSafe AI's Jev](https://typesafe.ai/) "System One" model before they reach the MCP server. Jev doesn't generate text: it takes a state and a battery of typed questions, and returns calibrated structured answers. A `noul` question returns a yes/no probability, a `score` question returns a position on a scale you define, and a `choice` question returns a probability for each option you define.
 
 For each screened tool call, the policy sends Jev a JSON state holding the tool name, its arguments and the scope from the matching [tool rule](#tool-rules), a plain description of what the agent is for:
 
@@ -78,7 +78,7 @@ jev_model = "jev-latest"
 | `criteria` | array of strings | Required for `score` and `choice` | For `score`: 2–10 ordered scale descriptions, lowest first. For `choice`: 2–255 options; add an `other` option when the list might not cover every call. |
 | `blockOn` | array of strings | Required for `choice` | The `criteria` options that count towards blocking. |
 | `threshold` | number | Yes | For `noul`: minimum probability (0–1) to block. For `score`: minimum scale position to block. For `choice`: minimum combined probability (0–1) of the `blockOn` options to block. |
-| `confidenceThreshold` | number | No (`score` only) | Minimum confidence (0–1) Jev must report for a `score` at or above `threshold` to block. A less confident answer doesn't block; it is recorded in request metadata under `typesafe-jev-mcp-tool-guardrail:low-confidence`. |
+| `confidenceThreshold` | number | No (`score` only) | Minimum confidence (0–1) Jev must report for a `score` at or above `threshold` to block. A less confident answer doesn't block; it is recorded in request metadata under `typesafe-jev-mcp-tool-intent-verification:low-confidence`. |
 
 #### Default questions
 
@@ -185,7 +185,7 @@ With `showAssessment: true`, `error.data` carries the details:
 
 ```json
 "data": {
-  "interveningGuardrail": "TypesafeJevMcpToolGuardrail",
+  "interveningGuardrail": "TypesafeJevMcpToolIntentVerification",
   "assessments": [
     { "question": "destructive", "type": "noul", "threshold": 0.7, "value": 0.98 }
   ]
@@ -198,11 +198,11 @@ Every error response echoes the `Mcp-Session-Id` header, and the request `id` wh
 
 #### Monitor mode
 
-With `mode: monitor` on a rule, the policy never blocks that rule's calls. A call that would have been blocked is let through, the hit is recorded in analytics (`isGuardrailHit`, `guardrailName`), and the flagged questions are written to request metadata under `typesafe-jev-mcp-tool-guardrail:assessments`. Use it to tune thresholds and wording on real traffic before enforcing.
+With `mode: monitor` on a rule, the policy never blocks that rule's calls. A call that would have been blocked is let through, the hit is recorded in analytics (`isGuardrailHit`, `guardrailName`), and the flagged questions are written to request metadata under `typesafe-jev-mcp-tool-intent-verification:assessments`. Use it to tune thresholds and wording on real traffic before enforcing.
 
 #### Request metadata
 
-In both modes the policy writes Jev's token usage to `typesafe-jev-mcp-tool-guardrail:usage` as `{"input_tokens": ..., "output_tokens": ...}`, alongside any flagged questions as described above.
+In both modes the policy writes Jev's token usage to `typesafe-jev-mcp-tool-intent-verification:usage` as `{"input_tokens": ..., "output_tokens": ...}`, alongside any flagged questions as described above.
 
 #### Limitations
 
@@ -222,8 +222,8 @@ Place this policy after `mcp-spec-validation`, `mcp-auth` and `mcp-authz` in the
 Inside the `api-platform` repository, add the policy package under `policies:` in `/gateway/build.yaml`:
 
 ```yaml
-- name: typesafe-jev-mcp-tool-guardrail
-  gomodule: github.com/wso2/gateway-controllers/policies/typesafe-jev-mcp-tool-guardrail@v0
+- name: typesafe-jev-mcp-tool-intent-verification
+  gomodule: github.com/wso2/gateway-controllers/policies/typesafe-jev-mcp-tool-intent-verification@v0
 ```
 
 ## Reference Scenarios
@@ -244,7 +244,7 @@ spec:
   upstream:
     url: https://mcp-backend:8080/mcp
   policies:
-    - name: typesafe-jev-mcp-tool-guardrail
+    - name: typesafe-jev-mcp-tool-intent-verification
       version: v0
       params:
         tools:
@@ -280,7 +280,7 @@ Replace the default questions with a risk scale and a destination check, and inc
 
 ```yaml
 policies:
-  - name: typesafe-jev-mcp-tool-guardrail
+  - name: typesafe-jev-mcp-tool-intent-verification
     version: v0
     params:
       showAssessment: true
@@ -310,7 +310,7 @@ Run the default questions in monitor mode first, and let calls through if Jev is
 
 ```yaml
 policies:
-  - name: typesafe-jev-mcp-tool-guardrail
+  - name: typesafe-jev-mcp-tool-intent-verification
     version: v0
     params:
       timeout: "2s"

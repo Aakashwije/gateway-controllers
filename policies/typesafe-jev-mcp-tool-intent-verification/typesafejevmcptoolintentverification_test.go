@@ -15,7 +15,7 @@
  *
  */
 
-package typesafejevmcptoolguardrail
+package typesafejevmcptoolintentverification
 
 import (
 	"context"
@@ -95,7 +95,7 @@ func withDefaultAnswers(nouls map[string]float64) map[string]float64 {
 
 var benignAnswers = withDefaultAnswers(map[string]float64{"destructive": 0.02, "irreversible": 0.03, "exfiltration": 0.05, "out_of_scope": 0.04})
 
-func newPolicy(t *testing.T, baseURL string, extra map[string]interface{}) *TypesafeJevMcpToolGuardrailPolicy {
+func newPolicy(t *testing.T, baseURL string, extra map[string]interface{}) *TypesafeJevMcpToolIntentVerificationPolicy {
 	t.Helper()
 	params := map[string]interface{}{"apiKey": "test-key", "baseURL": baseURL}
 	for k, v := range extra {
@@ -105,7 +105,7 @@ func newPolicy(t *testing.T, baseURL string, extra map[string]interface{}) *Type
 	if err != nil {
 		t.Fatalf("GetPolicy: %v", err)
 	}
-	return p.(*TypesafeJevMcpToolGuardrailPolicy)
+	return p.(*TypesafeJevMcpToolIntentVerificationPolicy)
 }
 
 // everyTool is a tools list with one "*" rule, which screens every tool.
@@ -849,7 +849,7 @@ func TestPostSystemOne_RejectsOversizedResponse(t *testing.T) {
 		_, _ = w.Write([]byte(`{"answers":{},"pad":"` + strings.Repeat("x", maxJevResponseBytes) + `"}`))
 	}))
 	defer srv.Close()
-	p := &TypesafeJevMcpToolGuardrailPolicy{apiKey: "k", baseURL: srv.URL, client: &http.Client{}}
+	p := &TypesafeJevMcpToolIntentVerificationPolicy{apiKey: "k", baseURL: srv.URL, client: &http.Client{}}
 	_, _, err := p.postSystemOne(context.Background(), []byte("{}"))
 	if err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("err = %v, want a size-limit error", err)
@@ -864,7 +864,7 @@ func TestErrorSnippet_TruncatesLongBodies(t *testing.T) {
 		_, _ = w.Write([]byte(strings.Repeat("e", 4*maxJevErrorBodyBytes)))
 	}))
 	defer srv.Close()
-	p := &TypesafeJevMcpToolGuardrailPolicy{apiKey: "k", baseURL: srv.URL, client: &http.Client{}}
+	p := &TypesafeJevMcpToolIntentVerificationPolicy{apiKey: "k", baseURL: srv.URL, client: &http.Client{}}
 	status, body, err := p.postSystemOne(context.Background(), []byte("{}"))
 	if err != nil || status != http.StatusBadGateway {
 		t.Fatalf("status = %d, err = %v, want 502 and no error", status, err)
@@ -889,7 +889,7 @@ type sentToJev struct {
 }
 
 // callTool sends a tools/call for the named tool and returns the policy's action.
-func callTool(p *TypesafeJevMcpToolGuardrailPolicy, tool string) policy.RequestAction {
+func callTool(p *TypesafeJevMcpToolIntentVerificationPolicy, tool string) policy.RequestAction {
 	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"` + tool + `","arguments":{}}}`
 	return p.OnRequestBody(context.Background(), mcpRequest(body, nil), nil)
 }

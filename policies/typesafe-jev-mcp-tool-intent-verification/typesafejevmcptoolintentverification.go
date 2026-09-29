@@ -15,7 +15,7 @@
  *
  */
 
-// Package typesafejevmcptoolguardrail screens MCP tools/call requests using TypeSafe
+// Package typesafejevmcptoolintentverification screens MCP tools/call requests using TypeSafe
 // AI's Jev "System One" model (https://typesafe.ai). Before a tool call reaches the
 // MCP server, the tool name and its arguments are sent to Jev as a JSON state along
 // with a configurable battery of typed questions (Noul, Score, Choice). The call is
@@ -31,7 +31,7 @@
 // the mode, and whether to fail open. A tool no rule matches isn't screened. The
 // MCP proxy never sees the agent's conversation, so scope is judged against the
 // configured text only.
-package typesafejevmcptoolguardrail
+package typesafejevmcptoolintentverification
 
 import (
 	"bytes"
@@ -49,7 +49,7 @@ import (
 )
 
 const (
-	guardrailName  = "TypesafeJevMcpToolGuardrail"
+	guardrailName  = "TypesafeJevMcpToolIntentVerification"
 	defaultBaseURL = "https://api.typesafe.ai"
 	defaultModel   = "jev-latest"
 	defaultTimeout = 5 * time.Second
@@ -95,9 +95,9 @@ const (
 
 	// SharedContext.Metadata keys, read by later policies and the traffic-logging
 	// analytics publisher.
-	metaKeyAssessments   = "typesafe-jev-mcp-tool-guardrail:assessments"
-	metaKeyUsage         = "typesafe-jev-mcp-tool-guardrail:usage"
-	metaKeyLowConfidence = "typesafe-jev-mcp-tool-guardrail:low-confidence"
+	metaKeyAssessments   = "typesafe-jev-mcp-tool-intent-verification:assessments"
+	metaKeyUsage         = "typesafe-jev-mcp-tool-intent-verification:usage"
+	metaKeyLowConfidence = "typesafe-jev-mcp-tool-intent-verification:low-confidence"
 )
 
 // guardrailQuestion is one entry in a configured question battery. Criteria
@@ -161,8 +161,8 @@ type toolRule struct {
 	passthroughOnError bool
 }
 
-// TypesafeJevMcpToolGuardrailPolicy implements a Jev-backed guardrail for MCP tool calls.
-type TypesafeJevMcpToolGuardrailPolicy struct {
+// TypesafeJevMcpToolIntentVerificationPolicy implements a Jev-backed guardrail for MCP tool calls.
+type TypesafeJevMcpToolIntentVerificationPolicy struct {
 	apiKey  string
 	baseURL string
 	model   string
@@ -186,7 +186,7 @@ func GetPolicy(
 
 	// No client-level timeout: each Jev call is bounded by the configured
 	// timeout via context instead.
-	p := &TypesafeJevMcpToolGuardrailPolicy{
+	p := &TypesafeJevMcpToolIntentVerificationPolicy{
 		apiKey:  apiKey,
 		baseURL: stringParamOrDefault(params, "baseURL", defaultBaseURL),
 		model:   stringParamOrDefault(params, "model", defaultModel),
@@ -197,7 +197,7 @@ func GetPolicy(
 		return nil, fmt.Errorf("invalid params: %w", err)
 	}
 
-	slog.Debug("TypesafeJevMcpToolGuardrail: Policy initialized",
+	slog.Debug("TypesafeJevMcpToolIntentVerification: Policy initialized",
 		"toolRules", len(p.tools), "wildcardRule", p.anyTool != nil)
 
 	return p, nil
@@ -205,7 +205,7 @@ func GetPolicy(
 
 // Mode buffers the request body only: the tool name and arguments are read from
 // the JSON-RPC body, and the response is never inspected.
-func (p *TypesafeJevMcpToolGuardrailPolicy) Mode() policy.ProcessingMode {
+func (p *TypesafeJevMcpToolIntentVerificationPolicy) Mode() policy.ProcessingMode {
 	return policy.ProcessingMode{
 		RequestHeaderMode:  policy.HeaderModeSkip,
 		RequestBodyMode:    policy.BodyModeBuffer,
@@ -217,7 +217,7 @@ func (p *TypesafeJevMcpToolGuardrailPolicy) Mode() policy.ProcessingMode {
 // OnRequestBody screens a tools/call request. Everything else on the proxy —
 // other methods, other routes, JSON-RPC responses and notifications — passes
 // through untouched.
-func (p *TypesafeJevMcpToolGuardrailPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
+func (p *TypesafeJevMcpToolIntentVerificationPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
 	// Read the path and headers from the downstream snapshot, so the check and its
 	// error responses reflect what the client sent, not what a peer policy rewrote.
 	ds := reqCtx.DownstreamRequest()
@@ -343,13 +343,13 @@ func parseToolCall(body []byte, headers *policy.Headers) (*toolCallRequest, *pol
 
 // screen asks Jev the configured questions about one tool call and returns either
 // a passthrough or a blocking JSON-RPC error.
-func (p *TypesafeJevMcpToolGuardrailPolicy) screen(ctx context.Context, shared *policy.SharedContext, headers *policy.Headers, call *toolCallRequest) policy.RequestAction {
+func (p *TypesafeJevMcpToolIntentVerificationPolicy) screen(ctx context.Context, shared *policy.SharedContext, headers *policy.Headers, call *toolCallRequest) policy.RequestAction {
 	// A rule for the exact tool name wins over "*". A tool no rule matches isn't
 	// screened, so it costs no Jev call.
 	rule, ok := p.tools[call.Name]
 	if !ok {
 		if p.anyTool == nil {
-			slog.Debug("TypesafeJevMcpToolGuardrail: no rule matches tool, not screened", "tool", call.Name)
+			slog.Debug("TypesafeJevMcpToolIntentVerification: no rule matches tool, not screened", "tool", call.Name)
 			return policy.UpstreamRequestModifications{}
 		}
 		rule = *p.anyTool
@@ -360,11 +360,11 @@ func (p *TypesafeJevMcpToolGuardrailPolicy) screen(ctx context.Context, shared *
 	// never blocks, so it always passes through regardless of passthroughOnError.
 	failure := func(reason string, err error) policy.RequestAction {
 		if rule.mode == modeMonitor || rule.passthroughOnError {
-			slog.Debug("TypesafeJevMcpToolGuardrail: check failed, passing through",
+			slog.Debug("TypesafeJevMcpToolIntentVerification: check failed, passing through",
 				"reason", reason, "error", err, "mode", rule.mode, "tool", call.Name)
 			return policy.UpstreamRequestModifications{}
 		}
-		slog.Debug("TypesafeJevMcpToolGuardrail: check failed, failing closed",
+		slog.Debug("TypesafeJevMcpToolIntentVerification: check failed, failing closed",
 			"reason", reason, "error", err, "tool", call.Name)
 		return buildRequestErrorResponse(headers, statusCheckUnavailable, jsonRpcErrCodeInternal,
 			"MCP tool call could not be checked by guardrail", call.ID, nil)
@@ -406,7 +406,7 @@ func (p *TypesafeJevMcpToolGuardrailPolicy) screen(ctx context.Context, shared *
 
 	if len(lowConfidence) > 0 {
 		setMetadata(shared, metaKeyLowConfidence, lowConfidence)
-		slog.Debug("TypesafeJevMcpToolGuardrail: threshold reached below confidenceThreshold, not blocking",
+		slog.Debug("TypesafeJevMcpToolIntentVerification: threshold reached below confidenceThreshold, not blocking",
 			"questions", lowConfidence, "tool", call.Name)
 	}
 
@@ -417,12 +417,12 @@ func (p *TypesafeJevMcpToolGuardrailPolicy) screen(ctx context.Context, shared *
 	setMetadata(shared, metaKeyAssessments, failed)
 
 	if rule.mode == modeMonitor {
-		slog.Info("TypesafeJevMcpToolGuardrail: violation detected (monitor mode, not blocking)",
+		slog.Info("TypesafeJevMcpToolIntentVerification: violation detected (monitor mode, not blocking)",
 			"failedQuestions", failed, "tool", call.Name)
 		return policy.UpstreamRequestModifications{AnalyticsMetadata: guardrailHitAnalytics()}
 	}
 
-	slog.Debug("TypesafeJevMcpToolGuardrail: violation detected", "failedQuestions", failed, "tool", call.Name)
+	slog.Debug("TypesafeJevMcpToolIntentVerification: violation detected", "failedQuestions", failed, "tool", call.Name)
 	var data map[string]interface{}
 	if p.showAssessment {
 		data = map[string]interface{}{
@@ -614,7 +614,7 @@ func buildRequestErrorResponse(headers *policy.Headers, statusCode int, jsonRpcC
 		"error":   errObj,
 	})
 	if err != nil {
-		slog.Debug("TypesafeJevMcpToolGuardrail: Failed to marshal error response", "error", err)
+		slog.Debug("TypesafeJevMcpToolIntentVerification: Failed to marshal error response", "error", err)
 		body = fmt.Appendf(nil, `{"jsonrpc":"2.0","id":%s,"error":{"code":%d,"message":"Unexpected error"}}`, string(id), jsonRpcErrCodeInternal)
 	}
 
@@ -740,7 +740,7 @@ type jevSystemOneResponse struct {
 	Usage   *jevUsage                  `json:"usage"`
 }
 
-func (p *TypesafeJevMcpToolGuardrailPolicy) callJev(ctx context.Context, state toolCallState, questions []guardrailQuestion, timeout time.Duration) (map[string]json.RawMessage, *jevUsage, error) {
+func (p *TypesafeJevMcpToolIntentVerificationPolicy) callJev(ctx context.Context, state toolCallState, questions []guardrailQuestion, timeout time.Duration) (map[string]json.RawMessage, *jevUsage, error) {
 	questionMap := make(map[string]jevQuestionPayload, len(questions))
 	for _, q := range questions {
 		payload := jevQuestionPayload{Type: q.Type, Instructions: q.Instructions}
@@ -773,7 +773,7 @@ func (p *TypesafeJevMcpToolGuardrailPolicy) callJev(ctx context.Context, state t
 
 	status, body, err := p.postSystemOne(ctx, payload)
 	if err == nil && (status == http.StatusTooManyRequests || status == statusJevOverloaded) {
-		slog.Debug("TypesafeJevMcpToolGuardrail: Jev rate limited or overloaded, retrying once", "status", status)
+		slog.Debug("TypesafeJevMcpToolIntentVerification: Jev rate limited or overloaded, retrying once", "status", status)
 		select {
 		case <-ctx.Done():
 			return nil, nil, fmt.Errorf("Jev API returned status %d and timed out before retry: %w", status, ctx.Err())
@@ -795,7 +795,7 @@ func (p *TypesafeJevMcpToolGuardrailPolicy) callJev(ctx context.Context, state t
 	return parsed.Answers, parsed.Usage, nil
 }
 
-func (p *TypesafeJevMcpToolGuardrailPolicy) postSystemOne(ctx context.Context, payload []byte) (int, []byte, error) {
+func (p *TypesafeJevMcpToolIntentVerificationPolicy) postSystemOne(ctx context.Context, payload []byte) (int, []byte, error) {
 	url := strings.TrimSuffix(p.baseURL, "/") + "/v1/systemone"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
@@ -922,7 +922,7 @@ func stringParamOrDefault(params map[string]interface{}, key, def string) string
 // ruleParams are set per rule in "tools"; at the top level they would be ignored.
 var ruleParams = []string{"scope", "questions", "mode", "passthroughOnError"}
 
-func (p *TypesafeJevMcpToolGuardrailPolicy) parseParams(params map[string]interface{}) error {
+func (p *TypesafeJevMcpToolIntentVerificationPolicy) parseParams(params map[string]interface{}) error {
 	for _, key := range ruleParams {
 		if _, ok := params[key]; ok {
 			return fmt.Errorf("'%s' is set per rule in 'tools', not at the top level; for example, a rule with name \"*\" applies to every tool", key)
