@@ -25,7 +25,6 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 
@@ -46,9 +45,8 @@ const (
 	jevMetadataDecisionKey = "semantic-cache:jev-check"
 	jevMetadataUsageKey    = "semantic-cache:jev-usage"
 
-	jevQuestionNoul   = "noul"
-	jevQuestionScore  = "score"
-	jevQuestionChoice = "choice"
+	jevQuestionNoul  = "noul"
+	jevQuestionScore = "score"
 
 	jevDecisionStore = "store"
 	jevDecisionSkip  = "skip"
@@ -58,11 +56,8 @@ type jevQuestion struct {
 	Key          string
 	Type         string
 	Instructions string
-	// Criteria holds the ordered scale levels for score, or the sorted option names for choice.
-	Criteria []string
-	// Options maps each choice option to the description Jev uses to judge it.
-	Options   map[string]string
-	BlockOn   []string
+	// Criteria holds the ordered scale levels for score.
+	Criteria  []string
 	Threshold float64
 }
 
@@ -182,8 +177,8 @@ func parseJevQuestion(raw map[string]interface{}, index int) (jevQuestion, error
 		return question, fmt.Errorf("'%s.key' is required", prefix)
 	}
 	question.Type, _ = raw["type"].(string)
-	if question.Type != jevQuestionNoul && question.Type != jevQuestionScore && question.Type != jevQuestionChoice {
-		return question, fmt.Errorf("'%s.type' must be 'noul', 'score', or 'choice'", prefix)
+	if question.Type != jevQuestionNoul && question.Type != jevQuestionScore {
+		return question, fmt.Errorf("'%s.type' must be 'noul' or 'score'", prefix)
 	}
 	question.Instructions, _ = raw["instructions"].(string)
 	if strings.TrimSpace(question.Instructions) == "" {
@@ -207,34 +202,6 @@ func parseJevQuestion(raw map[string]interface{}, index int) (jevQuestion, error
 		}
 		if threshold <= 0 || threshold > float64(len(question.Criteria)-1) {
 			return question, fmt.Errorf("'%s.threshold' must be in (0, %d] for score", prefix, len(question.Criteria)-1)
-		}
-	case jevQuestionChoice:
-		// Jev's choice criteria is an object of option name to description.
-		options, ok := raw["criteria"].(map[string]interface{})
-		if !ok || len(options) < 2 || len(options) > 255 {
-			return question, fmt.Errorf("'%s.criteria' must be an object with 2 to 255 options for choice", prefix)
-		}
-		question.Options = make(map[string]string, len(options))
-		for option, rawDescription := range options {
-			description, ok := rawDescription.(string)
-			if option == "" || !ok || strings.TrimSpace(description) == "" {
-				return question, fmt.Errorf("'%s.criteria' options must map non-empty names to non-empty descriptions", prefix)
-			}
-			question.Options[option] = description
-			question.Criteria = append(question.Criteria, option)
-		}
-		sort.Strings(question.Criteria)
-		question.BlockOn, err = jevStringList(raw["blockOn"], prefix+".blockOn")
-		if err != nil || len(question.BlockOn) == 0 {
-			return question, fmt.Errorf("'%s.blockOn' must contain at least one string for choice", prefix)
-		}
-		for _, option := range question.BlockOn {
-			if _, ok := question.Options[option]; !ok {
-				return question, fmt.Errorf("'%s.blockOn' option %q is not in criteria", prefix, option)
-			}
-		}
-		if threshold <= 0 || threshold > 1 {
-			return question, fmt.Errorf("'%s.threshold' must be in (0, 1] for choice", prefix)
 		}
 	}
 	return question, nil
@@ -327,11 +294,8 @@ func (client *jevClient) shouldStore(ctx context.Context, requestText, responseT
 	payloadQuestions := make(map[string]jevQuestionPayload, len(questions))
 	for _, question := range questions {
 		payload := jevQuestionPayload{Type: question.Type, Instructions: question.Instructions}
-		switch question.Type {
-		case jevQuestionScore:
+		if question.Type == jevQuestionScore {
 			payload.Criteria = question.Criteria
-		case jevQuestionChoice:
-			payload.Criteria = question.Options
 		}
 		payloadQuestions[question.Key] = payload
 	}
@@ -461,37 +425,6 @@ func jevBlockingValue(question jevQuestion, raw json.RawMessage) (float64, map[s
 		}
 		detail["value"] = *answer.Score
 		return *answer.Score, detail, nil
-	case jevQuestionChoice:
-		var answer struct {
-			Type          string             `json:"type"`
-			Choice        string             `json:"choice"`
-			Probabilities map[string]float64 `json:"probabilities"`
-		}
-		if err := json.Unmarshal(raw, &answer); err != nil || answer.Type != jevQuestionChoice || answer.Probabilities == nil {
-			return 0, nil, fmt.Errorf("expected a choice probability distribution")
-		}
-		allowed := make(map[string]bool, len(question.Criteria))
-		for _, option := range question.Criteria {
-			allowed[option] = true
-			if probability, ok := answer.Probabilities[option]; !ok || !validProbability(probability) {
-				return 0, nil, fmt.Errorf("missing or invalid probability for option %q", option)
-			}
-		}
-		if !allowed[answer.Choice] {
-			return 0, nil, fmt.Errorf("choice %q is not configured", answer.Choice)
-		}
-		for option := range answer.Probabilities {
-			if !allowed[option] {
-				return 0, nil, fmt.Errorf("probability for unknown option %q", option)
-			}
-		}
-		value := 0.0
-		for _, option := range question.BlockOn {
-			value += answer.Probabilities[option]
-		}
-		detail["value"] = value
-		detail["choice"] = answer.Choice
-		return value, detail, nil
 	default:
 		return 0, nil, fmt.Errorf("unsupported question type")
 	}

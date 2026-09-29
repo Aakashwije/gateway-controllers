@@ -90,25 +90,14 @@ parameters:
                 minLength: 1
               type:
                 type: string
-                enum: [noul, score, choice]
+                enum: [noul, score]
               instructions:
                 type: string
                 minLength: 1
               criteria:
                 description: |
                   For score, an ordered array of 2 to 10 scale descriptions
-                  (low to high). For choice, an object mapping 2 to 255 option
-                  names to descriptions.
-                oneOf:
-                  - type: array
-                    items:
-                      type: string
-                      minLength: 1
-                  - type: object
-                    additionalProperties:
-                      type: string
-                      minLength: 1
-              blockOn:
+                  (low to high). Not used for noul questions.
                 type: array
                 items:
                   type: string

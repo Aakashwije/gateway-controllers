@@ -42,30 +42,26 @@ func TestParseJevCacheCheck(t *testing.T) {
 				t.Fatalf("unexpected defaults: %#v", cfg)
 			}
 		}},
-		{name: "custom score and choice", params: map[string]interface{}{
+		{name: "custom score", params: map[string]interface{}{
 			"jevApiKey": "secret",
 			"jevCacheCheck": map[string]interface{}{
 				"enabled": true,
 				"timeout": "2s",
 				"questions": []interface{}{
 					map[string]interface{}{"key": "quality", "type": "score", "instructions": "How poor?", "criteria": []interface{}{"good", "bad"}, "threshold": 1},
-					map[string]interface{}{"key": "topic", "type": "choice", "instructions": "Which topic?", "criteria": map[string]interface{}{"safe": "General knowledge", "skip": "Personalised advice"}, "blockOn": []interface{}{"skip"}, "threshold": 0.7},
 				},
 			},
 		}, assert: func(t *testing.T, cfg jevCacheCheckConfig) {
-			if len(cfg.Questions) != 2 || cfg.Timeout != 2*time.Second {
+			if len(cfg.Questions) != 1 || cfg.Timeout != 2*time.Second {
 				t.Fatalf("unexpected custom config: %#v", cfg)
 			}
-			if got := cfg.Questions[1].Options["skip"]; got != "Personalised advice" {
-				t.Fatalf("choice description = %q", got)
+			if got := cfg.Questions[0].Criteria; !reflect.DeepEqual(got, []string{"good", "bad"}) {
+				t.Fatalf("score criteria = %#v", got)
 			}
 		}},
-		{name: "choice criteria as array is rejected", params: jevParamsWithQuestion(map[string]interface{}{
-			"key": "topic", "type": "choice", "instructions": "Which topic?", "criteria": []interface{}{"safe", "skip"}, "blockOn": []interface{}{"skip"}, "threshold": 0.7,
-		}), wantErr: "must be an object"},
-		{name: "choice blockOn must name an option", params: jevParamsWithQuestion(map[string]interface{}{
-			"key": "topic", "type": "choice", "instructions": "Which topic?", "criteria": map[string]interface{}{"safe": "a", "skip": "b"}, "blockOn": []interface{}{"other"}, "threshold": 0.7,
-		}), wantErr: "not in criteria"},
+		{name: "choice is rejected", params: jevParamsWithQuestion(map[string]interface{}{
+			"key": "topic", "type": "choice", "instructions": "Which topic?", "criteria": map[string]interface{}{"safe": "a", "skip": "b"}, "threshold": 0.7,
+		}), wantErr: "must be 'noul' or 'score'"},
 		{name: "score threshold above scale is rejected", params: jevParamsWithQuestion(map[string]interface{}{
 			"key": "quality", "type": "score", "instructions": "How poor?", "criteria": []interface{}{"good", "bad"}, "threshold": 2,
 		}), wantErr: "(0, 1] for score"},
@@ -235,13 +231,6 @@ func TestJevCacheCheckDecisions(t *testing.T) {
 			wantStores: 1, wantDecision: jevDecisionStore, wantJevCalls: 2,
 		},
 		{
-			name: "choice blockOn mass reaches threshold",
-			custom: []jevQuestion{{Key: "topic", Type: jevQuestionChoice, Instructions: "Which topic?", Criteria: []string{"advice", "facts", "personal"},
-				Options: map[string]string{"advice": "Advice", "facts": "Facts", "personal": "Personal"}, BlockOn: []string{"advice", "personal"}, Threshold: 0.7}},
-			server:       jevJSON(http.StatusOK, `{"answers":{"topic":{"type":"choice","choice":"facts","confidence":0.2,"probabilities":{"advice":0.4,"facts":0.25,"personal":0.35}}}}`),
-			wantDecision: jevDecisionSkip, wantJevCalls: 1, wantFired: true,
-		},
-		{
 			name:       "score below threshold is stored",
 			custom:     []jevQuestion{{Key: "quality", Type: jevQuestionScore, Instructions: "How poor?", Criteria: []string{"good", "ok", "bad"}, Threshold: 1.5}},
 			server:     jevJSON(http.StatusOK, `{"answers":{"quality":{"type":"score","score":0.4,"confidence":0.8,"legend":{"0":"good","1":"ok","2":"bad"},"probabilities":{"0":0.6,"1":0.4,"2":0}}}}`),
@@ -380,8 +369,8 @@ func jevParamsWithQuestion(question map[string]interface{}) map[string]interface
 	}
 }
 
-// TestJevCacheCheckWireFormat pins the criteria shapes documented by the Jev
-// API: score takes an ordered array, choice takes an option→description object.
+// TestJevCacheCheckWireFormat pins the ordered score criteria shape documented
+// by the Jev API.
 func TestJevCacheCheckWireFormat(t *testing.T) {
 	var got map[string]json.RawMessage
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -397,7 +386,7 @@ func TestJevCacheCheckWireFormat(t *testing.T) {
 		for key, question := range payload.Questions {
 			got[key] = question.Criteria
 		}
-		jevJSON(http.StatusOK, `{"answers":{"quality":{"type":"score","score":0},"topic":{"type":"choice","choice":"safe","probabilities":{"safe":1,"skip":0}}}}`)(w, r)
+		jevJSON(http.StatusOK, `{"answers":{"quality":{"type":"score","score":0}}}`)(w, r)
 	}))
 	defer server.Close()
 
@@ -406,7 +395,6 @@ func TestJevCacheCheckWireFormat(t *testing.T) {
 		"jevBaseURL": server.URL,
 		"jevCacheCheck": map[string]interface{}{"enabled": true, "questions": []interface{}{
 			map[string]interface{}{"key": "quality", "type": "score", "instructions": "How poor?", "criteria": []interface{}{"good", "bad"}, "threshold": 1},
-			map[string]interface{}{"key": "topic", "type": "choice", "instructions": "Which topic?", "criteria": map[string]interface{}{"safe": "General knowledge", "skip": "Personalised advice"}, "blockOn": []interface{}{"skip"}, "threshold": 0.7},
 		}},
 	})
 	if err != nil {
@@ -418,9 +406,6 @@ func TestJevCacheCheckWireFormat(t *testing.T) {
 	}
 	if string(got["quality"]) != `["good","bad"]` {
 		t.Errorf("score criteria = %s", got["quality"])
-	}
-	if string(got["topic"]) != `{"safe":"General knowledge","skip":"Personalised advice"}` {
-		t.Errorf("choice criteria = %s", got["topic"])
 	}
 }
 

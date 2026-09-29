@@ -87,15 +87,13 @@ func TestLiveJevDefaultQuestions(t *testing.T) {
 	}
 }
 
-// TestLiveJevCustomQuestionFormats proves the live API accepts the score
-// (ordered array) and choice (option→description object) criteria shapes.
+// TestLiveJevCustomQuestionFormats proves the live API accepts the question
+// formats supported by Semantic Cache: score and noul.
 func TestLiveJevCustomQuestionFormats(t *testing.T) {
 	cfg := liveJevConfig(t, map[string]interface{}{"questions": []interface{}{
 		map[string]interface{}{"key": "vagueness", "type": "score", "instructions": "How vague is `response`?",
 			"criteria": []interface{}{"Precise and specific", "Somewhat vague", "Very vague"}, "threshold": 1.5},
-		map[string]interface{}{"key": "output_kind", "type": "choice", "instructions": "Does `request` ask for creative or factual output?",
-			"criteria": map[string]interface{}{"factual": "A factual question with one correct answer", "creative": "Creative or varied output such as poems or stories"},
-			"blockOn": []interface{}{"creative"}, "threshold": 0.7},
+		map[string]interface{}{"key": "creative_output", "type": "noul", "instructions": "Does `request` ask for creative or varied output such as a poem or story?", "threshold": 0.7},
 	}})
 	client := newJevClient(cfg)
 

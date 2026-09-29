@@ -128,11 +128,10 @@ Custom questions support the following fields:
 | Field | Applies to | Description |
 |-------|------------|-------------|
 | `key` | All | Unique, non-empty answer identifier. |
-| `type` | All | `noul`, `score`, or `choice`. |
+| `type` | All | `noul` or `score`. Choice questions are intentionally unsupported because Semantic Cache admission needs an ordered value that can be compared directly with a cache-write threshold. |
 | `instructions` | All | Plain-English question Jev evaluates. |
-| `threshold` | All | Inclusive rejection threshold. `noul` and `choice` use `(0,1]`; `score` uses `(0,last scale position]`. |
-| `criteria` | `score`, `choice` | For `score`, an array of 2–10 scale descriptions ordered from low to high. For `choice`, an object mapping 2–255 option names to descriptions, for example `{safe: "General knowledge", skip: "Personalised advice"}`. |
-| `blockOn` | `choice` | One or more configured options. Their probability mass is summed and compared with `threshold`. |
+| `threshold` | All | Inclusive cache-write rejection threshold. `noul` uses `(0,1]`; `score` uses `(0,last scale position]`. |
+| `criteria` | `score` | An array of 2–10 scale descriptions ordered from cacheable to non-cacheable. Not used for `noul`. |
 
 Enabling this option sends request and response text to TypeSafe AI's hosted service; confirm that this is compatible with your privacy, residency, and compliance requirements.
 
