@@ -171,7 +171,7 @@ The hit is recorded in analytics (`isGuardrailHit`, `guardrailName`), and the ga
 
 #### When a result can't be screened
 
-A result can't be screened when the Jev API call fails, times out or returns an incomplete answer, when the result's text is larger than `maxResultBytes`, or when the result isn't a valid tool result. The matching rule's `passthroughOnError` decides what happens:
+A result can't be screened when the Jev API call fails, times out or returns an incomplete answer, when the result's text is larger than `maxResultBytes`, when the result isn't a valid tool result, or when the response can't be read as a JSON-RPC message (for example, a compressed body). The matching rule's `passthroughOnError` decides what happens:
 
 - **`true` (default):** the result reaches the agent unscreened. The tool has already run, so withholding every result while Jev is unreachable would stop agents without undoing anything.
 - **`false`:** the result is withheld with the text `The gateway withheld this tool result because it could not be checked.`

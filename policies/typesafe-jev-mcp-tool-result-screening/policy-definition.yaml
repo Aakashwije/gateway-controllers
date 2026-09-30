@@ -30,6 +30,7 @@ parameters:
         properties:
           name:
             type: string
+            title: Tool name
             minLength: 1
             maxLength: 256
             default: "*"

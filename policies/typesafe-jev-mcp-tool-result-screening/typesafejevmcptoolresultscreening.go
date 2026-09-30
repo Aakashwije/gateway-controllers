@@ -273,9 +273,13 @@ func (p *TypesafeJevMcpToolResultScreeningPolicy) OnResponseBody(ctx context.Con
 		// A POST stream can carry notifications and server requests before the
 		// response; only the event answering this call is screened or replaced.
 		events := parseEventStream(body)
+		readable := len(events) > 0
 		for i, event := range events {
 			message, ok := resultMessage([]byte(event.data), call.ID)
 			if !ok {
+				if strings.TrimSpace(event.data) != "" && !isJSONObject([]byte(event.data)) {
+					readable = false
+				}
 				continue
 			}
 			replacement, analytics := p.screen(ctx, respCtx.SharedContext, rule, call, message)
@@ -285,12 +289,31 @@ func (p *TypesafeJevMcpToolResultScreeningPolicy) OnResponseBody(ctx context.Con
 			events[i].data = string(replacement)
 			return policy.DownstreamResponseModifications{Body: buildEventStream(events), AnalyticsMetadata: analytics}
 		}
+		// No event answers the call. If part of the stream couldn't be read (for
+		// example a compressed body), the result may be in it, unscreened.
+		if !readable {
+			replacement := p.failure(respCtx.SharedContext, rule, call, unreadableReason, fmt.Errorf("event stream has no readable JSON-RPC message"))
+			if replacement == nil {
+				return policy.DownstreamResponseModifications{}
+			}
+			return policy.DownstreamResponseModifications{Body: buildEventStream([]sseEvent{{fields: []string{"event: message"}, data: string(replacement)}})}
+		}
 		return policy.DownstreamResponseModifications{}
 	}
 
 	message, ok := resultMessage(body, call.ID)
 	if !ok {
-		return policy.DownstreamResponseModifications{}
+		// A JSON-RPC error, or a message that doesn't answer this call, has no
+		// result to screen. A body that isn't a JSON-RPC message at all (for
+		// example a compressed body) can't be screened.
+		if isJSONObject(body) && json.Valid(body) {
+			return policy.DownstreamResponseModifications{}
+		}
+		replacement := p.failure(respCtx.SharedContext, rule, call, unreadableReason, fmt.Errorf("response body is not a JSON-RPC message"))
+		if replacement == nil {
+			return policy.DownstreamResponseModifications{}
+		}
+		return policy.DownstreamResponseModifications{Body: replacement}
 	}
 	replacement, analytics := p.screen(ctx, respCtx.SharedContext, rule, call, message)
 	if replacement == nil {
@@ -471,6 +494,9 @@ func (p *TypesafeJevMcpToolResultScreeningPolicy) screen(ctx context.Context, sh
 	}
 	return buildWithheldResult(call.ID, withheldText, assessments), guardrailHitAnalytics()
 }
+
+// unreadableReason is recorded when a matched call's response can't be read.
+const unreadableReason = "response is not a readable JSON-RPC message"
 
 // failure handles a check that could not run (not a violation). The result passes
 // through when the rule fails open, which is the default, or in monitor mode;

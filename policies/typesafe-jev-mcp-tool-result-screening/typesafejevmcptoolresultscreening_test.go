@@ -463,6 +463,30 @@ func TestOnResponseBody_EventStream(t *testing.T) {
 		}
 	})
 
+	t.Run("an unreadable stream can't be screened", func(t *testing.T) {
+		unreadable := "event: message\ndata: \x1f\x8b\x08\x00\n\n"
+		jev := newMockJev(t, injected)
+		p := newPolicy(t, jev.server.URL, nil)
+		respCtx := mcpResponse(fetchCall, unreadable, "text/event-stream")
+		mustPassthrough(t, p.OnResponseBody(context.Background(), respCtx, nil))
+		if respCtx.Metadata[metaKeyUnscreened] != unreadableReason {
+			t.Fatalf("unscreened = %v, want %q", respCtx.Metadata[metaKeyUnscreened], unreadableReason)
+		}
+
+		p = newPolicy(t, jev.server.URL, map[string]interface{}{"passthroughOnError": false})
+		mods := mustModifications(t, p.OnResponseBody(context.Background(), mcpResponse(fetchCall, unreadable, "text/event-stream"), nil))
+		events := parseEventStream(mods.Body)
+		if len(events) != 1 {
+			t.Fatalf("got %d events, want 1: %s", len(events), mods.Body)
+		}
+		if got := mustWithhold(t, []byte(events[0].data)); got.Text != uncheckedText || string(got.ID) != "7" {
+			t.Fatalf("withheld = %+v, want the unchecked text for id 7", got)
+		}
+		if jev.calls.Load() != 0 {
+			t.Fatalf("Jev was called %d times for an unreadable stream", jev.calls.Load())
+		}
+	})
+
 	t.Run("matches a string id", func(t *testing.T) {
 		jev := newMockJev(t, injected)
 		p := newPolicy(t, jev.server.URL, nil)
@@ -518,7 +542,6 @@ func TestOnResponseBody_PassesThroughWithoutCallingJev(t *testing.T) {
 			c.ResponseBody = nil
 			return c
 		}},
-		{name: "response is not JSON", ctx: func() *policy.ResponseContext { return jsonResponse(fetchCall, "Internal error") }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -620,6 +643,8 @@ func TestOnResponseBody_ChecksThatCannotRun(t *testing.T) {
 		{name: "result too large, fails open", handler: injected, extra: map[string]interface{}{"maxResultBytes": 100}, result: large, wantInLog: "result too large to screen"},
 		{name: "result too large, fail closed", handler: injected, extra: map[string]interface{}{"maxResultBytes": 100, "passthroughOnError": false}, result: large, wantHeld: true, wantInLog: "result too large to screen"},
 		{name: "result not a tool result", handler: injected, result: `{"jsonrpc":"2.0","id":7,"result":"text"}`, wantInLog: "result is not a valid tool result"},
+		{name: "response not JSON, fails open", handler: injected, result: "Internal error", wantInLog: unreadableReason},
+		{name: "response not JSON, fail closed", handler: injected, extra: map[string]interface{}{"passthroughOnError": false}, result: "\x1f\x8b\x08\x00", wantHeld: true, wantInLog: unreadableReason},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
