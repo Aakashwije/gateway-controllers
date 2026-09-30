@@ -47,10 +47,13 @@ parameters:
     limit:
       type: integer
       x-wso2-policy-advanced-param: false
-      description: "The number of most relevant tools to include (used if selectionMode is By Rank)."
+      description: |
+        The number of most relevant tools to include (used if selectionMode is By Rank).
+        Tools are selected once, against the user's request, before the model has called any tool, so
+        the limit must cover every tool a multi-step task might need, not only its first step.
       minimum: 0
       maximum: 20
-      default: 5
+      default: 10
     threshold:
       type: number
       x-wso2-policy-advanced-param: false
@@ -79,8 +82,9 @@ parameters:
         JSONPath expression to extract the user's prompt from the request body.
         The default, "$.messages[-1].content", is resolved as the most recent message whose role
         is "user" and that carries text (string content, or the "text" and "input_text" parts of
-        structured content), so a final tool result or assistant turn in an agent loop is never
-        judged as the prompt. A request with no such message is forwarded unchanged.
+        structured content), so a final assistant turn is never judged as the prompt. A request
+        with no such message is forwarded unchanged, as is a request whose conversation already
+        holds tool calls or tool results.
         Any other value is read exactly as written. It supports dotted keys with an optional array
         index, including negative indices, and must resolve to one string; wildcards are not supported.
         A malformed expression is rejected when the policy is applied, rather than

@@ -162,6 +162,18 @@ func (p *TypesafeJevToolFilteringPolicy) OnRequestBody(ctx context.Context, reqC
 		return policy.UpstreamRequestModifications{}
 	}
 
+	// A conversation that already holds tool calls or tool results is in the
+	// middle of an agent loop, and is forwarded unchanged without a Jev call.
+	// Every turn of the loop would be judged against the same user message, so
+	// a tool that missed the selection once could never come back, and a tool
+	// whose need only shows in a tool result never scores at all. Providers
+	// such as Anthropic also reject tool_use and tool_result blocks in a
+	// request that no longer defines tools.
+	if hasToolCallHistory(requestBody, arrayPath) {
+		slog.Debug(logPrefix + "The conversation holds tool calls, forwarding unchanged")
+		return policy.UpstreamRequestModifications{}
+	}
+
 	evaluated, err := normalizeEntries(entries, p.system)
 	if err != nil {
 		// A tool the policy cannot inspect is not a provider failure, and
@@ -227,15 +239,6 @@ func (p *TypesafeJevToolFilteringPolicy) OnRequestBody(ctx context.Context, reqC
 
 	if isUnchanged(entries, selected) {
 		slog.Debug(logPrefix + "Every tool survived in its original order, forwarding unchanged")
-		return policy.UpstreamRequestModifications{}
-	}
-
-	// A conversation that already holds tool calls or tool results must still
-	// define tools: providers such as Anthropic reject tool_use and tool_result
-	// blocks in a request without them. Such a request is forwarded unchanged
-	// rather than stripped of its tools.
-	if len(selected) == 0 && hasToolCallHistory(requestBody, arrayPath) {
-		slog.Debug(logPrefix + "No tool qualified but the conversation holds tool calls, forwarding unchanged")
 		return policy.UpstreamRequestModifications{}
 	}
 
@@ -324,7 +327,7 @@ const (
 
 	defaultQueryJSONPath = "$.messages[-1].content"
 	defaultToolsJSONPath = "$.tools"
-	defaultLimit         = 5
+	defaultLimit         = 10
 	defaultThreshold     = 0.7
 	defaultMinimumScore  = 0.0
 )
@@ -846,9 +849,9 @@ func extractUserPrompt(content []byte, requestBody map[string]interface{}, query
 // has any, or "" when there is none.
 //
 // The default queryJSONPath, "$.messages[-1].content", names the last
-// message. In an agent loop that is usually a tool result or an assistant
-// turn, and judging relevance against a tool result drops the tools the user's
-// next step needs. Selecting the last message whose role is "user" needs an
+// message. In a multi-turn conversation that can be an assistant turn, which
+// says little about the tools the user's request needs. Selecting the last
+// message whose role is "user" needs an
 // RFC 9535 filter expression, which the SDK's JSONPath evaluator does not
 // support yet (wso2/api-platform#3571), so the default path is resolved here
 // instead. Once filters are supported, the default can become a plain path

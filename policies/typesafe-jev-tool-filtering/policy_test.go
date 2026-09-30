@@ -415,10 +415,10 @@ func TestEmptySelectionEmptiesArrayElementToolsPath(t *testing.T) {
 	}
 }
 
-// TestEmptySelectionKeepsToolsForToolCallHistory: a conversation that already
-// holds tool calls or tool results must still define tools upstream, so when
-// no tool qualifies the request is forwarded unchanged instead of stripped.
-func TestEmptySelectionKeepsToolsForToolCallHistory(t *testing.T) {
+// TestToolCallHistoryIsForwardedUnchanged: a conversation that already holds
+// tool calls or tool results is forwarded unchanged without a Jev call, even
+// when the scores would have removed a tool.
+func TestToolCallHistoryIsForwardedUnchanged(t *testing.T) {
 	histories := map[string]string{
 		"openai assistant tool_calls": `{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"get_weather","arguments":"{}"}}]}`,
 		"openai tool message":         `{"role":"tool","tool_call_id":"c1","content":"28°C"}`,
@@ -429,7 +429,7 @@ func TestEmptySelectionKeepsToolsForToolCallHistory(t *testing.T) {
 
 	for name, history := range histories {
 		t.Run(name, func(t *testing.T) {
-			mock := newMockJev(t, respondScores(0.1, 0.05))
+			mock := newMockJev(t, respondScores(0.9, 0.05))
 			p := newTestPolicy(t, mock.url(), map[string]interface{}{
 				"selectionMode": SelectionModeThreshold,
 				"threshold":     0.7,
@@ -449,11 +449,14 @@ func TestEmptySelectionKeepsToolsForToolCallHistory(t *testing.T) {
 			}`
 
 			assertPassthrough(t, runRequest(t, p, request))
+			if calls := mock.callCount(); calls != 0 {
+				t.Errorf("Jev was called %d times, want 0", calls)
+			}
 		})
 	}
 
 	t.Run("responses api function_call input", func(t *testing.T) {
-		mock := newMockJev(t, respondScores(0.1, 0.05))
+		mock := newMockJev(t, respondScores(0.9, 0.05))
 		p := newTestPolicy(t, mock.url(), map[string]interface{}{
 			"selectionMode": SelectionModeThreshold,
 			"threshold":     0.7,
@@ -473,6 +476,9 @@ func TestEmptySelectionKeepsToolsForToolCallHistory(t *testing.T) {
 		}`
 
 		assertPassthrough(t, runRequest(t, p, request))
+		if calls := mock.callCount(); calls != 0 {
+			t.Errorf("Jev was called %d times, want 0", calls)
+		}
 	})
 }
 
@@ -2587,10 +2593,10 @@ func toolNames(t *testing.T, body []byte, field string) []string {
 	return names
 }
 
-// agentLoopRequest is the regression scenario for prompt selection: the user
+// agentLoopRequest is the regression scenario for an agent loop: the user
 // asks for two steps, the model has called get_weather, and the request ends
-// with that tool's result. Judging relevance against the tool result would
-// drop send_email, which the model needs next.
+// with that tool's result. Filtering this turn could drop send_email, which
+// the model needs next.
 const agentLoopRequest = `{
 	"model": "gpt-4o",
 	"temperature": 0.2,
@@ -2609,9 +2615,10 @@ const agentLoopRequest = `{
 	]
 }`
 
-// TestAgentLoopUsesTheLatestUserRequest is the main prompt-selection
-// regression test: a final tool result must not become the Jev prompt.
-func TestAgentLoopUsesTheLatestUserRequest(t *testing.T) {
+// TestAgentLoopIsForwardedUnchanged is the main agent-loop regression test:
+// once the conversation holds a tool call, every tool stays available for the
+// rest of the loop and Jev is not asked again.
+func TestAgentLoopIsForwardedUnchanged(t *testing.T) {
 	mock := newMockJev(t, respondScores(0.9, 0.95, 0.05))
 	p := newTestPolicy(t, mock.url(), map[string]interface{}{
 		"selectionMode": SelectionModeRank,
@@ -2619,27 +2626,9 @@ func TestAgentLoopUsesTheLatestUserRequest(t *testing.T) {
 		"toolsJSONPath": "$.tools[*].function",
 	})
 
-	body := modifiedBody(t, runRequest(t, p, agentLoopRequest))
-
-	prompt := mock.lastCapture(t).State.Prompt
-	if want := "What is the weather in Colombo? Then email it to bob@example.com."; prompt != want {
-		t.Errorf("prompt sent to Jev = %q, want the user's request %q", prompt, want)
-	}
-	if strings.Contains(prompt, "28°C") {
-		t.Errorf("prompt sent to Jev is the tool result: %q", prompt)
-	}
-
-	if got, want := toolNames(t, body, "tools"), []string{"send_email", "get_weather"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("tools = %v, want %v", got, want)
-	}
-
-	// Every field but tools reaches the upstream unchanged.
-	filtered := mustParseBody(t, string(body))
-	original := mustParseBody(t, agentLoopRequest)
-	delete(filtered, "tools")
-	delete(original, "tools")
-	if !reflect.DeepEqual(filtered, original) {
-		t.Errorf("unrelated fields changed:\n got: %v\nwant: %v", filtered, original)
+	assertPassthrough(t, runRequest(t, p, agentLoopRequest))
+	if calls := mock.callCount(); calls != 0 {
+		t.Errorf("Jev was called %d times, want 0", calls)
 	}
 }
 
@@ -2665,7 +2654,7 @@ func TestDefaultPromptSelection(t *testing.T) {
 				{"role":"user","content":"What is the weather?"},
 				{"role":"assistant","content":"Where?"},
 				{"role":"user","content":"Find the sales report instead"},
-				{"role":"tool","tool_call_id":"x","content":"tool output"}
+				{"role":"assistant","content":"Which quarter?"}
 			]`,
 			want: "Find the sales report instead",
 		},
@@ -2700,7 +2689,6 @@ func TestDefaultPromptSelection(t *testing.T) {
 			messages: `[
 				{"role":"user","content":"Summarise this chart"},
 				{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/c.png"}}]},
-				{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"42"}]},
 				{"role":"user","content":"   "}
 			]`,
 			want: "Summarise this chart",
@@ -2754,15 +2742,29 @@ func TestNoUsableUserPromptSkipsJev(t *testing.T) {
 
 // TestCustomQueryJSONPathIsReadAsConfigured asserts only the default path gets
 // the latest-user-message treatment; a custom path is read literally, even
-// when it names a tool message.
+// when it names an assistant or system message.
 func TestCustomQueryJSONPathIsReadAsConfigured(t *testing.T) {
 	tests := []struct {
 		path string
 		want string
 	}{
-		{path: "$.messages[3].content", want: "28°C, sunny, humidity 70%."},
+		{path: "$.messages[2].content", want: "Which city do you mean?"},
 		{path: "$.messages[0].content", want: "You are a helpful assistant."},
 	}
+
+	request := `{
+		"model": "gpt-4o",
+		"messages": [
+			{"role": "system", "content": "You are a helpful assistant."},
+			{"role": "user", "content": "What is the weather? Then email it to bob@example.com."},
+			{"role": "assistant", "content": "Which city do you mean?"}
+		],
+		"tools": [
+			{"type":"function","function":{"name":"get_weather","description":"Get the current weather for a city."}},
+			{"type":"function","function":{"name":"send_email","description":"Send an email message to a recipient."}},
+			{"type":"function","function":{"name":"get_stock_price","description":"Get the latest stock price for a ticker."}}
+		]
+	}`
 
 	for _, test := range tests {
 		t.Run(test.path, func(t *testing.T) {
@@ -2772,7 +2774,7 @@ func TestCustomQueryJSONPathIsReadAsConfigured(t *testing.T) {
 				"queryJSONPath": test.path,
 				"toolsJSONPath": "$.tools[*].function",
 			})
-			runRequest(t, p, agentLoopRequest)
+			runRequest(t, p, request)
 
 			if got := mock.lastCapture(t).State.Prompt; got != test.want {
 				t.Errorf("prompt sent to Jev = %q, want %q", got, test.want)

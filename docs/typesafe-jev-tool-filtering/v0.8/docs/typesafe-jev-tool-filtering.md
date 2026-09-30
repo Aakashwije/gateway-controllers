@@ -25,7 +25,8 @@ Sending fewer tools reduces prompt tokens and usually improves tool-choice quali
 - **Relevance judgements rather than vector similarity** — one independent Noul question per tool, so several tools can each be judged useful for one prompt.
 - **Two selection modes** — `By Rank` (top-K) and `By Threshold`, matching the vocabulary of the sibling Semantic Tool Filtering policy.
 - **`minimumScore` floor** for rank mode, so an irrelevant tool is not selected just to fill the limit.
-- **Judges the user's latest request, not the last message** — in an agent loop the last message is usually a tool result, so by default the most recent user message with text is used.
+- **Judges the user's latest request, not the last message** — by default the most recent user message with text is used, so a final assistant turn is never judged as the prompt.
+- **Filters once per agent loop** — a request whose conversation already holds tool calls or tool results is forwarded unchanged, so a tool the model needs for a later step is never taken away mid-task.
 - **Configurable JSONPath extraction** for both the prompt and the tools array, including OpenAI-style nested `function` tools.
 - **Complete original tool definitions preserved** — the compact metadata sent to Jev is never used to reconstruct the request.
 - **Respects `tool_choice`** — a tool the request names is never filtered out, a request that must call some tool (`"required"` / `"any"`) always keeps at least one, and a request left with no tools is sent as a plain chat request with no tool-control fields.
@@ -79,7 +80,7 @@ Both policies remain available independently and can be attached to different AP
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | selectionMode | string | Yes | `By Rank` | Method used to filter tools: `By Rank` (selects top-K) or `By Threshold` (selects every tool reaching the threshold). |
-| limit | integer | No | `5` | The number of most relevant tools to include (used if selectionMode is `By Rank`). Range 0–20. |
+| limit | integer | No | `10` | The number of most relevant tools to include (used if selectionMode is `By Rank`). Range 0–20. Tools are selected once, before the model has called any tool, so the limit must cover every tool a multi-step task might need, not only its first step. |
 | threshold | number | No | `0.7` | Jev relevance probability required to keep a tool (0.0–1.0). A tool is kept when its probability is **greater than or equal to** this value. Used if selectionMode is `By Threshold`. |
 | minimumScore | number | No | `0.0` | Minimum probability a tool must reach to be selected in `By Rank` mode. Prevents an irrelevant tool from being selected only to fill the limit. Ignored in `By Threshold` mode. |
 | queryJSONPath | string | No | `$.messages[-1].content` | JSONPath expression to extract the user's prompt. The default is resolved as the most recent user message with text (see [Prompt selection](#prompt-selection)). Any other value is read exactly as written: dotted keys with an optional array index, including negative indices. A malformed expression is rejected when the policy is applied. |
@@ -125,12 +126,11 @@ Jev judges each tool against one prompt, so which text becomes the prompt decide
 
 ### Default: the most recent user message
 
-The default `queryJSONPath`, `$.messages[-1].content`, literally names the last message. In an agent loop that is usually not what the user asked:
+The default `queryJSONPath`, `$.messages[-1].content`, literally names the last message. In a multi-turn conversation that is often not what the user asked:
 
-1. The user asks: *"What is the weather in Colombo? Then email it to bob@example.com."*
-2. The model calls `get_weather`.
-3. The next request ends with the tool result: *"28°C, sunny, humidity 70%."*
-4. Judged against that tool result, `send_email` looks irrelevant and is removed, so the model cannot complete the second step.
+1. The user asks: *"What is the weather? Then email it to bob@example.com."*
+2. The model replies: *"Which city do you mean?"*
+3. A request that ends with that assistant turn would be judged against the question, not against what the user wants done.
 
 So the policy resolves the default path as **the most recent message whose `role` is `user` and that carries text**. It scans `messages` from newest to oldest and skips `tool`, `assistant`, `system` and `developer` messages. For the example above, Jev is asked about the user's original request.
 
@@ -141,6 +141,18 @@ The content of a user message is read like this:
 - A user message with **no usable text** (only an image, only a tool result, or whitespace) is skipped, and the scan continues with older messages.
 
 When no user message has usable text, the request is forwarded **unchanged and Jev is not called**.
+
+### Agent loops: filtering stops once a tool has been called
+
+In an agent loop the client resends the conversation after every tool call, and the most recent user message stays the same on every turn. Filtering each turn would judge the same prompt again, so a tool that missed the selection on the first turn could never come back, and a tool whose need only appears in a tool result would never score at all.
+
+So when the conversation beside the tools array (`messages`, or `input` for the Responses API) already holds a tool call or a tool result, the request is forwarded **unchanged and Jev is not called**. This covers OpenAI `tool_calls`, `tool` and `function` messages, legacy `function_call`, Anthropic `tool_use` and `tool_result` blocks, and Responses API `function_call` and `function_call_output` items.
+
+In practice:
+
+- Filtering applies to the **first request of a task**, before the model has called anything. Later turns of the loop carry the complete tools array, so the token saving applies to that first request only.
+- The first request still decides which tools the model can start with. In `By Rank` mode, set `limit` high enough to cover every tool a multi-step task might need.
+- The check covers the whole conversation, so a chat that called a tool in an earlier exchange is not filtered on later user messages either.
 
 Selecting "the last user message" in the path itself needs an RFC 9535 filter expression, which the gateway's JSONPath evaluator does not support yet ([wso2/api-platform#3571](https://github.com/wso2/api-platform/issues/3571)). Until it does, this behaviour is built into the policy for the default path only.
 
@@ -475,11 +487,12 @@ Jev probabilities are calibrated yes/no answers, so they cluster near 0 and 1 fa
 - Start at `threshold: 0.7`. A clearly relevant tool usually scores above 0.9 and a clearly irrelevant one below 0.1, so the exact value matters less than with cosine similarity.
 - Lower the threshold (0.5) when tools overlap in purpose and you would rather keep a borderline tool than lose it.
 - Raise it (0.8–0.9) when the tool catalogue is large and you want only the unambiguous matches.
-- Prefer `By Rank` with a `limit` when you need a predictable prompt size, and add `minimumScore` (0.2–0.3) so a request with only one relevant tool does not get four irrelevant ones alongside it.
+- Prefer `By Rank` with a `limit` when you need a predictable prompt size, and add `minimumScore` (0.2–0.3) so a request with only one relevant tool does not get irrelevant ones alongside it.
 - **Do not carry a threshold over from Semantic Tool Filtering.** Recalibrate against your own traffic.
 
 ## Limitations
 
+- **Agent loops are filtered once.** A request whose conversation already holds tool calls or tool results is forwarded unchanged, so only the first request of a task is filtered. A tool left out of that first request is not offered to the model until a tool has been called.
 - **One prompt.** Relevance is judged against one prompt: by default the most recent user message with text, otherwise whatever `queryJSONPath` extracts. Earlier user turns and system prompts are not considered, so a tool needed because of an earlier turn may be filtered out.
 - **The "latest user message" rule applies to the default path only**, and only to OpenAI-style `messages` with a `role` field. It is built into the policy until the gateway's JSONPath evaluator supports RFC 9535 filters ([wso2/api-platform#3571](https://github.com/wso2/api-platform/issues/3571)).
 - **The required-choice fallback may keep a weakly relevant tool.** When `tool_choice` is `"required"` or `"any"` and nothing survives, the highest-scoring tool is kept even if it scored low.
