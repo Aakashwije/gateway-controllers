@@ -25,7 +25,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/santhosh-tekuri/jsonschema/v6"
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
@@ -123,10 +122,10 @@ func (p *McpToolSchemaValidatorPolicy) OnRequestBody(
 	case exceedsDepth(args, maxJSONDepth):
 		return fail(reasonTooDeep, []assessmentError{{Path: "", Message: "arguments are nested too deeply"}})
 	default:
-		decoded, err := jsonschema.UnmarshalJSON(bytes.NewReader(args))
-		if err != nil {
-			// objectMembers already accepted it, so this is unreachable in practice.
-			return fail(reasonSchemaMismatch, []assessmentError{{Path: "", Message: "arguments are not valid JSON"}})
+		// objectMembers already accepted the JSON, so in practice only an imprecise number fails here.
+		decoded, errs := decodeInstance(args, "arguments are not valid JSON")
+		if errs != nil {
+			return fail(reasonSchemaMismatch, errs)
 		}
 		instance = decoded
 	}

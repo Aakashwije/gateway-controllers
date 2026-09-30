@@ -19,11 +19,14 @@
 package mcptoolschemavalidator
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/url"
 	"strings"
 
-	"github.com/santhosh-tekuri/jsonschema/v6"
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 // schemaLocation is the base URI every configured schema is compiled under. It must be
@@ -44,8 +47,8 @@ type ToolRule struct {
 // DirectionRule is one direction's validation for a tool.
 type DirectionRule struct {
 	ShowAssessment bool
-	// Schema is compiled once, at startup; *jsonschema.Schema is safe for concurrent validation.
-	Schema *jsonschema.Schema
+	// Schema is compiled once, at startup, and only read afterwards, so concurrent validation is safe.
+	Schema *compiledSchema
 }
 
 // parseTools builds the tool table from the policy parameters. Every error names the offending
@@ -159,48 +162,78 @@ func parseDirection(fields map[string]interface{}, section string) (*DirectionRu
 	return &DirectionRule{ShowAssessment: showAssessment, Schema: schema}, nil
 }
 
-// compileSchema compiles one schema. Draft 2020-12 applies unless $schema says otherwise, format
-// is asserted, and nothing is ever fetched: a $ref outside the document fails compilation.
-func compileSchema(text string) (*jsonschema.Schema, error) {
+// compileSchema compiles one schema. Draft 2020-12 applies unless $schema selects draft-07, the
+// formats in enforcedFormats are asserted, and nothing is ever fetched: a $ref outside the
+// document fails compilation.
+func compileSchema(text string) (*compiledSchema, error) {
 	if len(text) > maxSchemaBytes {
 		return nil, fmt.Errorf("schema is %d bytes, larger than the %d byte limit", len(text), maxSchemaBytes)
 	}
-	doc, err := jsonschema.UnmarshalJSON(strings.NewReader(text))
+	// The generic tree keeps number literals exact; enum and const are rebuilt from it below.
+	raw, err := decodeJSON([]byte(text))
 	if err != nil {
 		return nil, fmt.Errorf("not valid JSON: %v", err)
 	}
-	switch doc.(type) {
+	switch raw.(type) {
 	case map[string]any, bool:
 	default:
 		return nil, errors.New("must be a JSON object or boolean")
 	}
+	root := new(jsonschema.Schema)
+	if err := json.Unmarshal([]byte(text), root); err != nil {
+		return nil, fmt.Errorf("not valid JSON Schema: %v", err)
+	}
 
-	compiler := jsonschema.NewCompiler()
-	compiler.DefaultDraft(jsonschema.Draft2020)
-	// Draft 2020-12 treats format as an annotation by default. A schema author writing
-	// "format": "email" expects it enforced, so it is.
-	compiler.AssertFormat()
-	compiler.UseLoader(offlineLoader{})
-	if err := compiler.AddResource(schemaLocation, doc); err != nil {
-		return nil, err
-	}
-	schema, err := compiler.Compile(schemaLocation)
+	draft7, err := canonicalDraft(root)
 	if err != nil {
-		var loadErr *jsonschema.LoadURLError
-		if errors.As(err, &loadErr) {
-			return nil, fmt.Errorf("$ref %q cannot be resolved: only references within the schema are allowed", loadErr.URL)
-		}
 		return nil, err
 	}
-	return schema, nil
+	sites, err := prepareSchema(root, raw, draft7)
+	if err != nil {
+		return nil, err
+	}
+
+	opts := &jsonschema.ResolveOptions{BaseURI: schemaLocation, Loader: refuseLoad}
+	// References are resolved against the schema as written, before format enforcement adds
+	// subschemas a $ref could otherwise land on.
+	if _, err := root.Resolve(opts); err != nil {
+		return nil, referenceError(err)
+	}
+	formats := enforceFormats(sites)
+	resolved, err := root.Resolve(opts)
+	if err != nil {
+		return nil, referenceError(err)
+	}
+	return newCompiledSchema(root, resolved, draft7, formats), nil
 }
 
-// offlineLoader refuses every URL. The compiler serves the standard metaschemas itself, so this
-// is reached only by a $ref or $schema outside the document: remote, file or otherwise.
-type offlineLoader struct{}
+// refuseLoad is the loader for every $ref that leaves the document: remote, file or relative.
+// It fails without looking at the URL.
+func refuseLoad(uri *url.URL) (*jsonschema.Schema, error) {
+	return nil, &externalRefError{uri: uri.String()}
+}
 
-func (offlineLoader) Load(string) (any, error) {
-	return nil, errors.New("loading external schemas is disabled")
+type externalRefError struct{ uri string }
+
+func (e *externalRefError) Error() string { return "loading external schemas is disabled: " + e.uri }
+
+func referenceError(err error) error {
+	var ext *externalRefError
+	if errors.As(err, &ext) {
+		return fmt.Errorf("$ref %q cannot be resolved: only references within the schema are allowed", ext.uri)
+	}
+	return err
+}
+
+func ensureDecoderEOF(decoder *json.Decoder) error {
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return errors.New("multiple JSON values")
+		}
+		return err
+	}
+	return nil
 }
 
 // toList accepts the shapes a YAML or JSON array arrives in.

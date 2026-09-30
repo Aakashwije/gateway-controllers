@@ -25,7 +25,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/santhosh-tekuri/jsonschema/v6"
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
@@ -156,10 +155,9 @@ func (p *McpToolSchemaValidatorPolicy) judge(rule *ToolRule, data []byte, reques
 		return verdict{answers: true, failed: reasonTooDeep,
 			errs: []assessmentError{{Path: "", Message: "structuredContent is nested too deeply"}}}
 	}
-	instance, err := jsonschema.UnmarshalJSON(bytes.NewReader(msg.structuredContent))
-	if err != nil {
-		return verdict{answers: true, failed: reasonSchemaMismatch,
-			errs: []assessmentError{{Path: "", Message: "structuredContent is not valid JSON"}}}
+	instance, errs := decodeInstance(msg.structuredContent, "structuredContent is not valid JSON")
+	if errs != nil {
+		return verdict{answers: true, failed: reasonSchemaMismatch, errs: errs}
 	}
 	result := validate(rule.Output.Schema, instance)
 	if !result.valid() {

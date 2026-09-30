@@ -10,8 +10,9 @@ description: |
 
   Both checks are off until enabled. Each tool must enable input validation, output
   validation, or both, and an enabled check needs a schema. Schemas default to JSON Schema
-  2020-12, format is asserted, and only references within a schema are allowed.
-  Attach after mcp-spec-validation.
+  2020-12; draft-07 is supported through $schema, and other drafts are rejected. The email,
+  ipv4 and ipv6 formats are asserted; other formats are annotations. Only references within
+  a schema are allowed. Attach after mcp-spec-validation.
 
 parameters:
   type: object
@@ -45,7 +46,9 @@ parameters:
                 default: false
               schema:
                 type: string
-                description: JSON Schema, as a JSON string, the tool's input must satisfy. Required when enabled.
+                description: |
+                  JSON Schema, as a JSON string, the tool's input must satisfy. Required when enabled.
+                  Draft 2020-12 applies by default; draft-07 is selected with $schema.
               showAssessment:
                 type: boolean
                 x-wso2-policy-advanced-param: true
@@ -65,7 +68,9 @@ parameters:
                 default: false
               schema:
                 type: string
-                description: JSON Schema, as a JSON string, the tool's structured output must satisfy. Required when enabled.
+                description: |
+                  JSON Schema, as a JSON string, the tool's structured output must satisfy. Required when enabled.
+                  Draft 2020-12 applies by default; draft-07 is selected with $schema.
               showAssessment:
                 type: boolean
                 x-wso2-policy-advanced-param: true
