@@ -30,7 +30,7 @@ Sending fewer tools reduces prompt tokens and usually improves tool-choice quali
 - **Configurable JSONPath extraction** for both the prompt and the tools array, including OpenAI-style nested `function` tools.
 - **Complete original tool definitions preserved** — the compact metadata sent to Jev is never used to reconstruct the request.
 - **Respects `tool_choice`** — a tool the request names is never filtered out, a request that must call some tool (`"required"` / `"any"`) always keeps at least one, and a request left with no tools is sent as a plain chat request with no tool-control fields.
-- **Fails open by default** — any failure to reach or trust Jev forwards the original request with its original tools; a partially filtered request is never produced.
+- **Always fails open** — any failure to reach or trust Jev forwards the original request with its original tools; a partially filtered request is never produced.
 - **One Jev evaluation per request**, with one bounded retry on TypeSafe 429/529 responses and token usage recorded in request metadata.
 
 ## High-level architecture
@@ -67,7 +67,7 @@ Both policies solve the same problem and share their parameter vocabulary, but t
 | What the score means | How close two texts are in embedding space | How likely the tool is materially useful for the prompt |
 | Typical `threshold` | Tuned per embedding model; often 0.2–0.5 | A probability; 0.5–0.8 is the usual range |
 | Caching | Tool embeddings cached per API | None — every request is judged fresh |
-| Failure default | Passes through | Passes through (`passthroughOnError: true`) |
+| Failure behaviour | Passes through | Always passes through |
 
 **The two scores are not interchangeable.** A cosine similarity of 0.35 and a Jev probability of 0.35 mean entirely different things, so a threshold tuned for one policy must be recalibrated for the other.
 
@@ -85,7 +85,6 @@ Both policies remain available independently and can be attached to different AP
 | minimumScore | number | No | `0.0` | Minimum probability a tool must reach to be selected in `By Rank` mode. Prevents an irrelevant tool from being selected only to fill the limit. Ignored in `By Threshold` mode. |
 | queryJSONPath | string | No | `$.messages[-1].content` | JSONPath expression to extract the user's prompt. The default is resolved as the most recent user message with text (see [Prompt selection](#prompt-selection)). Any other value is read exactly as written: dotted keys with an optional array index, including negative indices. A malformed expression is rejected when the policy is applied. |
 | toolsJSONPath | string | No | `$.tools` | JSONPath expression to extract the tool definitions. Points either at the array itself (`$.tools`) or at the iterated object inside each array item (`$.tools[*].function`). |
-| passthroughOnError | boolean | No | `true` | `true` forwards the original request when Jev cannot be reached or trusted; `false` returns a request-phase error instead. Either way, the request is never partially filtered. |
 | timeout | string | No | `5s` | Overall Jev evaluation deadline as a Go duration, up to `30s`. It includes the initial call, retry delay, and one retry after a 429 or 529 response. The gateway deadline can still end it sooner. |
 
 ### System Parameters (From config.toml)
@@ -97,9 +96,9 @@ These identify your TypeSafe account and bound how much tool metadata one evalua
 | apiKey | string | Yes | — | TypeSafe AI API key (https://typesafe.ai). |
 | baseURL | string | No | `https://api.typesafe.ai` | Jev API base URL. Override for testing only. |
 | model | string | No | `jev-latest` | Jev model identifier. |
-| maxTools | integer | No | `200` | Largest tools array the policy will evaluate. A larger array follows `passthroughOnError`. |
+| maxTools | integer | No | `200` | Largest tools array the policy will evaluate. A request carrying more tools is forwarded unchanged. |
 | maxToolBytes | integer | No | `4096` | Bounds the serialized normalized metadata of a single tool. An oversized tool is trimmed, not dropped. |
-| maxTotalBytes | integer | No | `131072` | Bounds the serialized normalized metadata of all tools in one Jev request. A larger total follows `passthroughOnError`. |
+| maxTotalBytes | integer | No | `131072` | Bounds the serialized normalized metadata of all tools in one Jev request. A request over this total is forwarded unchanged. |
 
 #### Sample System Configuration
 
@@ -146,7 +145,7 @@ When no user message has usable text, the request is forwarded **unchanged and J
 
 In an agent loop the client resends the conversation after every tool call, and the most recent user message stays the same on every turn. Filtering each turn would judge the same prompt again, so a tool that missed the selection on the first turn could never come back, and a tool whose need only appears in a tool result would never score at all.
 
-So when the conversation beside the tools array (`messages`, or `input` for the Responses API) already holds a tool call or a tool result, the request is forwarded **unchanged and Jev is not called**. This covers OpenAI `tool_calls`, `tool` and `function` messages, legacy `function_call`, Anthropic `tool_use` and `tool_result` blocks, and Responses API `function_call` and `function_call_output` items.
+So when the conversation beside the tools array (`messages`, or `input` for the Responses API) already holds a tool call or a tool result, the request is forwarded **unchanged and Jev is not called**. This covers OpenAI `tool_calls`, `tool` and `function` messages, legacy `function_call`, Anthropic `tool_use` and `tool_result` blocks, and Responses API `function_call`, `function_call_output`, `custom_tool_call` and `custom_tool_call_output` items.
 
 In practice:
 
@@ -158,7 +157,7 @@ Selecting "the last user message" in the path itself needs an RFC 9535 filter ex
 
 ### Custom `queryJSONPath`
 
-Any value other than the default is read **exactly as written**, for request bodies that are not OpenAI-style `messages`. For example, `$.input.text` or `$.messages[0].content`. It must resolve to one string, and it is trimmed. A custom path that points at a tool message is honoured as configured.
+Any value other than the default is read **exactly as written**, for request bodies that are not OpenAI-style `messages`. For example, `$.input.text` or `$.messages[0].content`. It must resolve to one string, and it is trimmed. A custom path that points at an assistant or system message is honoured as configured.
 
 ## Reference Scenarios
 
@@ -444,7 +443,7 @@ The whole response is validated before any score is used. A response is rejected
 
 ## Failure behaviour
 
-Because tool filtering is an optimization, the policy fails open by default (`passthroughOnError: true`). With passthrough enabled, the **complete original request with its original tools** is forwarded when:
+Because tool filtering is an optimization, the policy always fails open. The **complete original request with its original tools** is forwarded when:
 
 - TypeSafe cannot be reached, or the request times out, or the gateway cancels the request
 - TypeSafe returns any non-2xx status (401, 422, 500, …), or both attempts return 429/529
@@ -453,13 +452,14 @@ Because tool filtering is an optimization, the policy fails open by default (`pa
 - the response is partial, repeats a question id, or cannot be mapped back to the original tools
 - the request carries more tools than `maxTools`, or more metadata than `maxTotalBytes`
 
-With `passthroughOnError: false` the same conditions return an HTTP 500 request-phase error instead. **In neither mode is a partially filtered request produced**: validation is all-or-nothing, so a partial Jev response never removes tools.
+This behaviour is not configurable. **A partially filtered request is never produced**: validation is all-or-nothing, so a partial Jev response never removes tools.
 
 These are *not* errors, and pass through without calling Jev at all:
 
 - an empty or non-JSON request body
 - no user message with usable text (default `queryJSONPath`), or a missing or empty prompt at a custom `queryJSONPath`
 - a missing, null or empty tools array at `toolsJSONPath`
+- a conversation that already holds a tool call or a tool result (see [Agent loops](#agent-loops-filtering-stops-once-a-tool-has-been-called))
 - a tools array in which **any** tool carries no inspectable metadata (see Scenario 7)
 - a `tool_choice` / `toolChoice` naming a tool that is not in the tools array (see Scenario 6)
 

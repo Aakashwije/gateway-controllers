@@ -1493,10 +1493,12 @@ var conversationFields = []string{"messages", "input"}
 // toolCallItemTypes are the message, input item and content block types that
 // record a tool call or its result.
 var toolCallItemTypes = map[string]bool{
-	"tool_use":             true,
-	"tool_result":          true,
-	"function_call":        true,
-	"function_call_output": true,
+	"tool_use":                true,
+	"tool_result":             true,
+	"function_call":           true,
+	"function_call_output":    true,
+	"custom_tool_call":        true,
+	"custom_tool_call_output": true,
 }
 
 // hasToolCallHistory reports whether the conversation beside the tools array

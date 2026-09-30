@@ -455,31 +455,40 @@ func TestToolCallHistoryIsForwardedUnchanged(t *testing.T) {
 		})
 	}
 
-	t.Run("responses api function_call input", func(t *testing.T) {
-		mock := newMockJev(t, respondScores(0.9, 0.05))
-		p := newTestPolicy(t, mock.url(), map[string]interface{}{
-			"selectionMode": SelectionModeThreshold,
-			"threshold":     0.7,
-			"queryJSONPath": "$.input[1].content",
+	responsesItems := map[string]string{
+		"responses api function_call":           `{"type":"function_call","call_id":"c1","name":"get_weather","arguments":"{}"}`,
+		"responses api function_call_output":    `{"type":"function_call_output","call_id":"c1","output":"28°C"}`,
+		"responses api custom_tool_call":        `{"type":"custom_tool_call","call_id":"c1","name":"get_weather","input":"Colombo"}`,
+		"responses api custom_tool_call_output": `{"type":"custom_tool_call_output","call_id":"c1","output":"28°C"}`,
+	}
+
+	for name, item := range responsesItems {
+		t.Run(name, func(t *testing.T) {
+			mock := newMockJev(t, respondScores(0.9, 0.05))
+			p := newTestPolicy(t, mock.url(), map[string]interface{}{
+				"selectionMode": SelectionModeThreshold,
+				"threshold":     0.7,
+				"queryJSONPath": "$.input[1].content",
+			})
+
+			request := `{
+				"model": "gpt-4o",
+				"input": [
+					` + item + `,
+					{"role":"user","content":"Tell me a joke about cats"}
+				],
+				"tools": [
+					{"type":"function","name":"search_documents","description":"Search documents"},
+					{"type":"function","name":"get_weather","description":"Get the weather"}
+				]
+			}`
+
+			assertPassthrough(t, runRequest(t, p, request))
+			if calls := mock.callCount(); calls != 0 {
+				t.Errorf("Jev was called %d times, want 0", calls)
+			}
 		})
-
-		request := `{
-			"model": "gpt-4o",
-			"input": [
-				{"type":"function_call","call_id":"c1","name":"get_weather","arguments":"{}"},
-				{"role":"user","content":"Tell me a joke about cats"}
-			],
-			"tools": [
-				{"type":"function","name":"search_documents","description":"Search documents"},
-				{"type":"function","name":"get_weather","description":"Get the weather"}
-			]
-		}`
-
-		assertPassthrough(t, runRequest(t, p, request))
-		if calls := mock.callCount(); calls != 0 {
-			t.Errorf("Jev was called %d times, want 0", calls)
-		}
-	})
+	}
 }
 
 // TestRewritePreservesNumericFields asserts a rewritten body carries unrelated
