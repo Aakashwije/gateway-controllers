@@ -28,13 +28,6 @@ import (
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
-// attrBodyUnusable is published by the engine's MCP resolver when it could not read the body.
-const attrBodyUnusable = "mcp.body.unusable"
-
-// reasonResolverAmbiguous is the resolver's reason for a member named twice. The policy checks
-// ambiguity itself, for the members it reads, so this reason alone does not end its work.
-const reasonResolverAmbiguous = "ambiguous"
-
 // OnRequestBody validates a tools/call's arguments against the tool's input schema, and records
 // the call for the response phase.
 func (p *McpToolSchemaValidatorPolicy) OnRequestBody(
@@ -51,15 +44,8 @@ func (p *McpToolSchemaValidatorPolicy) OnRequestBody(
 	body := reqCtx.Body.Content
 	headers := reqCtx.DownstreamHeaders()
 
-	// A body the resolver could not read is mcp-spec-validation's to reject. Ambiguity is the
-	// exception: it is checked below for the members this policy reads, since forwarding an
-	// ambiguous governed call would let the server run arguments the gateway never validated.
-	if reqCtx.SharedContext != nil {
-		if reason := reqCtx.ResolutionAttributes.Get(attrBodyUnusable); reason != "" && reason != reasonResolverAmbiguous {
-			return nil
-		}
-	}
-
+	// Bodies this policy cannot read are left to mcp-spec-validation by parseRequest below.
+	// A readable call to a governed tool is always validated, whatever the resolver concluded.
 	call, outcome := parseRequest(body)
 	switch outcome {
 	case parseUnreadable:
@@ -89,7 +75,7 @@ func (p *McpToolSchemaValidatorPolicy) OnRequestBody(
 	}
 	if call.argumentsAmbiguous {
 		slog.Debug("MCP Tool Schema Validator: rejecting tools/call with ambiguous arguments", "tool", rule.Name)
-		return requestError(headers, "", codeInvalidRequest, messageAmbiguous, nil,
+		return requestError(headers, call.id, codeInvalidRequest, messageAmbiguous, nil,
 			analytics(rule.Name, directionRequest, resultFail, reasonAmbiguousPayload, 1))
 	}
 

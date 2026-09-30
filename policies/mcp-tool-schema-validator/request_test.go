@@ -183,6 +183,7 @@ func TestRequestValidation(t *testing.T) {
 		wantReject bool
 		wantCode   int
 		wantReason string
+		wantID     string
 	}{
 		{name: "valid arguments", body: callBody("1", "get_weather", `{"city":"Colombo","units":"celsius"}`)},
 		{name: "missing required", body: callBody("1", "get_weather", `{"units":"celsius"}`), wantReject: true, wantCode: -32602},
@@ -220,7 +221,7 @@ func TestRequestValidation(t *testing.T) {
 		{
 			name:       "duplicate arguments",
 			body:       `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_weather","arguments":{"city":"x"},"arguments":{"evil":1}}}`,
-			wantReject: true, wantCode: -32600,
+			wantReject: true, wantCode: -32600, wantID: "1",
 		},
 		{
 			name:       "arguments in another case",
@@ -265,6 +266,9 @@ func TestRequestValidation(t *testing.T) {
 			_, rpc := rejected(t, action)
 			if rpc.Error.Code != tc.wantCode {
 				t.Errorf("code = %d, want %d", rpc.Error.Code, tc.wantCode)
+			}
+			if tc.wantID != "" && string(rpc.ID) != tc.wantID {
+				t.Errorf("id = %s, want %s", rpc.ID, tc.wantID)
 			}
 			if tc.wantCode == -32602 {
 				if rpc.Error.Message != messageArgumentsInvalid {
@@ -477,12 +481,12 @@ func TestRequestPassThroughs(t *testing.T) {
 	})
 	t.Run("resolver marked body unusable", func(t *testing.T) {
 		reqCtx := newRequestCtx(invalid, nil)
-		reqCtx.ResolutionAttributes = policy.NewResolutionAttributes(map[string]string{attrBodyUnusable: "invalid-member-type"})
-		forwarded(t, runRequest(p, reqCtx))
+		reqCtx.ResolutionAttributes = policy.NewResolutionAttributes(map[string]string{"mcp.body.unusable": "invalid-member-type"})
+		rejected(t, runRequest(p, reqCtx))
 	})
 	t.Run("resolver ambiguity still checked here", func(t *testing.T) {
 		reqCtx := newRequestCtx(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_weather","arguments":{"city":"x"},"arguments":{}}}`, nil)
-		reqCtx.ResolutionAttributes = policy.NewResolutionAttributes(map[string]string{attrBodyUnusable: "ambiguous"})
+		reqCtx.ResolutionAttributes = policy.NewResolutionAttributes(map[string]string{"mcp.body.unusable": "ambiguous"})
 		rejected(t, runRequest(p, reqCtx))
 	})
 }
