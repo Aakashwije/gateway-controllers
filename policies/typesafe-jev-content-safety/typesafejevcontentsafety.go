@@ -305,7 +305,8 @@ func (p *TypesafeJevContentSafetyPolicy) screen(ctx context.Context, shared *pol
 		slog.Debug("TypesafeJevContentSafety: No questions configured, passing through", "phase", phase)
 		return passthrough(nil)
 	}
-	if payload == nil {
+	// An empty body (nil or zero-length) has nothing to screen.
+	if len(payload) == 0 {
 		return passthrough(nil)
 	}
 

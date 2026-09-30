@@ -1174,6 +1174,44 @@ func TestOnResponseBody_UpstreamErrorIsNotScreened(t *testing.T) {
 	}
 }
 
+// An empty body, nil or zero-length, has nothing to screen and passes through
+// without a Jev call, in both phases and even when failing closed.
+func TestEmptyBodyPassesThrough(t *testing.T) {
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		json.NewEncoder(w).Encode(map[string]interface{}{"answers": map[string]interface{}{
+			"jailbreak": map[string]interface{}{"type": "noul", "noul": 0.95}}})
+	}))
+	defer server.Close()
+	p := newPolicy(t, map[string]interface{}{
+		"baseURL":  server.URL,
+		"request":  map[string]interface{}{"questions": []interface{}{jailbreakQuestion}},
+		"response": map[string]interface{}{"questions": []interface{}{jailbreakQuestion}},
+	})
+
+	for _, content := range [][]byte{nil, {}} {
+		reqAction := p.OnRequestBody(context.Background(), &policy.RequestContext{
+			SharedContext: &policy.SharedContext{},
+			Body:          &policy.Body{Content: content, Present: true},
+		}, nil)
+		if mods, ok := reqAction.(policy.UpstreamRequestModifications); !ok || mods.Body != nil {
+			t.Fatalf("request body %v: expected passthrough, got %+v", content, reqAction)
+		}
+		respAction := p.OnResponseBody(context.Background(), &policy.ResponseContext{
+			SharedContext:  &policy.SharedContext{},
+			ResponseStatus: 200,
+			ResponseBody:   &policy.Body{Content: content, Present: true},
+		}, nil)
+		if mods, ok := respAction.(policy.DownstreamResponseModifications); !ok || mods.StatusCode != nil || mods.Body != nil {
+			t.Fatalf("response body %v: expected passthrough, got %+v", content, respAction)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("expected no Jev call for empty bodies, got %d", calls)
+	}
+}
+
 func streamedResponse(body string) *policy.ResponseContext {
 	return &policy.ResponseContext{
 		SharedContext:  &policy.SharedContext{},
