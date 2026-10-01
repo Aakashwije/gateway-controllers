@@ -5,7 +5,8 @@ go 1.26.2
 require (
 	github.com/google/uuid v1.6.0
 	github.com/wso2/api-platform/sdk/ai v0.1.2
-	github.com/wso2/api-platform/sdk/core v0.3.4
+	github.com/wso2/api-platform/sdk/core v0.4.1
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -122,7 +123,6 @@ require (
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/apimachinery v0.32.3 // indirect
 	sigs.k8s.io/yaml v1.4.0 // indirect
 )

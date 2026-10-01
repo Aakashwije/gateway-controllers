@@ -1,0 +1,162 @@
+name: typesafe-jev-tool-filtering
+version: v0.8.0
+displayName: TypeSafe Jev Tool Filtering
+description: |
+  Narrows the tools array of an LLM request down to the tools that are actually relevant to the current user
+  prompt, using TypeSafe AI's Jev "System One" model. The policy buffers the request body, extracts the user
+  prompt and the tool definitions with configurable JSONPath expressions, normalizes each tool's metadata
+  (name, description, parameters, required fields, annotations), and asks Jev one Noul question per tool:
+  would this tool be materially useful for completing this prompt? Tools that survive the configured selection
+  mode are written back into the request as their complete original definitions; every other request field is
+  left untouched.
+
+  Noul questions are independent yes/no probabilities, so several tools can each be judged useful for one
+  prompt. This differs from the semantic-tool-filtering policy, which embeds the prompt and each tool and ranks
+  by cosine similarity: the two produce different numbers on different scales, so thresholds do not transfer
+  between them.
+
+  Tool filtering is an optimization, not an authorization or safety boundary. Removing a tool from the request
+  hides it from the model for that call; it does not stop a client that already knows the tool name from
+  calling it. Use mcp-acl-list or mcp-authz to enforce tool execution permissions. Because it is an
+  optimization, the policy always fails open: if Jev cannot be reached or its answer cannot be trusted, the
+  original request is forwarded with its original tools rather than partially filtered.
+
+  When no tool survives selection and tool use is optional, the tools field and its companion tool-control
+  fields (tool_choice, toolChoice, parallel_tool_calls) are removed so the request goes out as a plain chat
+  request. A tool named in tool_choice is always kept, and a request whose tool_choice is "required" or "any"
+  keeps its highest-scoring tool.
+
+  Privacy: the policy sends the extracted user prompt and normalized tool metadata to TypeSafe AI's hosted API.
+  Operators must confirm that this is acceptable for their privacy, residency, and compliance requirements
+  before enabling the policy.
+
+parameters:
+  type: object
+  properties:
+    selectionMode:
+      type: string
+      x-wso2-policy-advanced-param: false
+      description: |
+        Method used to filter tools:
+        - "By Rank": Selects a fixed number of the most relevant tools.
+        - "By Threshold": Selects every tool whose Jev relevance probability reaches the threshold.
+      enum:
+        - By Rank
+        - By Threshold
+      default: "By Rank"
+    limit:
+      type: integer
+      x-wso2-policy-advanced-param: false
+      description: |
+        The number of most relevant tools to include (used if selectionMode is By Rank).
+        Tools are selected once, against the user's request, before the model has called any tool, so
+        the limit must cover every tool a multi-step task might need, not only its first step.
+      minimum: 0
+      maximum: 20
+      default: 10
+    threshold:
+      type: number
+      x-wso2-policy-advanced-param: false
+      description: |
+        Jev relevance probability required to keep a tool (0.0 to 1.0), used if selectionMode is By Threshold.
+        A tool is kept when its probability is greater than or equal to this value. This is a calibrated yes/no
+        probability from Jev, not an embedding similarity score — a threshold tuned for semantic-tool-filtering
+        does not carry over.
+      minimum: 0.0
+      maximum: 1.0
+      default: 0.7
+    minimumScore:
+      type: number
+      x-wso2-policy-advanced-param: true
+      description: |
+        Minimum Jev relevance probability a tool must reach to be selected in By Rank mode. Prevents an
+        irrelevant tool from being selected only to fill the limit. Leave at 0 to always fill the limit.
+        Ignored in By Threshold mode.
+      minimum: 0.0
+      maximum: 1.0
+      default: 0.0
+    queryJSONPath:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: |
+        JSONPath expression to extract the user's prompt from the request body.
+        The default, "$.messages[-1].content", is resolved as the most recent message whose role
+        is "user" and that carries text (string content, or the "text" and "input_text" parts of
+        structured content), so a final assistant turn is never judged as the prompt. A request
+        with no such message is forwarded unchanged, as is a request whose conversation already
+        holds tool calls or tool results.
+        Any other value is read exactly as written. It supports dotted keys with an optional array
+        index, including negative indices, and must resolve to one string; wildcards are not supported.
+        A malformed expression is rejected when the policy is applied, rather than
+        silently behaving as though no request ever carries a prompt.
+      default: "$.messages[-1].content"
+      pattern: '^\$\.([^.\[\]\*]+(\[-?\d+\])?)(\.([^.\[\]\*]+(\[-?\d+\])?))*$'
+    toolsJSONPath:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: |
+        JSONPath expression to extract the tool definitions from the request body.
+        This can point to the tools array itself (for example, "$.tools") or to the iterated
+        object inside each array item using a single wildcard (for example, "$.tools[*].function").
+        When a wildcard is used, the nested object is what gets inspected, while the complete outer
+        object is what gets written back into the request.
+      default: "$.tools"
+      pattern: '^\$\.([A-Za-z_][A-Za-z0-9_]*(\[(\d+|\*)\])?\.)*[A-Za-z_][A-Za-z0-9_]*(\[(\d+|\*)\])?$'
+    timeout:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: |
+        Maximum time to wait for Jev, as a Go duration string (for example "5s" or "1500ms"), up to
+        "30s". The deadline covers the initial call, the retry delay, and one retry when Jev returns 429 or
+        529. The gateway's own deadline still applies; whichever ends first cancels the call.
+      default: "5s"
+  required:
+    - selectionMode
+
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties:
+    apiKey:
+      type: string
+      description: TypeSafe AI API key (https://typesafe.ai).
+      minLength: 1
+      "wso2/defaultValue": "${config.policy_configurations.typesafe_jev_v0.api_key}"
+    baseURL:
+      type: string
+      format: uri
+      description: Override the Jev API base URL (for testing only).
+      "wso2/defaultValue": "${config.policy_configurations.typesafe_jev_v0.base_url}"
+    model:
+      type: string
+      description: Jev model identifier.
+      "wso2/defaultValue": "${config.policy_configurations.typesafe_jev_v0.model}"
+    maxTools:
+      type: integer
+      description: |
+        Largest tools array the policy will evaluate. A request carrying more tools than this is forwarded
+        unfiltered.
+      minimum: 1
+      maximum: 10000
+      default: 200
+      "wso2/defaultValue": "${config.policy_configurations.typesafe_jev_tool_filtering_v0.max_tools}"
+    maxToolBytes:
+      type: integer
+      description: |
+        Bounds the serialized normalized metadata of a single tool. A tool over budget is trimmed — annotations
+        first, then parameter details, then description text — rather than dropped.
+      minimum: 64
+      maximum: 1048576
+      default: 4096
+      "wso2/defaultValue": "${config.policy_configurations.typesafe_jev_tool_filtering_v0.max_tool_bytes}"
+    maxTotalBytes:
+      type: integer
+      description: |
+        Bounds the serialized normalized metadata of all tools in one Jev request. A request over budget is
+        forwarded unfiltered.
+      minimum: 64
+      maximum: 16777216
+      default: 131072
+      "wso2/defaultValue": "${config.policy_configurations.typesafe_jev_tool_filtering_v0.max_total_bytes}"
+  required:
+    - apiKey
