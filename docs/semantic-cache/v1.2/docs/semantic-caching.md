@@ -62,9 +62,9 @@ These keys are read only when `jevCacheCheck.enabled` is `true`. They are not re
 
 | `config.toml` key | Policy system parameter | Type | Required | Description |
 |-------------------|-------------------------|------|----------|-------------|
-| `jev_apikey` | `jevApiKey` | string | When enabled | TypeSafe AI API key. Policy initialization fails with a clear error if the check is enabled without this value. |
-| `jev_base_url` | `jevBaseURL` | string | No | Jev API base URL. Defaults to `https://api.typesafe.ai`. |
-| `jev_model` | `jevModel` | string | No | Jev model identifier. Defaults to `jev-latest`. |
+| `policy_configurations.typesafe_jev_v0.api_key` | `jevApiKey` | string | When enabled | TypeSafe AI API key. Policy initialization fails with a clear error if the check is enabled without this value. |
+| `policy_configurations.typesafe_jev_v0.base_url` | `jevBaseURL` | string | No | Jev API base URL. Defaults to `https://api.typesafe.ai`. |
+| `policy_configurations.typesafe_jev_v0.model` | `jevModel` | string | No | Jev model identifier. Defaults to `jev-latest`. |
 
 
 #### Sample System Configuration
