@@ -109,6 +109,8 @@ Add the following block to your `config.toml` file:
 api_key = ""
 base_url = "https://api.typesafe.ai"
 model = "jev-latest"
+
+[policy_configurations.typesafe_jev_tool_filtering_v0]
 max_tools = 200
 max_tool_bytes = 4096
 max_total_bytes = 131072
