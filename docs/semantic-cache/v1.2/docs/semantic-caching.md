@@ -87,9 +87,10 @@ vector_db_provider_password = "default"
 vector_db_provider_ttl = 3600
 
 # Only needed when jevCacheCheck.enabled is true
-jev_apikey = ""
-jev_base_url = "https://api.typesafe.ai"
-jev_model = "jev-latest"
+[policy_configurations.typesafe_jev_v0]
+api_key = ""
+base_url = "https://api.typesafe.ai"
+model = "jev-latest"
 ```
 
 ### User Parameters (API Definition)
