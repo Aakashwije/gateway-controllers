@@ -102,13 +102,16 @@ These identify your TypeSafe account and bound how much tool metadata one evalua
 
 #### Sample System Configuration
 
-Add the following values at the **root level** of your gateway's `config.toml` — not under a `[config]` table. `${config.<key>}` resolves against the raw configuration path:
+Add the following block to your `config.toml` file:
 
 ```toml
-jev_apikey = ""
-jev_base_url = "https://api.typesafe.ai"
-jev_model = "jev-latest"
+[policy_configurations.typesafe_jev_v0]
+api_key = ""
+base_url = "https://api.typesafe.ai"
+model = "jev-latest"
 ```
+
+Every TypeSafe Jev policy reads the same `[policy_configurations.typesafe_jev_v0]` block, so the key is set once for all of them.
 
 ### build.yaml
 
