@@ -92,6 +92,7 @@ All available policies, sorted alphabetically.
 | [TypeSafe Jev Content Safety](./typesafe-jev-content-safety/v0.8/docs/typesafe-jev-content-safety.md) | Guardrails, AI | Screens request or response body content using TypeSafe AI's Jev System One model. |
 | [TypeSafe Jev MCP Tool Intent Verification](./typesafe-jev-mcp-tool-intent-verification/v0.8/docs/typesafe-jev-mcp-tool-intent-verification.md) | MCP, Security | Screens MCP tools/call requests using TypeSafe AI's Jev System One model. |
 | [TypeSafe Jev Model Routing](./typesafe-jev-model-routing/v0.8/docs/typesafe-jev-model-routing.md) | AI | Routes AI/LLM requests to different models using TypeSafe AI's Jev System One model. |
+| [TypeSafe Jev Tool Filtering](./typesafe-jev-tool-filtering/v0.8/docs/typesafe-jev-tool-filtering.md) | AI, Transformation | Narrows an LLM request's tools array down to the tools relevant to the current user prompt, using TypeSafe AI's Jev System One model. |
 | [URL Guardrail](./url-guardrail/v1.0/docs/url.md) | Guardrails, AI | Validates URLs found in request or response body content. |
 | [WebSub HMAC Auth](./websub-hmac-auth/v1.0/docs/websub-hmac-auth.md) | Security, WebSub | Validates HMAC signatures on incoming WebSub hub event notification requests. |
 | [Word Count Guardrail](./word-count-guardrail/v1.0/docs/word-count.md) | Guardrails, AI | Validates the word count of request or response body content. |
