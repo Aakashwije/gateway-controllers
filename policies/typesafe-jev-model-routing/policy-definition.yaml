@@ -1,0 +1,135 @@
+name: typesafe-jev-model-routing
+version: v0.8.0
+displayName: TypeSafe Jev Model Routing
+description: |
+  Routes AI/LLM requests to different models using TypeSafe AI's Jev "System
+  One" model. Jev chooses the user-defined routing rule (each with a name and
+  context description) that best fits each request, and the request is routed
+  to that rule's model and, optionally, an additional provider. Requests fall
+  back to a configurable default when Jev is unavailable or not confident
+  enough.
+
+parameters:
+  type: object
+  properties:
+    contentPath:
+      type: string
+      x-wso2-policy-advanced-param: false
+      description: |
+        JSONPath expression to extract the user request text from the
+        request payload for Jev to classify. The value may be a string, a
+        number, or an array of content parts (only the text parts are used).
+        The default reads the last message whatever its role, such as a tool
+        result in an agent loop.
+      default: "$.messages[-1].content"
+    routingRules:
+      type: array
+      x-wso2-policy-advanced-param: false
+      description: |
+        List of routing rules. Each rule defines a name, a context
+        description for Jev, and the target model to route to.
+      items:
+        type: object
+        properties:
+          name:
+            type: string
+            description: |
+              A unique label for this rule (e.g. "Coding Questions"). Jev
+              returns this name for the rule it chooses.
+            minLength: 1
+          context:
+            type: string
+            description: |
+              Plain-language description of the types of requests this rule
+              should handle. Jev reads this when choosing a rule.
+            minLength: 1
+          provider:
+            type: string
+            description: |
+              Optional destination provider. Use the LlmProxy additionalProviders[].as
+              alias, or provider id when as is absent. Empty or omitted preserves
+              the current upstream (normally the primary provider).
+          model:
+            type: string
+            description: Target AI model name to route matching requests to.
+            minLength: 1
+        required:
+          - name
+          - context
+          - model
+      minItems: 1
+      maxItems: 255
+    defaultProvider:
+      type: string
+      x-wso2-policy-advanced-param: false
+      description: |
+        Optional destination provider used with defaultModel on fallback.
+        Uses the same alias rules as each rule's provider. It is not inherited
+        by matched rules that omit provider.
+    defaultModel:
+      type: string
+      x-wso2-policy-advanced-param: false
+      description: |
+        The model to use when Jev is unavailable, returns an unknown rule, or
+        is less confident than confidenceThreshold.
+      minLength: 1
+    confidenceThreshold:
+      type: number
+      x-wso2-policy-advanced-param: true
+      description: |
+        Minimum probability Jev must assign to the chosen rule for it to be
+        used. Below this, the request falls back to defaultModel.
+      minimum: 0
+      maximum: 1
+      default: 0.5
+    timeout:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: |
+        Maximum time to wait for Jev, as a duration (e.g. "5s"), including
+        one retry when Jev is rate limited or overloaded. Must be greater
+        than zero and at most 30s. On timeout, the request falls back to
+        defaultModel.
+      default: "5s"
+    requestModel:
+      type: object
+      description: |
+        Specifies where the model name appears in the request so the policy
+        can replace it with the selected model. Supplied by the gateway from
+        the LLM provider template.
+      properties:
+        location:
+          type: string
+          enum:
+            - payload
+        identifier:
+          type: string
+          description: |
+            JSONPath identifying the model field in the request body.
+      required:
+        - location
+        - identifier
+  required:
+    - routingRules
+    - defaultModel
+
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties:
+    apiKey:
+      type: string
+      description: TypeSafe AI API key (https://typesafe.ai).
+      minLength: 1
+      "wso2/defaultValue": "${config.policy_configurations.typesafe_jev_v0.api_key}"
+    baseURL:
+      type: string
+      format: uri
+      description: Override the Jev API base URL (for testing only).
+      "wso2/defaultValue": "${config.policy_configurations.typesafe_jev_v0.base_url}"
+    model:
+      type: string
+      description: Jev model identifier.
+      "wso2/defaultValue": "${config.policy_configurations.typesafe_jev_v0.model}"
+  required:
+    - apiKey
