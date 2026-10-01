@@ -1,0 +1,193 @@
+name: typesafe-jev-mcp-tool-intent-verification
+version: v0.8.0
+displayName: TypeSafe Jev MCP Tool Intent Verification
+description: |
+  Screens MCP tools/call requests using TypeSafe AI's Jev "System One" model.
+  Sends the tool name and arguments to Jev with a configurable battery of
+  typed questions, and blocks the call with a JSON-RPC error when any
+  question's answer crosses its threshold, or records it in monitor mode.
+
+parameters:
+  type: object
+  required: [tools]
+  properties:
+    tools:
+      type: array
+      minItems: 1
+      x-wso2-policy-advanced-param: false
+      description: |
+        Which tools to screen, and how. A rule names one tool exactly as it
+        appears in tools/call, or "*" for every tool without its own rule; a
+        rule for the exact name wins over "*". A tool no rule matches isn't
+        screened, so without a "*" rule only the listed tools are checked,
+        and tools added to the MCP server later aren't checked until they get
+        a rule.
+      items:
+        type: object
+        required: [name, scope]
+        properties:
+          name:
+            type: string
+            minLength: 1
+            maxLength: 256
+            default: "*"
+            description: The tool name, exactly as it appears in tools/call params.name, or "*" for every tool without its own rule.
+          scope:
+            type: string
+            minLength: 1
+            description: |
+              What the agent is meant to do, in plain words (for example "A
+              customer support assistant that looks up orders and issues
+              refunds of up to 100 USD"). Describe the job rather than giving
+              instructions: Jev judges whether each call fits it. The default
+              "destructive", "irreversible", "privilege" and "disruption"
+              questions ignore effects the scope calls for, and "out_of_scope"
+              flags calls outside it. "exfiltration", "sensitive_data" and
+              "security_control" don't mention the scope, but Jev still sees
+              it, so a job that clearly involves that data can lower their
+              answers too. The MCP proxy doesn't see the agent's conversation,
+              so this text is the only scope Jev can judge against.
+          questions:
+            type: array
+            description: |
+              The typed questions to ask Jev about this rule's tool calls,
+              pre-filled with the defaults; edit, remove, or add questions as
+              needed. Jev sees a JSON state with "tool" ("name" and
+              "arguments") and "scope"; refer to them in instructions, for
+              example `tool.arguments`. The call is blocked if any question's
+              answer is at or above its threshold. If the list is empty, the
+              defaults are used.
+            items:
+              type: object
+              required: [key, type, instructions, threshold]
+              properties:
+                key:
+                  type: string
+                  description: Unique identifier for this question, used in the block assessment.
+                type:
+                  type: string
+                  enum: [noul, score, choice]
+                  description: "'noul' returns a 0-1 probability; 'score' returns a position on 'criteria'; 'choice' returns a probability for each option in 'criteria'."
+                instructions:
+                  type: string
+                  description: The question to ask Jev about the tool call.
+                criteria:
+                  type: array
+                  items:
+                    type: string
+                  description: |
+                    Required for types 'score' and 'choice'. For 'score': 2-10
+                    ordered scale descriptions, lowest first. For 'choice':
+                    2-255 options to choose between; add an "other" option when
+                    the list might not cover every call.
+                blockOn:
+                  type: array
+                  items:
+                    type: string
+                  description: Required for type 'choice'. The 'criteria' options that count towards blocking.
+                threshold:
+                  type: number
+                  description: |
+                    For 'noul': minimum probability (0-1) to block. For
+                    'score': minimum scale position to block. For 'choice':
+                    minimum combined probability (0-1) of the 'blockOn'
+                    options to block.
+                confidenceThreshold:
+                  type: number
+                  minimum: 0
+                  maximum: 1
+                  description: |
+                    Only for type 'score'. Minimum confidence (0-1) Jev must
+                    report for a score at or above 'threshold' to block. A less
+                    confident answer doesn't block and is recorded in request
+                    metadata instead. Omit or set to 0 to block on the score
+                    alone.
+            default:
+            - key: destructive
+              type: noul
+              instructions: "Would running the tool call in `tool` destroy, overwrite, or damage data, files, or systems that cannot easily be recreated, in a way that `scope` does not call for?"
+              threshold: 0.7
+            - key: irreversible
+              type: noul
+              instructions: "Would running the tool call in `tool` have an effect that cannot be undone, such as sending a message, moving money, or publishing something, that `scope` does not call for?"
+              threshold: 0.7
+            - key: exfiltration
+              type: noul
+              instructions: "Would running the tool call in `tool` send secrets, credentials, or private data outside the organisation?"
+              threshold: 0.7
+            - key: sensitive_data
+              type: noul
+              instructions: "Would running the tool call in `tool` read or reveal secrets, credentials, or payment card data?"
+              threshold: 0.7
+            - key: privilege
+              type: noul
+              instructions: "Would running the tool call in `tool` grant or raise access rights or permissions in a way that `scope` does not call for?"
+              threshold: 0.7
+            - key: disruption
+              type: noul
+              instructions: "Would running the tool call in `tool` stop, shut down, or take offline a running service or system in a way that `scope` does not call for?"
+              threshold: 0.7
+            - key: security_control
+              type: noul
+              instructions: "Would running the tool call in `tool` turn off or weaken a security control, such as multi-factor authentication, a firewall, encryption, or audit logging?"
+              threshold: 0.7
+            - key: out_of_scope
+              type: noul
+              instructions: "Is the tool call in `tool` unrelated to the purpose described in `scope`?"
+              threshold: 0.7
+          mode:
+            type: string
+            enum: [enforce, monitor]
+            default: enforce
+            description: |
+              'enforce' (default) blocks this rule's tool calls when a question
+              crosses its threshold. 'monitor' never blocks: it lets the call
+              through and records the hit in analytics (isGuardrailHit,
+              guardrailName) and the flagged questions in request metadata.
+              Use it to tune a rule on real traffic before enforcing.
+          passthroughOnError:
+            type: boolean
+            default: false
+            x-wso2-policy-advanced-param: true
+            description: |
+              Whether this rule's tool calls continue when the Jev API call
+              fails. True allows passthrough; false (default) rejects the call
+              with a JSON-RPC internal error.
+    timeout:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: |
+        Maximum time to wait for Jev, as a Go duration string (for example
+        "5s" or "1500ms"), up to "30s". Includes one retry when Jev is rate
+        limited or overloaded. On timeout, the matching rule's
+        passthroughOnError decides whether the call continues.
+      default: "5s"
+    showAssessment:
+      type: boolean
+      x-wso2-policy-advanced-param: true
+      description: |
+        Specifies whether the JSON-RPC error for a blocked call includes, in
+        "error.data", which questions were flagged, their values, and
+        thresholds.
+      default: false
+
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties:
+    apiKey:
+      type: string
+      description: TypeSafe AI API key (https://typesafe.ai).
+      minLength: 1
+      "wso2/defaultValue": "${config.policy_configurations.typesafe_jev_v0.api_key}"
+    baseURL:
+      type: string
+      format: uri
+      description: Override the Jev API base URL (for testing only).
+      "wso2/defaultValue": "${config.policy_configurations.typesafe_jev_v0.base_url}"
+    model:
+      type: string
+      description: Jev model identifier.
+      "wso2/defaultValue": "${config.policy_configurations.typesafe_jev_v0.model}"
+  required:
+    - apiKey
