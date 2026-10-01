@@ -109,6 +109,9 @@ Add the following block to your `config.toml` file:
 api_key = ""
 base_url = "https://api.typesafe.ai"
 model = "jev-latest"
+max_tools = 200
+max_tool_bytes = 4096
+max_total_bytes = 131072
 ```
 
 Every TypeSafe Jev policy reads the same `[policy_configurations.typesafe_jev_v0]` block, so the key is set once for all of them.

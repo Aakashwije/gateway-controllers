@@ -139,6 +139,7 @@ systemParameters:
       minimum: 1
       maximum: 10000
       default: 200
+      "wso2/defaultValue": "${config.policy_configurations.typesafe_jev_v0.max_tools}"
     maxToolBytes:
       type: integer
       description: |
@@ -147,6 +148,7 @@ systemParameters:
       minimum: 64
       maximum: 1048576
       default: 4096
+      "wso2/defaultValue": "${config.policy_configurations.typesafe_jev_v0.max_tool_bytes}"
     maxTotalBytes:
       type: integer
       description: |
@@ -155,5 +157,6 @@ systemParameters:
       minimum: 64
       maximum: 16777216
       default: 131072
+      "wso2/defaultValue": "${config.policy_configurations.typesafe_jev_v0.max_total_bytes}"
   required:
     - apiKey
