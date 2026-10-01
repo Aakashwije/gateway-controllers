@@ -208,16 +208,16 @@ systemParameters:
     jevApiKey:
       type: string
       description: TypeSafe AI API key. Required only when jevCacheCheck.enabled is true.
-      "wso2/defaultValue": "${config.jev_apikey}"
+      "wso2/defaultValue": "${config.policy_configurations.typesafe_jev_v0.api_key}"
     jevBaseURL:
       type: string
       format: uri
       description: TypeSafe Jev API base URL.
-      "wso2/defaultValue": "${config.jev_base_url}"
+      "wso2/defaultValue": "${config.policy_configurations.typesafe_jev_v0.base_url}"
     jevModel:
       type: string
       description: TypeSafe Jev model identifier.
-      "wso2/defaultValue": "${config.jev_model}"
+      "wso2/defaultValue": "${config.policy_configurations.typesafe_jev_v0.model}"
   required:
   - embeddingProvider
   - embeddingEndpoint
