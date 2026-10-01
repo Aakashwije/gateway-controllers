@@ -41,13 +41,16 @@ These parameters are set at the gateway level and identify your Jev account. Def
 
 #### Sample System Configuration
 
-Add the following entries to your `config.toml` file:
+Add the following block to your `config.toml` file:
 
 ```toml
-jev_apikey = ""
-jev_base_url = "https://api.typesafe.ai"
-jev_model = "jev-latest"
+[policy_configurations.typesafe_jev_v0]
+api_key = ""
+base_url = "https://api.typesafe.ai"
+model = "jev-latest"
 ```
+
+Every TypeSafe Jev policy reads the same `[policy_configurations.typesafe_jev_v0]` block, so the key is set once for all of them.
 
 ### User Parameters (API Definition)
 
