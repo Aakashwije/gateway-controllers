@@ -92,6 +92,7 @@ All available policies, sorted alphabetically.
 | [Token Based Ratelimit](./token-based-ratelimit/v1.0/docs/token-based-ratelimit.md) | AI | A specialized rate limiting policy for LLM APIs that enforces usage quotas based on token counts. |
 | [TypeSafe Jev Content Safety](./typesafe-jev-content-safety/v0.8/docs/typesafe-jev-content-safety.md) | Guardrails, AI | Screens request or response body content using TypeSafe AI's Jev System One model. |
 | [TypeSafe Jev MCP Tool Intent Verification](./typesafe-jev-mcp-tool-intent-verification/v0.8/docs/typesafe-jev-mcp-tool-intent-verification.md) | MCP, Security | Screens MCP tools/call requests using TypeSafe AI's Jev System One model. |
+| [TypeSafe Jev MCP Tool Result Screening](./typesafe-jev-mcp-tool-result-screening/v0.8/docs/typesafe-jev-mcp-tool-result-screening.md) | MCP, Security | Screens the results of MCP tools/call requests using TypeSafe AI's Jev System One model, before the agent reads them. |
 | [TypeSafe Jev Model Routing](./typesafe-jev-model-routing/v0.8/docs/typesafe-jev-model-routing.md) | AI | Routes AI/LLM requests to different models using TypeSafe AI's Jev System One model. |
 | [TypeSafe Jev Tool Filtering](./typesafe-jev-tool-filtering/v0.8/docs/typesafe-jev-tool-filtering.md) | AI, Transformation | Narrows an LLM request's tools array down to the tools relevant to the current user prompt, using TypeSafe AI's Jev System One model. |
 | [URL Guardrail](./url-guardrail/v1.0/docs/url.md) | Guardrails, AI | Validates URLs found in request or response body content. |
