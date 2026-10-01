@@ -1,0 +1,10 @@
+{
+  "name": "typesafe-jev-model-routing",
+  "displayName": "TypeSafe Jev Model Routing",
+  "version": "0.8",
+  "provider": "WSO2",
+  "categories": [
+    "AI"
+  ],
+  "description": "Routes AI/LLM requests to different models using TypeSafe AI's Jev System One model.\nJev chooses the user-defined routing rule (each with a name and context description) that best fits each incoming request, and the request is routed to that rule's model.\nEffective for routing by topic, intent, or complexity (e.g., sending complex reasoning to a larger model and casual chat to a smaller one).\nWhen Jev is unavailable or not confident enough, requests fall back to a configurable default model.\n\nNote: This policy requires a TypeSafe AI API key.\nRoutes can optionally select an additional provider, with a configurable default provider for fallback."
+}
