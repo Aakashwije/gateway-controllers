@@ -464,17 +464,23 @@ func TestOnResponseBody_EventStream(t *testing.T) {
 	})
 
 	t.Run("an unreadable stream can't be screened", func(t *testing.T) {
-		unreadable := "event: message\ndata: \x1f\x8b\x08\x00\n\n"
+		compressed := "\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03\xab\x56\x2a\x49\x2d\x2e\x51\n\x01\x02\n\n"
 		jev := newMockJev(t, injected)
-		p := newPolicy(t, jev.server.URL, nil)
-		respCtx := mcpResponse(fetchCall, unreadable, "text/event-stream")
-		mustPassthrough(t, p.OnResponseBody(context.Background(), respCtx, nil))
-		if respCtx.Metadata[metaKeyUnscreened] != unreadableReason {
-			t.Fatalf("unscreened = %v, want %q", respCtx.Metadata[metaKeyUnscreened], unreadableReason)
+		for name, body := range map[string]string{
+			"non-JSON data":                     "event: message\ndata: \x1f\x8b\x08\x00\n\n",
+			"compressed body, no data: lines":   compressed,
+			"only comments and fields, no data": ": keep-alive\nid: 1\n\n",
+		} {
+			p := newPolicy(t, jev.server.URL, nil)
+			respCtx := mcpResponse(fetchCall, body, "text/event-stream")
+			mustPassthrough(t, p.OnResponseBody(context.Background(), respCtx, nil))
+			if respCtx.Metadata[metaKeyUnscreened] != unreadableReason {
+				t.Fatalf("%s: unscreened = %v, want %q", name, respCtx.Metadata[metaKeyUnscreened], unreadableReason)
+			}
 		}
 
-		p = newPolicy(t, jev.server.URL, map[string]interface{}{"passthroughOnError": false})
-		mods := mustModifications(t, p.OnResponseBody(context.Background(), mcpResponse(fetchCall, unreadable, "text/event-stream"), nil))
+		p := newPolicy(t, jev.server.URL, map[string]interface{}{"passthroughOnError": false})
+		mods := mustModifications(t, p.OnResponseBody(context.Background(), mcpResponse(fetchCall, compressed, "text/event-stream"), nil))
 		events := parseEventStream(mods.Body)
 		if len(events) != 1 {
 			t.Fatalf("got %d events, want 1: %s", len(events), mods.Body)

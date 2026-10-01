@@ -273,12 +273,18 @@ func (p *TypesafeJevMcpToolResultScreeningPolicy) OnResponseBody(ctx context.Con
 		// A POST stream can carry notifications and server requests before the
 		// response; only the event answering this call is screened or replaced.
 		events := parseEventStream(body)
-		readable := len(events) > 0
+		// parseEventStream keeps any line that isn't data as a field, so an
+		// unreadable body (for example a compressed one) parses as events with no
+		// data. Only data that is a JSON object counts as readable.
+		sawData, sawUnreadable := false, false
 		for i, event := range events {
 			message, ok := resultMessage([]byte(event.data), call.ID)
 			if !ok {
-				if strings.TrimSpace(event.data) != "" && !isJSONObject([]byte(event.data)) {
-					readable = false
+				if strings.TrimSpace(event.data) != "" {
+					sawData = true
+					if !isJSONObject([]byte(event.data)) {
+						sawUnreadable = true
+					}
 				}
 				continue
 			}
@@ -289,9 +295,9 @@ func (p *TypesafeJevMcpToolResultScreeningPolicy) OnResponseBody(ctx context.Con
 			events[i].data = string(replacement)
 			return policy.DownstreamResponseModifications{Body: buildEventStream(events), AnalyticsMetadata: analytics}
 		}
-		// No event answers the call. If part of the stream couldn't be read (for
-		// example a compressed body), the result may be in it, unscreened.
-		if !readable {
+		// No event answers the call. If the stream holds no data, or part of it
+		// couldn't be read, the result may be in it, unscreened.
+		if !sawData || sawUnreadable {
 			replacement := p.failure(respCtx.SharedContext, rule, call, unreadableReason, fmt.Errorf("event stream has no readable JSON-RPC message"))
 			if replacement == nil {
 				return policy.DownstreamResponseModifications{}
