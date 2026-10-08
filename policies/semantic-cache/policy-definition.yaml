@@ -1,5 +1,5 @@
 name: semantic-cache
-version: v1.1.0
+version: v1.2.0
 description: |
   Caches LLM responses using semantic similarity over request embeddings to
   reduce repeated upstream calls. Returns cached responses on similarity hits
@@ -54,6 +54,79 @@ parameters:
         Only enable this for APIs where every possible response is safe to
         share across all unauthenticated callers.
       default: false
+    jevCacheCheck:
+      type: object
+      x-wso2-policy-advanced-param: true
+      additionalProperties: false
+      description: |
+        Optional TypeSafe Jev admission check for cache writes. When enabled,
+        the extracted request text and generated response text are sent to Jev
+        just before storage. A response is stored only when no configured
+        question reaches its threshold. Jev errors, timeouts, malformed
+        answers, and unreadable response text skip the cache write without
+        changing the response returned to the client.
+      properties:
+        enabled:
+          type: boolean
+          default: false
+        timeout:
+          type: string
+          description: Maximum duration of the Jev call, including one retry on HTTP 429 or 529.
+          default: "5s"
+          pattern: '^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$'
+        questions:
+          type: array
+          description: |
+            Questions used to reject cache writes, pre-filled with the default
+            time-sensitive, context-dependent, unhelpful, and sensitive-data
+            questions. The policy evaluates exactly the questions in a
+            non-empty array, so adding two questions to the four pre-filled
+            defaults evaluates all six, while removing a pre-filled question
+            disables that check. Any configured question that reaches its
+            threshold skips the cache write. An omitted or empty array restores
+            and evaluates all four defaults.
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              key:
+                type: string
+                minLength: 1
+              type:
+                type: string
+                enum: [noul, score]
+              instructions:
+                type: string
+                minLength: 1
+              criteria:
+                description: |
+                  For score, an ordered array of 2 to 10 scale descriptions
+                  (low to high). Not used for noul questions.
+                type: array
+                items:
+                  type: string
+                  minLength: 1
+              threshold:
+                type: number
+            required: [key, type, instructions, threshold]
+          default:
+          - key: time_sensitive
+            type: noul
+            instructions: "Does the answer in `response` depend on the current date or time, or on live information such as news, prices, weather, or stock levels?"
+            threshold: 0.7
+          - key: needs_context
+            type: noul
+            instructions: "Does `request` only make sense together with earlier messages in the conversation, for example a follow-up like 'tell me more' or 'what about the second one'?"
+            threshold: 0.7
+          - key: unhelpful_response
+            type: noul
+            instructions: "Is `response` a refusal, an error, or a reply saying the request couldn't be completed?"
+            threshold: 0.7
+          - key: sensitive_data
+            type: noul
+            instructions: "Do `request` or `response` contain secrets, credentials, or personal data such as passwords, card numbers, or ID numbers?"
+            threshold: 0.7
+      required: [enabled]
   required:
   - similarityThreshold
 
@@ -132,6 +205,19 @@ systemParameters:
       type: integer
       description: Vector database TTL (optional)
       "wso2/defaultValue": "${config.vector_db_provider_ttl}"
+    jevApiKey:
+      type: string
+      description: TypeSafe AI API key. Required only when jevCacheCheck.enabled is true.
+      "wso2/defaultValue": "${config.policy_configurations.typesafe_jev_v0.api_key}"
+    jevBaseURL:
+      type: string
+      format: uri
+      description: TypeSafe Jev API base URL.
+      "wso2/defaultValue": "${config.policy_configurations.typesafe_jev_v0.base_url}"
+    jevModel:
+      type: string
+      description: TypeSafe Jev model identifier.
+      "wso2/defaultValue": "${config.policy_configurations.typesafe_jev_v0.model}"
   required:
   - embeddingProvider
   - embeddingEndpoint

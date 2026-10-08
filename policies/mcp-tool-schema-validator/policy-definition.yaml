@@ -1,0 +1,85 @@
+name: mcp-tool-schema-validator
+version: v0.9.0
+description: |
+  Validates MCP tools/call traffic against JSON Schemas configured per tool.
+
+  Input validation checks params.arguments before the call reaches the MCP server and
+  rejects invalid arguments with JSON-RPC error -32602. Output validation checks
+  result.structuredContent before the result reaches the client and replaces an invalid
+  result with JSON-RPC error -32021.
+
+  Both checks are off until enabled. Each tool must enable input validation, output
+  validation, or both, and an enabled check needs a schema. Schemas default to JSON Schema
+  2020-12; draft-07 is supported through $schema, and other drafts are rejected. The email,
+  ipv4 and ipv6 formats are asserted; other formats are annotations. Only references within
+  a schema are allowed. Attach after mcp-spec-validation.
+
+parameters:
+  type: object
+  additionalProperties: false
+  required:
+  - tools
+  properties:
+    tools:
+      type: array
+      minItems: 1
+      description: Tools to validate, matched by exact, case-sensitive name.
+      items:
+        type: object
+        additionalProperties: false
+        required:
+        - name
+        properties:
+          name:
+            type: string
+            minLength: 1
+            description: MCP tool name, as sent in params.name of tools/call.
+          input:
+            type: object
+            additionalProperties: false
+            description: Validation of the tool's input (params.arguments), before the MCP server is called.
+            properties:
+              enabled:
+                type: boolean
+                x-wso2-policy-advanced-param: false
+                description: Turns on validation of the tool's input. Requires a schema.
+                default: false
+              schema:
+                type: string
+                description: |
+                  JSON Schema, as a JSON string, the tool's input must satisfy. Required when enabled.
+                  Draft 2020-12 applies by default; draft-07 is selected with $schema.
+              showAssessment:
+                type: boolean
+                x-wso2-policy-advanced-param: true
+                description: |
+                  If true, error responses list each failure's instance path and rule.
+                  Input values are never included.
+                default: false
+          output:
+            type: object
+            additionalProperties: false
+            description: Validation of the tool's output (result.structuredContent), before it reaches the client.
+            properties:
+              enabled:
+                type: boolean
+                x-wso2-policy-advanced-param: false
+                description: Turns on validation of the tool's output. Requires a schema.
+                default: false
+              schema:
+                type: string
+                description: |
+                  JSON Schema, as a JSON string, the tool's structured output must satisfy. Required when enabled.
+                  Draft 2020-12 applies by default; draft-07 is selected with $schema.
+              showAssessment:
+                type: boolean
+                x-wso2-policy-advanced-param: true
+                description: |
+                  If true, error responses list each failure's instance path and rule.
+                  Output values are never included.
+                default: false
+
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties: {}

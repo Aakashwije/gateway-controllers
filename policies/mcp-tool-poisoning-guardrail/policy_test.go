@@ -2268,6 +2268,7 @@ func TestLocateResponsePayload(t *testing.T) {
 			{name: "sse with two answering events", body: "data: {\"id\":5}\n\ndata: {\"id\":5}\n\n", sse: true},
 			{name: "sse answering with duplicate keys", body: "data: {\"id\":5,\"result\":{}}\n\ndata: {\"id\":5,\"id\":5}\n\n", sse: true},
 			{name: "sse answering inside a batch", body: "data: {\"id\":5,\"result\":{}}\n\ndata: [{\"id\":5}]\n\n", sse: true},
+			{name: "sse string id coercing to the requested number", body: "data: {\"id\":5,\"result\":{}}\n\ndata: {\"id\":\"0x5\",\"result\":{}}\n\n", sse: true},
 		}
 
 		for _, tc := range cases {

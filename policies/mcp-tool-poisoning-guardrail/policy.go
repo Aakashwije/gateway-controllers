@@ -43,9 +43,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
+	"math/big"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
@@ -744,12 +748,40 @@ func coerceIDToNumber(id any) (float64, bool) {
 		number, err := strconv.ParseFloat(string(typed), 64)
 		return number, err == nil
 	case string:
-		trimmed := strings.TrimSpace(typed)
+		trimmed := trimECMAScriptWhitespace(typed)
 		if trimmed == "" {
 			return 0, true
 		}
+		if trimmed == "Infinity" || trimmed == "+Infinity" {
+			return math.Inf(1), true
+		}
+		if trimmed == "-Infinity" {
+			return math.Inf(-1), true
+		}
+		if len(trimmed) > 2 && trimmed[0] == '0' {
+			base := 0
+			switch trimmed[1] {
+			case 'x', 'X':
+				base = 16
+			case 'o', 'O':
+				base = 8
+			case 'b', 'B':
+				base = 2
+			}
+			if base != 0 {
+				integer, ok := new(big.Int).SetString(trimmed[2:], base)
+				if !ok || trimmed[2:] == "" {
+					return 0, false
+				}
+				number, _ := new(big.Float).SetInt(integer).Float64()
+				return number, true
+			}
+		}
+		if !ecmaDecimalNumber.MatchString(trimmed) {
+			return 0, false
+		}
 		number, err := strconv.ParseFloat(trimmed, 64)
-		return number, err == nil
+		return number, err == nil || errors.Is(err, strconv.ErrRange)
 	case nil:
 		return 0, true
 	case bool:
@@ -759,6 +791,14 @@ func coerceIDToNumber(id any) (float64, bool) {
 		return 0, true
 	}
 	return 0, false
+}
+
+var ecmaDecimalNumber = regexp.MustCompile(`^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$`)
+
+func trimECMAScriptWhitespace(value string) string {
+	return strings.TrimFunc(value, func(r rune) bool {
+		return unicode.Is(unicode.Zs, r) || r == '\t' || r == '\n' || r == '\v' || r == '\f' || r == '\r' || r == '\u2028' || r == '\u2029' || r == '\uFEFF'
+	})
 }
 
 // payloadAnswers reports whether a decoded value answers the request id. A
