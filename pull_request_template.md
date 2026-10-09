@@ -30,6 +30,7 @@
    > Code coverage information
  - Integration tests
    > Details about the test cases and coverage
+   > When a policy's behavior changes, update its `policies/<name>/it/` features and `it.yaml`; the Policy Integration Test workflow runs the policies a PR changes.
 
 ## Security checks
  - Followed secure coding standards in http://wso2.com/technical-reports/wso2-secure-engineering-guidelines? yes/no
