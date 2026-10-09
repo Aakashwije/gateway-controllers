@@ -40,10 +40,13 @@ const (
 
 var nowFunc = time.Now
 
+// TimeBasedModelRoutingPolicy rewrites the request model to the one scheduled for the
+// current time in the configured timezone, or to the fallback model outside every schedule.
 type TimeBasedModelRoutingPolicy struct {
 	config config
 }
 
+// GetPolicy builds the policy from its configured parameters.
 func GetPolicy(_ policy.PolicyMetadata, params map[string]interface{}) (policy.Policy, error) {
 	parsed, err := parseConfig(params)
 	if err != nil {
