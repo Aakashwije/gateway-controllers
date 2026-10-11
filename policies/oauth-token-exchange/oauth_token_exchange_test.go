@@ -77,6 +77,26 @@ func newRequestHeaderContext(shared *policy.SharedContext, headers map[string][]
 	}
 }
 
+// applyHeaderModifications mimics the kernel's own merge in
+// ChainExecutor.ExecuteRequestHeaderPolicies: HeadersToSet keys are
+// lower-cased and win, then HeadersToRemove deletes by lower-cased key. Body
+// phase tests must run OnRequestBody against headers produced this way — the
+// real kernel carries the SAME mutated header map from the header phase into
+// the body phase, it never reconstructs it from the pre-header-phase values.
+func applyHeaderModifications(headers map[string][]string, mod policy.UpstreamRequestHeaderModifications) map[string][]string {
+	out := make(map[string][]string, len(headers))
+	for k, v := range headers {
+		out[strings.ToLower(k)] = v
+	}
+	for k, v := range mod.HeadersToSet {
+		out[strings.ToLower(k)] = []string{v}
+	}
+	for _, k := range mod.HeadersToRemove {
+		delete(out, strings.ToLower(k))
+	}
+	return out
+}
+
 func baseParams(tokenEndpoint string) map[string]interface{} {
 	return map[string]interface{}{
 		"tokenEndpoint": tokenEndpoint,
@@ -766,6 +786,15 @@ func TestOnRequestHeaders_RemovesMismatchedHeaderSource(t *testing.T) {
 
 // ─── OnRequestHeaders + OnRequestBody: dual-phase interaction ───────────────
 
+// TestOnRequestBody_SkipsExchangeWhenHeaderPhaseSucceeded covers the default
+// configuration: subjectTokenSource names the same header as cfg.header
+// (both "Authorization"), so the header phase's own HeadersToSet overwrites
+// the very field it read the subject token from. The body-phase headers
+// passed in here must reflect that self-overwrite the way the real kernel's
+// ChainExecutor does (via applyHeaderModifications), not the pre-header-phase
+// value — otherwise this test cannot see the self-overwrite staleness bug at
+// all (it would still read back "original-client-token", never the
+// already-exchanged one).
 func TestOnRequestBody_SkipsExchangeWhenHeaderPhaseSucceeded(t *testing.T) {
 	var hits int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -782,15 +811,79 @@ func TestOnRequestBody_SkipsExchangeWhenHeaderPhaseSucceeded(t *testing.T) {
 	params := baseParams(server.URL)
 
 	headerCtx := newRequestHeaderContext(shared, headers, "/pets")
-	if _, ok := p.OnRequestHeaders(context.Background(), headerCtx, params).(policy.UpstreamRequestHeaderModifications); !ok {
+	headerResult, ok := p.OnRequestHeaders(context.Background(), headerCtx, params).(policy.UpstreamRequestHeaderModifications)
+	if !ok {
 		t.Fatal("expected the header phase to succeed")
 	}
 	if atomic.LoadInt32(&hits) != 1 {
 		t.Fatalf("expected exactly 1 token endpoint call after the header phase, got %d", hits)
 	}
 
-	// The kernel carries the same SharedContext into the body phase.
-	bodyCtx := newRequestContextSharing(shared, headers, "/pets")
+	// The kernel carries the same SharedContext, AND the header-phase
+	// mutations it already applied, into the body phase.
+	mutatedHeaders := applyHeaderModifications(headers, headerResult)
+	bodyCtx := newRequestContextSharing(shared, mutatedHeaders, "/pets")
+	result := p.OnRequestBody(context.Background(), bodyCtx, params)
+
+	action, ok := result.(policy.UpstreamRequestModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestModifications, got %T: %+v", result, result)
+	}
+	if len(action.HeadersToSet) != 0 {
+		t.Errorf("expected OnRequestBody to set no headers once the header phase already succeeded, got %+v", action.HeadersToSet)
+	}
+	if atomic.LoadInt32(&hits) != 1 {
+		t.Errorf("expected no additional token endpoint call from OnRequestBody, got %d total", hits)
+	}
+}
+
+// TestOnRequestBody_SkipsExchangeWhenHeaderPhaseSucceeded_CustomSubjectHeaderRemovedBySelf
+// covers the jwt-auth -> oauth-token-exchange chain configuration:
+// subjectTokenSource names a DIFFERENT header than cfg.header (e.g.
+// "X-Forwarded-Authorization" feeding "Authorization"), so the header
+// phase's own subjectTokenRemovalMods strips that field entirely rather than
+// overwriting it. Body-phase headers must reflect that removal, the same way
+// applyHeaderModifications simulates the same-name overwrite case above.
+// Before the self-removal tracking fix, OnRequestBody could not tell this
+// expected, self-caused absence apart from the credential genuinely
+// disappearing, and failed every request closed with 401.
+func TestOnRequestBody_SkipsExchangeWhenHeaderPhaseSucceeded_CustomSubjectHeaderRemovedBySelf(t *testing.T) {
+	var hits int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"access_token": "exchanged-token", "expires_in": 300})
+	}))
+	defer server.Close()
+	utils.SetSharedHTTPClient(server.Client())
+	defer utils.SetSharedHTTPClient(nil)
+
+	p := newTestPolicy()
+	shared := newSharedContext()
+	headers := map[string][]string{"X-Forwarded-Authorization": {"Bearer original-client-token"}}
+	params := baseParams(server.URL)
+	params["subjectTokenSource"] = map[string]interface{}{
+		"type": "header",
+		"name": "x-forwarded-authorization",
+	}
+
+	headerCtx := newRequestHeaderContext(shared, headers, "/pets")
+	headerResult, ok := p.OnRequestHeaders(context.Background(), headerCtx, params).(policy.UpstreamRequestHeaderModifications)
+	if !ok {
+		t.Fatal("expected the header phase to succeed")
+	}
+	if got := headerResult.HeadersToSet["Authorization"]; got != "Bearer exchanged-token" {
+		t.Errorf("header-phase Authorization = %q, want %q", got, "Bearer exchanged-token")
+	}
+	if atomic.LoadInt32(&hits) != 1 {
+		t.Fatalf("expected exactly 1 token endpoint call after the header phase, got %d", hits)
+	}
+
+	mutatedHeaders := applyHeaderModifications(headers, headerResult)
+	if _, present := mutatedHeaders["x-forwarded-authorization"]; present {
+		t.Fatalf("test setup error: expected the header phase to have removed x-forwarded-authorization, got %+v", mutatedHeaders)
+	}
+
+	bodyCtx := newRequestContextSharing(shared, mutatedHeaders, "/pets")
 	result := p.OnRequestBody(context.Background(), bodyCtx, params)
 
 	action, ok := result.(policy.UpstreamRequestModifications)

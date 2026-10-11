@@ -196,6 +196,74 @@ func subjectTokenHashMatches(shared *policy.SharedContext, currentToken string) 
 	return stored == hashSubjectToken(currentToken)
 }
 
+// metadataKeySelfOverwriteTokenHash stores a SHA-256 hash of the exchanged
+// token the header phase itself wrote into the subject-token field, for the
+// one configuration where that is possible: subjectTokenSource names the
+// same header as cfg.header (the common default — both "Authorization"), so
+// OnRequestHeaders' own HeadersToSet overwrites the very field OnRequestBody
+// later reads back via extractSubjectToken to check for staleness. Without
+// this, that self-overwrite looks identical to "a later policy replaced the
+// credential" and OnRequestBody re-exchanges on every request — the
+// exchanged token read back from the live header is run through the token
+// endpoint a second time as if it were a fresh subject token.
+const metadataKeySelfOverwriteTokenHash = "oauthTokenExchange.selfOverwriteTokenHash"
+
+func storeSelfOverwriteTokenHash(shared *policy.SharedContext, token string) {
+	if shared == nil {
+		return
+	}
+	if shared.Metadata == nil {
+		shared.Metadata = map[string]interface{}{}
+	}
+	shared.Metadata[metadataKeySelfOverwriteTokenHash] = hashSubjectToken(token)
+}
+
+// selfOverwriteTokenHashMatches reports whether currentToken hashes to the
+// token storeSelfOverwriteTokenHash recorded — i.e. the live field still
+// holds exactly what this policy's own header phase put there, untouched by
+// anything else since.
+func selfOverwriteTokenHashMatches(shared *policy.SharedContext, currentToken string) bool {
+	if shared == nil || shared.Metadata == nil {
+		return false
+	}
+	stored, _ := shared.Metadata[metadataKeySelfOverwriteTokenHash].(string)
+	if stored == "" {
+		return false
+	}
+	return stored == hashSubjectToken(currentToken)
+}
+
+// metadataKeySelfRemovedSubjectField records that the header phase's own
+// subjectTokenRemovalMods call removed the subject-token field entirely
+// (subjectTokenSource names a header or cookie distinct from cfg.header, so
+// nothing overwrote it — it was deleted outright before forwarding
+// upstream, per this policy's guarantee that the original credential is
+// never forwarded). Its absence at the body phase is therefore the field's
+// expected post-header-phase state, not evidence that a later policy
+// changed it — without this, extractSubjectToken finding nothing is
+// indistinguishable from the credential genuinely vanishing, and
+// OnRequestBody fails the request closed on every request instead of
+// trusting the already-correct header-phase result.
+const metadataKeySelfRemovedSubjectField = "oauthTokenExchange.selfRemovedSubjectField"
+
+func markSelfRemovedSubjectField(shared *policy.SharedContext) {
+	if shared == nil {
+		return
+	}
+	if shared.Metadata == nil {
+		shared.Metadata = map[string]interface{}{}
+	}
+	shared.Metadata[metadataKeySelfRemovedSubjectField] = true
+}
+
+func selfRemovedSubjectField(shared *policy.SharedContext) bool {
+	if shared == nil || shared.Metadata == nil {
+		return false
+	}
+	removed, _ := shared.Metadata[metadataKeySelfRemovedSubjectField].(bool)
+	return removed
+}
+
 // hashSubjectToken returns a fixed-length SHA-256 digest of the subject
 // token — never the raw token — so it can be compared across phases via
 // SharedContext.Metadata without storing the credential itself, mirroring
@@ -482,6 +550,24 @@ func (p *OAuthTokenExchangePolicy) OnRequestHeaders(ctx context.Context, reqCtx 
 	headersToSet := map[string]string{cfg.header: cfg.headerPrefix + token}
 	headersToRemove, queryParamsToRemove, cookieOverride := subjectTokenRemovalMods(cfg, reqCtx.Headers)
 	maps.Copy(headersToSet, cookieOverride)
+
+	// Record what this call itself is about to do to the subjectTokenSource
+	// field, so OnRequestBody can tell its own effect apart from a later
+	// policy's — see metadataKeySelfOverwriteTokenHash and
+	// metadataKeySelfRemovedSubjectField. Mirrors subjectTokenRemovalMods'
+	// own kind/forwardToken/same-name branching; queryParameter is left
+	// unmarked, matching that this header phase never actually strips a
+	// query-parameter subject source from reqCtx.Path.
+	switch {
+	case cfg.subjectSource.forwardToken:
+		// Untouched — the existing subjectTokenHashMatches path already
+		// covers this (the field still holds the original subject token).
+	case cfg.subjectSource.kind == "header" && http.CanonicalHeaderKey(cfg.subjectSource.name) == http.CanonicalHeaderKey(cfg.header):
+		storeSelfOverwriteTokenHash(reqCtx.SharedContext, token)
+	case cfg.subjectSource.kind == "header", cfg.subjectSource.kind == "cookie":
+		markSelfRemovedSubjectField(reqCtx.SharedContext)
+	}
+
 	return policy.UpstreamRequestHeaderModifications{
 		HeadersToSet:            headersToSet,
 		HeadersToRemove:         headersToRemove,
@@ -513,7 +599,20 @@ func (p *OAuthTokenExchangePolicy) OnRequestBody(ctx context.Context, reqCtx *po
 	}
 
 	if headerPhaseSucceeded(reqCtx.SharedContext) {
-		if currentToken, ok := extractSubjectToken(reqCtx.Headers, reqCtx.Path, cfg.subjectSource); ok && subjectTokenHashMatches(reqCtx.SharedContext, currentToken) {
+		currentToken, ok := extractSubjectToken(reqCtx.Headers, reqCtx.Path, cfg.subjectSource)
+		switch {
+		case ok && subjectTokenHashMatches(reqCtx.SharedContext, currentToken):
+			// Still exactly the subject token the header phase exchanged.
+			return policy.UpstreamRequestModifications{}
+		case ok && selfOverwriteTokenHashMatches(reqCtx.SharedContext, currentToken):
+			// The field holds exactly what this policy's own header phase
+			// wrote there (subjectTokenSource and cfg.header share a name) —
+			// nothing else has touched it since.
+			return policy.UpstreamRequestModifications{}
+		case !ok && selfRemovedSubjectField(reqCtx.SharedContext):
+			// This policy's own header phase stripped the field as part of
+			// never forwarding the original credential upstream — its
+			// absence now is expected, not a sign anything changed.
 			return policy.UpstreamRequestModifications{}
 		}
 		slog.Debug("OAuth token exchange: subject token changed since header phase, re-exchanging",
