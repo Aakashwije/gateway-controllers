@@ -16,10 +16,33 @@
 # under the License.
 # --------------------------------------------------------------------
 
-.PHONY: generate-catalog validate-catalog
+.PHONY: generate-catalog validate-catalog it it-unit it-standards
 
 generate-catalog: ## Generate docs/README.md policy catalog from metadata.json files
 	python3 scripts/generate-policy-catalog.py
 
 validate-catalog: ## Verify docs/README.md is up to date (used in CI)
 	python3 scripts/generate-policy-catalog.py --validate
+
+# Policy integration tests. They need Docker and run against a released gateway image:
+#   make it POLICIES=time-based-model-routing GATEWAY_VERSION=1.2.0
+# POLICIES defaults to every policy that has tests. DB limits the run to one database
+# (sqlite, postgres or sqlserver); GATEWAY_HOST replaces the image repository prefix.
+GATEWAY_VERSION ?= 1.2.0
+IT_BLOCK = gateway-controller-policies$(if $(DB),/$(DB))
+
+it: ## Run the policy integration tests against a released gateway
+	cd tests/it && go test . -count=1 -timeout=40m -v -run TestIntegrationSuite -args \
+		-blocks=$(IT_BLOCK) \
+		$(if $(POLICIES),-policies=$(POLICIES)) \
+		-gateway-version=$(GATEWAY_VERSION) \
+		$(if $(GATEWAY_HOST),-host=$(GATEWAY_HOST))
+
+it-unit: ## Run the unit tests of the integration suite's step definitions
+	cd tests/it && go test ./steps/... -count=1
+
+it-standards: ## Check the step definitions and every policy feature against the framework standards
+	cd tests/it && go tool standards -root . -unit-root . -steps steps \
+		-features $$(ls -d ../../policies/*/it/features | paste -sd, -) \
+		-scripts "" -suites it-suite.yaml -docs "" \
+		-approved-imports github.com/wso2/gateway-controllers/tests/it/

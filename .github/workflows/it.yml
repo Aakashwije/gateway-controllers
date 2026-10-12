@@ -1,8 +1,10 @@
 name: Gateway Controller Policy Integration Test
 
-# Runs the integration tests of the policies a pull request changes. The test suite
-# (framework, steps, templates, testbench) lives in wso2/api-platform; each policy keeps its
-# own features and runner declaration in policies/<name>/it/.
+# Runs the integration tests of the policies a pull request changes. The suite lives in this
+# repository (tests/it); each policy keeps its own features and runner declaration in
+# policies/<name>/it/. The test framework is a Go module published by wso2/api-platform and
+# pinned in tests/it/go.mod, and the gateway and testbench images come from GHCR, so nothing in
+# this workflow needs an api-platform checkout once the framework is released.
 
 on:
   workflow_dispatch:
@@ -11,16 +13,14 @@ on:
         description: "Comma-separated policies to test, or 'all' for every policy with integration tests"
         required: true
         default: all
-      api_platform_ref:
-        description: "api-platform branch, tag or SHA that provides the test framework"
-        required: false
-        default: ""
   pull_request:
     branches:
       - main
     paths:
       - 'policies/**'
+      - 'tests/it/**'
       - 'scripts/it/**'
+      - 'Makefile'
       - '.github/workflows/it.yml'
 
 permissions:
@@ -30,10 +30,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
+# TEMP: the framework is not released yet, so the jobs below check it out from a fork branch and
+# tests/it/go.mod resolves it through a replace directive. Remove this block, the TEMP steps and
+# the replace directive once tests/framework/v0.1.0 is tagged.
 env:
-  # TEMP: test fork. Restore wso2/api-platform and main before this goes upstream.
   API_PLATFORM_REPOSITORY: Isuranga-2001/api-platform # TEMP
-  API_PLATFORM_REF: ${{ inputs.api_platform_ref || 'feat/policy-it-v2.1' }} # TEMP
+  API_PLATFORM_REF: feat/framework-module # TEMP
 
 jobs:
   detect:
@@ -66,7 +68,7 @@ jobs:
           fi
 
   standards:
-    name: Feature standards
+    name: Feature standards and suite unit tests
     needs: detect
     if: needs.detect.outputs.has_tests == 'true'
     runs-on: ubuntu-24.04
@@ -78,7 +80,7 @@ jobs:
           path: gateway-controllers
           persist-credentials: false
 
-      - name: Checkout api-platform
+      - name: Checkout api-platform # TEMP
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: ${{ env.API_PLATFORM_REPOSITORY }}
@@ -90,10 +92,14 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: '1.26.5'
-          cache-dependency-path: api-platform/tests/framework/go.sum
+          cache-dependency-path: gateway-controllers/tests/it/go.sum
 
-      - name: Check the policy features against the framework standards
-        working-directory: api-platform/tests/framework
+      - name: Run the step definitions' unit tests
+        working-directory: gateway-controllers
+        run: make it-unit
+
+      - name: Check the steps and the changed policy features against the framework standards
+        working-directory: gateway-controllers/tests/it
         env:
           FEATURE_ROOTS: ${{ needs.detect.outputs.feature_roots }}
         run: |
@@ -101,43 +107,11 @@ jobs:
           roots=""
           IFS=',' read -ra relative <<< "$FEATURE_ROOTS"
           for root in "${relative[@]}"; do
-            roots+="${GITHUB_WORKSPACE}/gateway-controllers/${root},"
+            roots+="../../${root},"
           done
-          go run ./cmd/standards -root "" -unit-root "" -steps "" -scripts "" -suites "" -docs "" \
-            -features "${roots%,}"
-
-  gateway-controller-tests:
-    name: Gateway Controller unit tests
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    env:
-      CGO_ENABLED: "1"
-
-    steps:
-      - name: Checkout api-platform
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          repository: ${{ env.API_PLATFORM_REPOSITORY }}
-          ref: ${{ env.API_PLATFORM_REF }}
-          path: api-platform
-          persist-credentials: false
-
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version: '1.26.5'
-          cache-dependency-path: |
-            api-platform/go.work.sum
-            api-platform/gateway/gateway-controller/go.sum
-
-      - name: Ensure C compiler is available
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential
-
-      - name: Gateway-controller unit tests
-        working-directory: api-platform
-        run: make -C gateway/gateway-controller test
+          go tool standards -root . -unit-root . -steps steps -features "${roots%,}" \
+            -scripts "" -suites it-suite.yaml -docs "" \
+            -approved-imports github.com/wso2/gateway-controllers/tests/it/
 
   integration-test:
     name: Gateway Integration (${{ matrix.gateway_version }})
@@ -147,9 +121,16 @@ jobs:
     timeout-minutes: 45
     strategy:
       fail-fast: false
-      max-parallel: 3
+      max-parallel: 2
       matrix:
-        gateway_version: [latest, "1.2.0", "1.1.0"]
+        include:
+          # The gateway "latest" leg is added back once the api-platform pipeline publishes a
+          # latest gateway image after each merge, so it can be pulled like the releases below.
+          - gateway_version: "1.2.0"
+          # The tested 1.1.0 controller, runtime and gateway-builder images are published under
+          # this repository prefix, not the ghcr.io release one.
+          - gateway_version: "1.1.0"
+            gateway_host: docker.io/isurangaws
 
     steps:
       - name: Checkout gateway-controllers
@@ -158,7 +139,7 @@ jobs:
           path: gateway-controllers
           persist-credentials: false
 
-      - name: Checkout api-platform
+      - name: Checkout api-platform # TEMP
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: ${{ env.API_PLATFORM_REPOSITORY }}
@@ -170,9 +151,7 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: '1.26.5'
-          cache-dependency-path: |
-            api-platform/go.work.sum
-            api-platform/tests/framework/go.sum
+          cache-dependency-path: gateway-controllers/tests/it/go.sum
 
       # The suite's database matrix boots several short-lived containers and
       # published ports. Under concurrent connection churn, the default
@@ -183,32 +162,29 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
-      - name: Build framework testbench image
+      # TEMP: an unreleased framework has no published testbench image, so build the one that
+      # matches the checkout. A released framework pulls ghcr.io/wso2/api-platform/testbench:<version>.
+      - name: Build the testbench image # TEMP
         run: make -C api-platform/tests/framework testbench
 
       - name: Run the integration tests of the selected policies
-        working-directory: api-platform/tests/framework
+        working-directory: gateway-controllers
         shell: bash
         env:
           GATEWAY_VERSION: ${{ matrix.gateway_version }}
+          GATEWAY_HOST: ${{ matrix.gateway_host }}
           POLICIES: ${{ needs.detect.outputs.policies }}
         run: |
           set -euo pipefail
+          make it POLICIES="$POLICIES" GATEWAY_VERSION="$GATEWAY_VERSION" GATEWAY_HOST="$GATEWAY_HOST" \
+            2>&1 | tee "$GITHUB_WORKSPACE/policy-it-$GATEWAY_VERSION.log"
 
-          suite_args=(-blocks=gateway-controller-policies "-policies=$POLICIES")
-          if [[ "$GATEWAY_VERSION" != "latest" ]]; then
-            suite_args+=("-gateway-version=$GATEWAY_VERSION")
-          fi
-
-          go test ./suites/it -count=1 -timeout=40m -v \
-            -args "${suite_args[@]}" 2>&1 | tee "$GITHUB_WORKSPACE/framework-it-$GATEWAY_VERSION.log"
-
-      - name: Upload framework test output
+      - name: Upload the test output
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: gateway-controller-policy-test-output-${{ matrix.gateway_version }}
-          path: framework-it-${{ matrix.gateway_version }}.log
+          path: policy-it-${{ matrix.gateway_version }}.log
           if-no-files-found: ignore
           retention-days: 7
 

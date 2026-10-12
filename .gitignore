@@ -36,3 +36,7 @@ policy-release-status.csv
 # Python caches
 __pycache__/
 *.pyc
+
+# Policy integration test output
+tests/it/logs-out/
+tests/it/coverage-out/

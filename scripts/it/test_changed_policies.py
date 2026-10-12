@@ -50,6 +50,7 @@ class PureFunctionTests(unittest.TestCase):
 
     def test_only_infra_changed(self):
         self.assertTrue(cp.only_infra_changed([".github/workflows/it.yml", "scripts/it/changed-policies.py"]))
+        self.assertTrue(cp.only_infra_changed(["tests/it/go.mod", "tests/it/steps/base.go"]))
         self.assertFalse(cp.only_infra_changed([".github/workflows/it.yml", "docs/x.md"]))
         self.assertFalse(cp.only_infra_changed([]))
 
@@ -99,6 +100,12 @@ class SelectionTests(unittest.TestCase):
 
     def test_integration_plumbing_runs_the_smoke_policy(self):
         self.change(".github/workflows/it.yml")
+        selected, _, reason = cp.select(self.root, "base")
+        self.assertEqual(["time-based-model-routing"], selected)
+        self.assertIn("smoke", reason)
+
+    def test_suite_change_runs_the_smoke_policy(self):
+        self.change("tests/it/steps/base.go")
         selected, _, reason = cp.select(self.root, "base")
         self.assertEqual(["time-based-model-routing"], selected)
         self.assertIn("smoke", reason)

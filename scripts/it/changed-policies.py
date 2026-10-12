@@ -2,9 +2,10 @@
 """
 Select the policies whose integration tests a pull request should run.
 
-The integration suite lives in wso2/api-platform (tests/framework). Each policy
-declares its runners in policies/<name>/it/it.yaml, and the suite accepts
--policies=<a>,<b> to run only those policies.
+The integration suite lives in this repository (tests/it) and runs on the test framework
+module published by wso2/api-platform. Each policy declares its runners in
+policies/<name>/it/it.yaml, and the suite accepts -policies=<a>,<b> to run only those
+policies.
 
 Selection:
   * every policies/<name>/ directory touched by the diff against --base;
@@ -12,8 +13,8 @@ Selection:
     directly or transitively;
   * limited to policies that have an it/it.yaml.
 
-A change that only touches the integration workflow or these scripts selects the
-smoke policies instead. --policies overrides the diff ("all" selects every policy
+A change that only touches the integration workflow, these scripts or the suite itself
+(tests/it) selects the smoke policies instead. --policies overrides the diff ("all" selects every policy
 with tests), which is how workflow_dispatch runs are driven.
 
 Writes policies, has_tests and feature_roots to $GITHUB_OUTPUT when it is set.
@@ -32,7 +33,7 @@ DESCRIPTOR = "it/it.yaml"
 
 # Run when only the integration plumbing changed, so a workflow edit still exercises the flow.
 SMOKE_POLICIES = ["time-based-model-routing"]
-INFRA_PATHS = (".github/workflows/it.yml", "scripts/it/")
+INFRA_PATHS = (".github/workflows/it.yml", "scripts/it/", "tests/it/")
 
 # An intra-repo policy dependency in a go.mod require line, e.g.
 #   github.com/wso2/gateway-controllers/policies/advanced-ratelimit v1.1.0
