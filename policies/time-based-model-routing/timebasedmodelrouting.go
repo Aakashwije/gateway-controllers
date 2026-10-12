@@ -94,17 +94,21 @@ func (p *TimeBasedModelRoutingPolicy) selectTarget(now time.Time) (target, strin
 	minute := local.Hour()*60 + local.Minute()
 	for i, item := range p.config.Schedules {
 		if item.matches(local.Weekday(), minute) {
-			name := item.Name
-			if name == "" {
-				name = fmt.Sprintf("schedule-%d", i+1)
-			}
-			return item.Target, name, local, true
+			return item.Target, item.routeName(i), local, true
 		}
 	}
 	if p.config.Default != nil {
 		return *p.config.Default, "default", local, true
 	}
 	return target{}, "", local, false
+}
+
+// routeName returns the schedule's configured name, or a positional name for an unnamed schedule.
+func (s schedule) routeName(index int) string {
+	if s.Name != "" {
+		return s.Name
+	}
+	return fmt.Sprintf("schedule-%d", index+1)
 }
 
 func (s schedule) matches(day time.Weekday, minute int) bool {
