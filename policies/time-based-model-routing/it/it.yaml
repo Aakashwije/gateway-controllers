@@ -1,5 +1,5 @@
-# Integration runners for this policy. The integration suite lives in wso2/api-platform
-# (tests/framework) and discovers this file through the gateway-controller-policies block.
+# Integration runners for this policy. The suite in tests/it discovers this file through the
+# gateway-controller-policies block; features are relative to this it/ directory.
 policy: time-based-model-routing
 runners:
   - name: time-based-model-routing

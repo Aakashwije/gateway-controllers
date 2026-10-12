@@ -1,0 +1,7 @@
+# Integration runners for this policy. The suite in tests/it discovers this file through the
+# gateway-controller-policies block; features are relative to this it/ directory.
+policy: regex-guardrail
+runners:
+  - name: regex-guardrail
+    features:
+      - features/regex_guardrail.feature
