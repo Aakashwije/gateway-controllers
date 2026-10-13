@@ -51,6 +51,7 @@ class PureFunctionTests(unittest.TestCase):
     def test_only_infra_changed(self):
         self.assertTrue(cp.only_infra_changed([".github/workflows/it.yml", "scripts/it/changed-policies.py"]))
         self.assertTrue(cp.only_infra_changed(["tests/it/go.mod", "tests/it/steps/base.go"]))
+        self.assertTrue(cp.only_infra_changed(["Makefile", "tests/it/README.md"]))
         self.assertFalse(cp.only_infra_changed([".github/workflows/it.yml", "docs/x.md"]))
         self.assertFalse(cp.only_infra_changed([]))
 
@@ -109,6 +110,36 @@ class SelectionTests(unittest.TestCase):
         selected, _, reason = cp.select(self.root, "base")
         self.assertEqual(["time-based-model-routing"], selected)
         self.assertIn("smoke", reason)
+
+    def test_makefile_change_runs_the_smoke_policy(self):
+        self.change("Makefile")
+        selected, _, reason = cp.select(self.root, "base")
+        self.assertEqual(["time-based-model-routing"], selected)
+        self.assertIn("smoke", reason)
+
+    def test_any_file_in_a_policy_folder_selects_the_policy(self):
+        for relative in ["policies/tests-a/README.md", "policies/tests-a/it/it.yaml", "policies/tests-a/policy-definition.yaml"]:
+            with self.subTest(relative):
+                self.change(relative)
+                selected, _, _ = cp.select(self.root, "base")
+                self.assertIn("tests-a", selected)
+
+    def test_a_policy_added_in_the_pull_request_is_selected(self):
+        self.change(
+            "policies/fresh/go.mod",
+            "policies/fresh/policy-definition.yaml",
+            "policies/fresh/it/it.yaml",
+            "policies/fresh/it/features/fresh.feature",
+        )
+        selected, skipped, _ = cp.select(self.root, "base")
+        self.assertEqual(["fresh"], selected)
+        self.assertEqual([], skipped)
+
+    def test_a_policy_added_without_tests_is_reported_not_selected(self):
+        self.change("policies/fresh/go.mod", "policies/fresh/policy-definition.yaml")
+        selected, skipped, _ = cp.select(self.root, "base")
+        self.assertEqual([], selected)
+        self.assertEqual(["fresh"], skipped)
 
     def test_feature_edit_selects_the_policy(self):
         self.change("policies/time-based-model-routing/it/features/x.feature")
