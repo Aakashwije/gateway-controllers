@@ -101,7 +101,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 
 ```yaml
 - name: mtls-auth
-  gomodule: github.com/wso2/gateway-controllers/policies/mtls-auth@v1
+  gomodule: github.com/wso2/gateway-controllers/policies/mtls-auth@v0
 ```
 
 ## Reference Scenarios
@@ -128,7 +128,7 @@ spec:
       url: http://sample-backend:9080/api/v1
   policies:
     - name: mtls-auth
-      version: v1
+      version: v0
   operations:
     - method: GET
       path: /orders
@@ -154,7 +154,7 @@ spec:
       url: http://sample-backend:9080/api/v1
   policies:
     - name: mtls-auth
-      version: v1
+      version: v0
       params:
         accept:
           - ca: partner-a
@@ -186,7 +186,7 @@ spec:
       url: http://sample-backend:9080/api/v1
   policies:
     - name: mtls-auth
-      version: v1
+      version: v0
       params:
         accept:
           - ca: partner-a
@@ -225,7 +225,7 @@ spec:
       url: http://sample-backend:9080/api/v1
   policies:
     - name: mtls-auth
-      version: v1
+      version: v0
       params:
         accept:
           - ca: partner-b
@@ -262,7 +262,7 @@ spec:
       url: http://sample-backend:9080/api/v1
   policies:
     - name: mtls-auth
-      version: v1
+      version: v0
       params:
         accept:
           - ca: partner-a
@@ -292,7 +292,7 @@ spec:
       url: http://sample-backend:9080/api/v1
   policies:
     - name: mtls-auth
-      version: v1
+      version: v0
       params:
         accept:
           - ca: partner-a
@@ -328,7 +328,7 @@ spec:
       path: /orders
       policies:
         - name: mtls-auth
-          version: v1
+          version: v0
           params:
             accept:
               - ca: partner-a
@@ -365,7 +365,7 @@ spec:
       url: http://sample-backend:9080/api/v1
   policies:
     - name: mtls-auth
-      version: v1
+      version: v0
       params:
         accept:
           - ca: partner-a
@@ -399,7 +399,7 @@ spec:
       url: http://sample-backend:9080/api/v1
   policies:
     - name: mtls-auth
-      version: v1
+      version: v0
       params:
         accept:
           - ca: partner-a
