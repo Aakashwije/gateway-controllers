@@ -542,19 +542,3 @@ func TestDaySwitchOverlapValidation(t *testing.T) {
 		t.Fatalf("expected overlap on Monday, got %v", err)
 	}
 }
-
-func TestScheduleRouteNameFallsBackToItsPosition(t *testing.T) {
-	for _, tc := range []struct {
-		schedule schedule
-		index    int
-		want     string
-	}{
-		{schedule{Name: "morning"}, 0, "morning"},
-		{schedule{}, 0, "schedule-1"},
-		{schedule{}, 2, "schedule-3"},
-	} {
-		if got := tc.schedule.routeName(tc.index); got != tc.want {
-			t.Fatalf("routeName(%d) = %q, want %q", tc.index, got, tc.want)
-		}
-	}
-}

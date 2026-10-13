@@ -15,8 +15,8 @@ Selection:
   * limited to policies that have an it/it.yaml.
 
 A change that only touches the integration workflow, these scripts, the suite itself
-(tests/it) or the Makefile selects the smoke policies instead. --policies overrides the diff ("all" selects every policy
-with tests), which is how workflow_dispatch runs are driven.
+(tests/it) or the Makefile selects the smoke policies instead. --policies overrides the diff
+("all" selects every policy with tests), which is how workflow_dispatch runs are driven.
 
 Writes policies, has_tests and feature_roots to $GITHUB_OUTPUT when it is set.
 """

@@ -69,8 +69,8 @@ A policy without `it/it.yaml` has no integration tests, and the pull request wor
    when the policy needs a newer gateway than the oldest one tested.
 3. In the feature, the scaffold deploys a REST API with the policy attached and an empty `params`.
    A policy with required parameters rejects an empty `params`, so the first run fails with a
-   validation error naming the missing fields. Put the policy's real configuration in `params`, send the requests that show the
-   policy's effect, and assert them.
+   validation error naming the missing fields. Put the policy's real configuration in `params`,
+   send the requests that show the policy's effect, and assert them.
 4. Run `make it POLICIES=<name> GATEWAY_VERSION=1.2.0`, then the same for `1.1.0` and `latest`, then
    `make it-standards`.
 5. Commit `it.yaml` and the feature with the policy change. A pull request that changes any file in

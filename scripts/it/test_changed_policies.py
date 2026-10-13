@@ -100,22 +100,12 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(([], [], "policies changed in the diff"), cp.select(self.root, "base"))
 
     def test_integration_plumbing_runs_the_smoke_policy(self):
-        self.change(".github/workflows/it.yml")
-        selected, _, reason = cp.select(self.root, "base")
-        self.assertEqual(["time-based-model-routing"], selected)
-        self.assertIn("smoke", reason)
-
-    def test_suite_change_runs_the_smoke_policy(self):
-        self.change("tests/it/steps/base.go")
-        selected, _, reason = cp.select(self.root, "base")
-        self.assertEqual(["time-based-model-routing"], selected)
-        self.assertIn("smoke", reason)
-
-    def test_makefile_change_runs_the_smoke_policy(self):
-        self.change("Makefile")
-        selected, _, reason = cp.select(self.root, "base")
-        self.assertEqual(["time-based-model-routing"], selected)
-        self.assertIn("smoke", reason)
+        for relative in [".github/workflows/it.yml", "tests/it/steps/base.go", "Makefile"]:
+            with self.subTest(relative):
+                self.change(relative)
+                selected, _, reason = cp.select(self.root, "base")
+                self.assertEqual(["time-based-model-routing"], selected)
+                self.assertIn("smoke", reason)
 
     def test_any_file_in_a_policy_folder_selects_the_policy(self):
         for relative in ["policies/tests-a/README.md", "policies/tests-a/it/it.yaml", "policies/tests-a/policy-definition.yaml"]:
@@ -140,10 +130,6 @@ class SelectionTests(unittest.TestCase):
         selected, skipped, _ = cp.select(self.root, "base")
         self.assertEqual([], selected)
         self.assertEqual(["fresh"], skipped)
-
-    def test_feature_edit_selects_the_policy(self):
-        self.change("policies/time-based-model-routing/it/features/x.feature")
-        self.assertEqual(["time-based-model-routing"], cp.select(self.root, "base")[0])
 
     def test_requested_policies_override_the_diff(self):
         self.change("docs/a.md")

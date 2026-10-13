@@ -31,23 +31,23 @@ Feature: Time-based model routing
     And I generate a unique resource name from "gateway-controller-policy-proxy" and store it as "proxyName"
     And I generate a unique API context from "/gateway-controller-policy-proxy" and store it as "proxyContext"
     When I create LLM provider from "resources/templates/llm-provider.yaml" with values:
-      | apiVersion         | ${CTX:gatewaySpecVersion} |
-      | name               | ${CTX:providerName}              |
+      | apiVersion         | ${CTX:gatewaySpecVersion}          |
+      | name               | ${CTX:providerName}                |
       | displayName        | Gateway-Controller-Policy-Provider |
-      | version            | v1.0                              |
-      | template           | openai                            |
-      | spec.context       | ${CTX:providerContext}            |
-      | spec.upstream.url  | http://testbench:3008/openai/v1  |
-      | accessControl.mode | allow_all                         |
+      | version            | v1.0                               |
+      | template           | openai                             |
+      | spec.context       | ${CTX:providerContext}             |
+      | spec.upstream.url  | http://testbench:3008/openai/v1    |
+      | accessControl.mode | allow_all                          |
     Then the response status code should be 201
     When I create LLM proxy from "resources/templates/llm-proxy.yaml" with values:
-      | apiVersion     | ${CTX:gatewaySpecVersion}                                                                                                                                                                                                                                                  |
-      | name           | ${CTX:proxyName}                                                                                                                                                                                                                                                                   |
-      | displayName    | Gateway-Controller-Policy-Proxy                                                                                                                                                                                                                                                     |
-      | version        | v1.0                                                                                                                                                                                                                                                                                 |
-      | context        | ${CTX:proxyContext}                                                                                                                                                                                                                                                                 |
-      | provider.id    | ${CTX:providerName}                                                                                                                                                                                                                                                                 |
-      | spec.policies  | [{"name":"time-based-model-routing","version":"v0","paths":[{"path":"/chat/completions","methods":["POST"],"params":{"timezone":"UTC","schedules":[{"name":"all-day","from":"00:00","to":"23:59","model":{"modelName":"gateway-controller-policy-routed-model"}}],"fallback":{"modelName":"gateway-controller-policy-routed-model"}}}]}] |
+      | apiVersion    | ${CTX:gatewaySpecVersion}                                                                                                                                                                                                                                                                                                                |
+      | name          | ${CTX:proxyName}                                                                                                                                                                                                                                                                                                                         |
+      | displayName   | Gateway-Controller-Policy-Proxy                                                                                                                                                                                                                                                                                                          |
+      | version       | v1.0                                                                                                                                                                                                                                                                                                                                     |
+      | context       | ${CTX:proxyContext}                                                                                                                                                                                                                                                                                                                      |
+      | provider.id   | ${CTX:providerName}                                                                                                                                                                                                                                                                                                                      |
+      | spec.policies | [{"name":"time-based-model-routing","version":"v0","paths":[{"path":"/chat/completions","methods":["POST"],"params":{"timezone":"UTC","schedules":[{"name":"all-day","from":"00:00","to":"23:59","model":{"modelName":"gateway-controller-policy-routed-model"}}],"fallback":{"modelName":"gateway-controller-policy-routed-model"}}}]}] |
     Then the response status code should be 201
     And I send a "POST" request to "${CTX:proxyContext}/chat/completions" until status 200 with body:
       """

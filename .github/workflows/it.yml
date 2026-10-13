@@ -71,7 +71,7 @@ jobs:
           fi
 
   standards:
-    name: Feature standards and suite unit tests
+    name: Step and feature standards
     needs: detect
     if: needs.detect.outputs.has_tests == 'true'
     runs-on: ubuntu-24.04

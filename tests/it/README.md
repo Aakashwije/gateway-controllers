@@ -23,7 +23,7 @@ tests/it/
   it-suite.yaml      one block, with its runners taken from every policy's it.yaml
   suite_test.go      entry point; runs the suite through the framework
   steps/             step definitions only these policies need, shared by all of them
-  resources/         templates and data that differ from the framework's
+  resources/         templates and data that differ from the framework's (added when needed)
 ```
 
 ## Commands
