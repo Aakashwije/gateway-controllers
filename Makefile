@@ -16,7 +16,7 @@
 # under the License.
 # --------------------------------------------------------------------
 
-.PHONY: generate-catalog validate-catalog it it-unit it-standards
+.PHONY: generate-catalog validate-catalog it it-unit it-standards it-scaffold
 
 generate-catalog: ## Generate docs/README.md policy catalog from metadata.json files
 	python3 scripts/generate-policy-catalog.py
@@ -46,3 +46,7 @@ it-standards: ## Check the step definitions and every policy feature against the
 		-features $$(ls -d ../../policies/*/it/features | paste -sd, -) \
 		-scripts "" -suites it-suite.yaml -docs "" \
 		-approved-imports github.com/wso2/gateway-controllers/tests/it/
+
+it-scaffold: ## Create the integration test skeleton for POLICY (it/it.yaml and a feature)
+	@test -n "$(POLICY)" || { echo "usage: make it-scaffold POLICY=<policy name>"; exit 2; }
+	python3 scripts/it/scaffold.py $(POLICY)
