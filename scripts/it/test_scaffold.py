@@ -32,16 +32,34 @@ class ScaffoldTest(unittest.TestCase):
         self.root = Path(self._dir.name)
         self.addCleanup(self._dir.cleanup)
 
-    def test_creates_the_descriptor_and_a_feature_the_suite_can_discover(self):
+    def test_creates_a_suite_the_policy_owns(self):
         make_policy(self.root, "word-count-guardrail", "v1.4.0")
 
-        written = scaffold.scaffold(self.root, "word-count-guardrail")
+        written = scaffold.scaffold(self.root, "word-count-guardrail", tidy=False)
 
-        descriptor = self.root / "policies/word-count-guardrail/it/it.yaml"
-        feature = self.root / "policies/word-count-guardrail/it/features/word_count_guardrail.feature"
-        self.assertEqual({descriptor, feature}, set(written))
-        self.assertIn("policy: word-count-guardrail", descriptor.read_text())
-        self.assertIn("features/word_count_guardrail.feature", descriptor.read_text())
+        it = self.root / "policies/word-count-guardrail/it"
+        feature = it / "features/word_count_guardrail.feature"
+        self.assertEqual(
+            {
+                it / "it-suite.yaml",
+                it / "go.mod",
+                it / "suite_test.go",
+                it / "steps/register.go",
+                it / "steps/word_count_guardrail_steps.go",
+                it / "steps/steps_test.go",
+                feature,
+            },
+            set(written),
+        )
+        suite = (it / "it-suite.yaml").read_text()
+        self.assertIn("suite: word-count-guardrail", suite)
+        self.assertIn("addPoliciesFrom: policies", suite)
+        self.assertIn("features/word_count_guardrail.feature", suite)
+        self.assertIn("module github.com/wso2/gateway-controllers/policies/word-count-guardrail/it", (it / "go.mod").read_text())
+        self.assertIn("policies/word-count-guardrail/it/steps", (it / "suite_test.go").read_text())
+        self.assertIn("package steps", (it / "steps/register.go").read_text())
+        self.assertIn("the word-count-guardrail policy example step runs", (it / "steps/word_count_guardrail_steps.go").read_text())
+        self.assertIn("func TestRegisterBindsThePolicySteps", (it / "steps/steps_test.go").read_text())
         text = feature.read_text()
         self.assertIn("@word-count-guardrail\nFeature: Word count guardrail policy", text)
         self.assertIn('"name":"word-count-guardrail","version":"v1"', text)
@@ -51,7 +69,7 @@ class ScaffoldTest(unittest.TestCase):
     def test_the_policy_major_version_comes_from_the_definition(self):
         make_policy(self.root, "time-routing", "v0.3.0")
 
-        scaffold.scaffold(self.root, "time-routing")
+        scaffold.scaffold(self.root, "time-routing", tidy=False)
 
         feature = self.root / "policies/time-routing/it/features/time_routing.feature"
         self.assertIn('"version":"v0"', feature.read_text())
@@ -63,25 +81,25 @@ class ScaffoldTest(unittest.TestCase):
         existing.write_text("keep\n", encoding="utf-8")
 
         with self.assertRaises(scaffold.ScaffoldError) as caught:
-            scaffold.scaffold(self.root, "regex-guardrail")
+            scaffold.scaffold(self.root, "regex-guardrail", tidy=False)
 
         self.assertIn("refusing to overwrite", str(caught.exception))
         self.assertEqual("keep\n", existing.read_text())
-        self.assertFalse((policy / "it/it.yaml").exists())
+        self.assertFalse((policy / "it/it-suite.yaml").exists())
 
     def test_rejects_names_that_are_not_policy_directories(self):
         make_policy(self.root, "real-policy")
         for name in ["", "../real-policy", "Real-Policy", "real_policy", "real-policy/it"]:
             with self.assertRaises(scaffold.ScaffoldError, msg=name):
-                scaffold.scaffold(self.root, name)
+                scaffold.scaffold(self.root, name, tidy=False)
 
     def test_rejects_an_unknown_policy_and_a_definition_without_a_version(self):
         with self.assertRaises(scaffold.ScaffoldError):
-            scaffold.scaffold(self.root, "missing-policy")
+            scaffold.scaffold(self.root, "missing-policy", tidy=False)
         policy = make_policy(self.root, "no-version")
         (policy / "policy-definition.yaml").write_text("name: no-version\n", encoding="utf-8")
         with self.assertRaises(scaffold.ScaffoldError):
-            scaffold.scaffold(self.root, "no-version")
+            scaffold.scaffold(self.root, "no-version", tidy=False)
 
 
 if __name__ == "__main__":

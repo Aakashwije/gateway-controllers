@@ -1,7 +1,0 @@
-# Integration runners for this policy. The suite in tests/it discovers this file through the
-# gateway-controller-policies block; features are relative to this it/ directory.
-policy: pii-masking-regex
-runners:
-  - name: pii-masking-regex
-    features:
-      - features/pii_masking_regex.feature

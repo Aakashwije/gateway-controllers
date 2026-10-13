@@ -2,23 +2,22 @@
 """
 Select the policies whose integration tests a pull request should run.
 
-The integration suite lives in this repository (tests/it) and runs on the test framework
-module published by wso2/api-platform. Each policy declares its runners in
-policies/<name>/it/it.yaml, and the suite accepts -policies=<a>,<b> to run only those
-policies.
+Each policy owns an integration suite in policies/<name>/it, declared by
+policies/<name>/it/it-suite.yaml and built on the shared steps in tests/it/common. A pull request
+runs the suites of every policy it changes in one workflow run.
 
 Selection:
   * every policies/<name>/ directory touched by the diff against --base, whichever file in it
     changed, including a policy that is new in the pull request;
   * plus every policy that depends on one of them through a go.mod require line,
     directly or transitively;
-  * limited to policies that have an it/it.yaml.
+  * limited to policies that have an it/it-suite.yaml.
 
-A change that only touches the integration workflow, these scripts, the suite itself
+A change that only touches the integration workflow, these scripts, the shared steps
 (tests/it) or the Makefile selects the smoke policies instead. --policies overrides the diff
 ("all" selects every policy with tests), which is how workflow_dispatch runs are driven.
 
-Writes policies, has_tests and feature_roots to $GITHUB_OUTPUT when it is set.
+Writes policies (comma-separated) and has_tests to $GITHUB_OUTPUT when it is set.
 """
 
 import argparse
@@ -30,7 +29,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 POLICIES_DIR = "policies"
-DESCRIPTOR = "it/it.yaml"
+DESCRIPTOR = "it/it-suite.yaml"
 
 # Run when only the integration plumbing changed, so a workflow edit still exercises the flow.
 SMOKE_POLICIES = ["time-based-model-routing"]
@@ -134,7 +133,6 @@ def write_outputs(selected):
     lines = [
         f"policies={','.join(selected)}",
         f"has_tests={'true' if selected else 'false'}",
-        "feature_roots=" + ",".join(f"{POLICIES_DIR}/{n}/it/features" for n in selected),
     ]
     target = os.environ.get("GITHUB_OUTPUT")
     if target:

@@ -1,12 +1,13 @@
 name: Gateway Controller Policy Integration Test
 
-# Runs the integration tests of the policies a pull request changes, against gateway 1.2.0,
-# 1.1.0 and the latest gateway image. The suite lives in this repository (tests/it); each policy
-# keeps its runner declaration and features in policies/<name>/it/, and a change to any file in a
-# policy's folder runs that policy's tests when it has an it/it.yaml. The test framework is a Go
-# module published by wso2/api-platform and pinned in tests/it/go.mod, and the gateway and
-# testbench images come from GHCR, so nothing in this workflow needs an api-platform checkout
-# once the framework is released.
+# Runs the integration suites of the policies a pull request changes, against gateway 1.2.0,
+# 1.1.0 and the latest gateway image. Each policy owns its suite in policies/<name>/it (a suite
+# file, features, its own steps and a Go module) on the shared steps in tests/it/common. A change
+# to any file in a policy's folder selects that policy when it has an it/it-suite.yaml, and every
+# selected policy's suite runs in the same workflow run. The test framework is a Go module
+# published by wso2/api-platform and pinned in each suite's go.mod, and the gateway and testbench
+# images come from GHCR, so nothing in this workflow needs an api-platform checkout once the
+# framework is released.
 
 on:
   workflow_dispatch:
@@ -47,7 +48,6 @@ jobs:
     outputs:
       policies: ${{ steps.select.outputs.policies }}
       has_tests: ${{ steps.select.outputs.has_tests }}
-      feature_roots: ${{ steps.select.outputs.feature_roots }}
     steps:
       - name: Checkout gateway-controllers
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -95,41 +95,30 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: '1.26.5'
-          cache-dependency-path: gateway-controllers/tests/it/go.sum
+          cache-dependency-path: |
+            gateway-controllers/tests/it/go.sum
+            gateway-controllers/policies/*/it/go.sum
 
-      - name: Check the steps and the changed policy features against the framework standards
-        working-directory: gateway-controllers/tests/it
+      - name: Check the shared steps and the changed policies' suites against the framework standards
+        working-directory: gateway-controllers
         env:
-          FEATURE_ROOTS: ${{ needs.detect.outputs.feature_roots }}
-        run: |
-          set -euo pipefail
-          roots=""
-          IFS=',' read -ra relative <<< "$FEATURE_ROOTS"
-          for root in "${relative[@]}"; do
-            roots+="../../${root},"
-          done
-          go tool standards -root . -unit-root . -steps steps -features "${roots%,}" \
-            -scripts "" -suites it-suite.yaml -docs "" \
-            -approved-imports github.com/wso2/gateway-controllers/tests/it/
+          POLICIES: ${{ needs.detect.outputs.policies }}
+        run: make it-standards POLICIES="$POLICIES"
 
   integration-test:
     name: Gateway Integration (${{ matrix.gateway_version }})
     needs: detect
     if: needs.detect.outputs.has_tests == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       max-parallel: 2
       matrix:
         include:
           - gateway_version: "1.2.0"
-          # The patched 1.1.0 controller, runtime and gateway-builder images are published under
-          # this repository prefix, not the ghcr.io release one. The stock 1.1.0 builder cannot
-          # tidy policies that need a newer Go; the patched one downloads the toolchain.
           - gateway_version: "1.1.0"
             gateway_host: docker.io/isurangaws
-          # The images api-platform publishes after each merge to main.
           - gateway_version: "latest"
             # TEMP: the fork publishes the latest images until api-platform does. Remove this
             # line at cut-over so the default ghcr.io/wso2/api-platform is used.
@@ -154,7 +143,9 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: '1.26.5'
-          cache-dependency-path: gateway-controllers/tests/it/go.sum
+          cache-dependency-path: |
+            gateway-controllers/tests/it/go.sum
+            gateway-controllers/policies/*/it/go.sum
 
       # TEMP: a framework that is not released carries no embedded gateway files, because the
       # release generates them. Generate them in the checkout the replace directive points at.
@@ -176,7 +167,9 @@ jobs:
       - name: Build the testbench image # TEMP
         run: make -C api-platform/tests/framework testbench
 
-      - name: Run the integration tests of the selected policies
+      # One run per gateway version executes the suite of every selected policy in turn and fails
+      # if any of them fails.
+      - name: Run the integration suites of the selected policies
         working-directory: gateway-controllers
         shell: bash
         env:

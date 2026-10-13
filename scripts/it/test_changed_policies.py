@@ -45,12 +45,12 @@ class PureFunctionTests(unittest.TestCase):
         self.assertEqual({"d"}, cp.dependents_closure({"d"}, deps))
 
     def test_changed_policies_uses_first_directory_under_policies(self):
-        files = ["policies/a/x.go", "policies/a/it/it.yaml", "docs/b/v1.0/x.md", "policies/gone/x.go", "README.md"]
+        files = ["policies/a/x.go", "policies/a/it/it-suite.yaml", "docs/b/v1.0/x.md", "policies/gone/x.go", "README.md"]
         self.assertEqual({"a"}, cp.changed_policies(files, {"a", "b"}))
 
     def test_only_infra_changed(self):
         self.assertTrue(cp.only_infra_changed([".github/workflows/it.yml", "scripts/it/changed-policies.py"]))
-        self.assertTrue(cp.only_infra_changed(["tests/it/go.mod", "tests/it/steps/base.go"]))
+        self.assertTrue(cp.only_infra_changed(["tests/it/go.mod", "tests/it/common/steps/base.go"]))
         self.assertTrue(cp.only_infra_changed(["Makefile", "tests/it/README.md"]))
         self.assertFalse(cp.only_infra_changed([".github/workflows/it.yml", "docs/x.md"]))
         self.assertFalse(cp.only_infra_changed([]))
@@ -64,12 +64,12 @@ class SelectionTests(unittest.TestCase):
         git(self.root, "config", "user.email", "t@example.com")
         git(self.root, "config", "user.name", "t")
         write(self.root, "policies/tests-a/go.mod", go_mod("tests-a"))
-        write(self.root, "policies/tests-a/it/it.yaml")
+        write(self.root, "policies/tests-a/it/it-suite.yaml")
         write(self.root, "policies/dependent/go.mod", go_mod("dependent", "tests-a"))
-        write(self.root, "policies/dependent/it/it.yaml")
+        write(self.root, "policies/dependent/it/it-suite.yaml")
         write(self.root, "policies/notests/go.mod", go_mod("notests"))
         write(self.root, "policies/time-based-model-routing/go.mod", go_mod("time-based-model-routing"))
-        write(self.root, "policies/time-based-model-routing/it/it.yaml")
+        write(self.root, "policies/time-based-model-routing/it/it-suite.yaml")
         git(self.root, "add", "-A")
         git(self.root, "commit", "-q", "-m", "base")
         git(self.root, "tag", "base")
@@ -100,7 +100,7 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(([], [], "policies changed in the diff"), cp.select(self.root, "base"))
 
     def test_integration_plumbing_runs_the_smoke_policy(self):
-        for relative in [".github/workflows/it.yml", "tests/it/steps/base.go", "Makefile"]:
+        for relative in [".github/workflows/it.yml", "tests/it/common/steps/base.go", "Makefile"]:
             with self.subTest(relative):
                 self.change(relative)
                 selected, _, reason = cp.select(self.root, "base")
@@ -108,7 +108,7 @@ class SelectionTests(unittest.TestCase):
                 self.assertIn("smoke", reason)
 
     def test_any_file_in_a_policy_folder_selects_the_policy(self):
-        for relative in ["policies/tests-a/README.md", "policies/tests-a/it/it.yaml", "policies/tests-a/policy-definition.yaml"]:
+        for relative in ["policies/tests-a/README.md", "policies/tests-a/it/it-suite.yaml", "policies/tests-a/policy-definition.yaml"]:
             with self.subTest(relative):
                 self.change(relative)
                 selected, _, _ = cp.select(self.root, "base")
@@ -118,7 +118,7 @@ class SelectionTests(unittest.TestCase):
         self.change(
             "policies/fresh/go.mod",
             "policies/fresh/policy-definition.yaml",
-            "policies/fresh/it/it.yaml",
+            "policies/fresh/it/it-suite.yaml",
             "policies/fresh/it/features/fresh.feature",
         )
         selected, skipped, _ = cp.select(self.root, "base")
@@ -142,10 +142,10 @@ class SelectionTests(unittest.TestCase):
 
     def test_outputs(self):
         self.assertEqual(
-            ["policies=tests-a", "has_tests=true", "feature_roots=policies/tests-a/it/features"],
-            cp.write_outputs(["tests-a"]),
+            ["policies=tests-a,tests-b", "has_tests=true"],
+            cp.write_outputs(["tests-a", "tests-b"]),
         )
-        self.assertEqual(["policies=", "has_tests=false", "feature_roots="], cp.write_outputs([]))
+        self.assertEqual(["policies=", "has_tests=false"], cp.write_outputs([]))
 
 
 if __name__ == "__main__":

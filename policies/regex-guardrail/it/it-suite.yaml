@@ -16,12 +16,11 @@
 # under the License.
 # --------------------------------------------------------------------
 
-# The policy integration suite. Each policy declares its runners and feature files in
-# policies/<name>/it/it.yaml; -policies=<name>[,<name>] limits a run to those policies and
-# omitting it runs every policy that has tests. The gateway image is built with the whole
-# policy tree, so a policy under test runs beside the rest of the catalog.
+# The integration suite of the regex-guardrail policy. The gateway under test is built from this
+# policy and the policies the gateway controller requires (tests/it/common/suite), staged as the
+# policy tree that addPoliciesFrom names. Feature paths are relative to this directory.
 
-suite: policy-it-suite
+suite: regex-guardrail
 
 defaults:
   parallel: 1
@@ -35,12 +34,15 @@ defaults:
     propagation: 60s
 
 blocks:
-  - name: gateway-controller-policies
+  - name: regex-guardrail
     parallel: 1
-    runnersFrom: policies
     components:
       - name: platform-gateway
         db:
           matrix: [sqlite, postgres, sqlserver]
         addPoliciesFrom: policies
       - name: testbench
+    runners:
+      - name: regex-guardrail
+        features:
+          - features/regex_guardrail.feature

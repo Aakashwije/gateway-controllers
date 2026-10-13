@@ -38,5 +38,5 @@ __pycache__/
 *.pyc
 
 # Policy integration test output
-tests/it/logs-out/
-tests/it/coverage-out/
+policies/*/it/logs-out/
+policies/*/it/coverage-out/

@@ -1,13 +1,18 @@
 # Policy integration tests
 
-Integration tests for the gateway policies in this repository. A policy keeps its runner
-declaration and scenarios in `policies/<name>/it/`; the suite in this module runs them against a
-gateway built with the policy tree, so a pull request that changes a policy updates and runs its
-tests together. A pull request runs them on gateway 1.2.0, 1.1.0 and the latest image.
+Integration tests for the gateway policies in this repository. Each policy owns its suite in
+`policies/<name>/it/`: a suite file, its scenarios, its own step definitions and a Go module. The
+suite boots a gateway built from that policy, with the policies the gateway controller requires,
+and runs the scenarios against it, so a pull request that changes a policy updates and runs its
+tests together. A pull request runs the suite of every policy it changes, in one workflow run, on
+gateway 1.2.0, 1.1.0 and the latest image.
 
-The suite runs on the [test framework](https://github.com/wso2/api-platform/tree/main/tests/framework),
-a Go module published by api-platform and pinned in `go.mod`. Nothing here needs an api-platform
-checkout once the framework is released.
+This directory, `tests/it`, holds what every policy's suite shares: the step definitions, the
+canonical resource templates and the code that runs a suite. They began as copies of the
+[test framework's](https://github.com/wso2/api-platform/tree/main/tests/framework) Platform Gateway
+steps and are owned here, so a policy's tests never need api-platform's step code. The framework
+itself, a Go module published by api-platform, supplies the engine that boots the containers and is
+pinned in each suite's `go.mod`.
 
 **[CLAUDE.md](CLAUDE.md) is the guide**: how to run the tests, how to add tests to a policy that
 has none, how to write scenarios and steps, and what a pull request runs.
@@ -16,14 +21,17 @@ has none, how to write scenarios and steps, and what a pull request runs.
 
 ```
 policies/<name>/it/
-  it.yaml            the policy's runners: names, optional gateway-version tags, feature files
+  it-suite.yaml      the suite: the gateway it boots, databases, runners
   features/          Gherkin feature files
+  steps/             step definitions only this policy needs
+  suite_test.go      test entry; runs the suite through tests/it/common/suite
+  go.mod, go.sum     the suite's Go module
+  resources/         templates that differ from the shared ones (added when needed)
 tests/it/
-  go.mod             pins the framework module
-  it-suite.yaml      one block, with its runners taken from every policy's it.yaml
-  suite_test.go      entry point; runs the suite through the framework
-  steps/             step definitions only these policies need, shared by all of them
-  resources/         templates and data that differ from the framework's (added when needed)
+  go.mod             the shared module: pins the framework
+  common/steps/      step definitions every policy shares
+  common/resources/  canonical resource templates every policy shares
+  common/suite/      runs one policy's suite
 ```
 
 ## Commands
@@ -31,18 +39,19 @@ tests/it/
 ```bash
 make it POLICIES=time-based-model-routing GATEWAY_VERSION=1.2.0   # run (1.2.0, 1.1.0 or latest)
 make it-scaffold POLICY=<name>                                    # start tests for a policy
-make it-standards                                                 # check steps and features
-make it-unit                                                      # unit tests of tests/it/steps
+make it-standards                                                 # check steps, features and suites
+make it-unit                                                      # unit tests of the steps
 ```
 
 Docker is required; see CLAUDE.md for the Rancher Desktop and Colima settings.
 
 ## Until the framework is released
 
-`go.mod` resolves the framework through a `replace` directive that points at a sibling
-api-platform checkout, and the workflow checks one out, generates its embedded gateway files and
-builds the testbench image from it. Both are marked `TEMP`. For a local run, clone api-platform
-next to this repository, then build the testbench image and generate the embedded files once:
+Each suite's `go.mod`, and this module's, resolves the framework through a `replace` directive that
+points at a sibling api-platform checkout, and the workflow checks one out, generates its embedded
+gateway files and builds the testbench image from it. All are marked `TEMP`. For a local run,
+clone api-platform next to this repository, then build the testbench image and generate the
+embedded files once:
 
 ```bash
 make -C ../api-platform/tests/framework testbench

@@ -16,9 +16,9 @@
  * under the License.
  */
 
-// Package steps holds the step definitions of the policy integration suite that the test
-// framework does not provide. Every policy's scenarios share it, so a step is written once here
-// and reused, and it is added only after the framework's steps and this package were searched.
+// Package steps holds the step definitions only the regex-guardrail policy's scenarios need. The shared
+// steps in tests/it/common/steps are bound before these, so search them first and do not repeat
+// one here.
 package steps
 
 import (
@@ -27,6 +27,5 @@ import (
 	frameworkruntime "github.com/wso2/api-platform/tests/framework/core/runtime"
 )
 
-// Register binds the suite's own steps to the scenario. The framework's steps are bound before
-// it runs, so a step defined here must not repeat one of theirs.
+// Register binds the policy's own steps to the scenario.
 func Register(_ *godog.ScenarioContext, _ *frameworkruntime.Topology) {}

@@ -1,8 +1,0 @@
-# Integration runners for this policy. The suite in tests/it discovers this file through the
-# gateway-controller-policies block; features are relative to this it/ directory.
-policy: time-based-model-routing
-runners:
-  - name: time-based-model-routing
-    tags: "gateway-version>=1.2.0"
-    features:
-      - features/time_based_model_routing.feature
