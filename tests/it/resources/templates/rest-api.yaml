@@ -1,5 +1,0 @@
-apiVersion: ${VALUE:apiVersion}
-kind: RestApi
-metadata:
-  name: ${VALUE:name}
-spec: {}

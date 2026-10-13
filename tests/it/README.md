@@ -18,8 +18,7 @@ tests/it/
   go.mod             pins the framework module
   it-suite.yaml      one block, with its runners taken from every policy's it.yaml
   suite_test.go      entry point; runs the suite through the framework
-  steps/             step definitions (Gateway-only copy of the framework's steps)
-  resources/templates/  one canonical template per resource kind
+  steps/             step definitions only these policies need, shared by all of them
 ```
 
 ## Run the tests locally
@@ -71,10 +70,10 @@ workflow starts from `scripts/it/changed-policies.py`.
 
 ## The step definitions
 
-`steps/` is a copy of the framework's shared and Platform Gateway step packages, without the
-Platform API, API Portal and AI Workspace CLI steps. Fix a step here when a policy test needs it;
-the framework's own suite keeps its copy. When a new gateway release changes a resource contract,
-update the `gatewaySpecVersion` mapping in `steps/platformgateway` too.
+The framework supplies the steps, the canonical resource templates (`resources/templates/<kind>.yaml`)
+and the cleanup deleters. `steps/` holds only steps that the framework does not have; check the
+framework's steps first and add one here only when none fits. A template placed in
+`tests/it/resources/templates/` replaces the framework's template of the same name.
 
 ## Until the framework is released
 

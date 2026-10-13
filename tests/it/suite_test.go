@@ -18,34 +18,38 @@
 
 // Package it runs the integration tests of the gateway policies in this repository. Each policy
 // declares its runners and feature files in policies/<name>/it, and the suite below boots a
-// gateway image built with the policy tree under test.
+// gateway image built with the policy tree under test. The framework supplies the step
+// definitions, the canonical resource templates and the cleanup deleters; steps that only these
+// policies need live in the steps package.
 package it_test
 
 import (
-	"context"
-	"net/http"
 	"testing"
 
-	"github.com/wso2/api-platform/tests/framework/core/cleanup"
+	"github.com/cucumber/godog"
+
 	frameworkruntime "github.com/wso2/api-platform/tests/framework/core/runtime"
 	"github.com/wso2/api-platform/tests/framework/core/suiterun"
-	"github.com/wso2/api-platform/tests/framework/core/util/httpx"
+	frameworksteps "github.com/wso2/api-platform/tests/framework/suites/it/steps"
+	"github.com/wso2/api-platform/tests/framework/suites/it/steps/platformgateway"
 
 	"github.com/wso2/gateway-controllers/tests/it/steps"
-	"github.com/wso2/gateway-controllers/tests/it/steps/platformgateway"
 )
 
 // options describes the policy integration suite to the shared suite runner.
 func options() suiterun.Options {
 	return suiterun.Options{
 		Steps: func(topo *frameworkruntime.Topology, featureRoot string) (frameworkruntime.StepRegistrar, error) {
-			suite, err := steps.New(topo, featureRoot)
+			suite, err := frameworksteps.New(topo, featureRoot)
 			if err != nil {
 				return nil, err
 			}
-			return suite.Register, nil
+			return func(sc *godog.ScenarioContext) {
+				suite.Register(sc)
+				steps.Register(sc, topo)
+			}, nil
 		},
-		CleanupDeleters: registerDeleters,
+		CleanupDeleters: platformgateway.RegisterDeleters,
 	}
 }
 
@@ -57,63 +61,3 @@ func TestMain(m *testing.M) {
 func TestIntegrationSuite(t *testing.T) {
 	suiterun.Run(t, options())
 }
-
-// registerDeleters configures cleanup handlers for gateway resources.
-func registerDeleters(reg *cleanup.Registry, topo *frameworkruntime.Topology) {
-	client := httpx.NewClient(httpx.Options{MaxRetries: 1, InsecureSkipVerify: true})
-
-	reg.RegisterDeleter(cleanup.KindAPI, func(ctx context.Context, res cleanup.Resource) error {
-		return deleteResource(ctx, topo, client, "/rest-apis", res)
-	})
-
-	for kind, collection := range map[cleanup.Kind]string{
-		cleanup.KindLLMProvider:         "/llm-providers",
-		cleanup.KindLLMProxy:            "/llm-proxies",
-		cleanup.KindLLMProviderTemplate: "/llm-provider-templates",
-		cleanup.KindMCPProxy:            "/mcp-proxies",
-		cleanup.KindAgent:               "/agents",
-		cleanup.KindCertificate:         "/certificates",
-		cleanup.KindSecret:              "/secrets",
-	} {
-		reg.RegisterDeleter(kind, func(ctx context.Context, res cleanup.Resource) error {
-			return deleteResource(ctx, topo, client, collection, res)
-		})
-	}
-}
-
-// deleteResource removes one resource from the gateway controller's management API. A 404 means
-// it is already gone, which is success for a sweep; anything else is a real leak signal.
-func deleteResource(
-	ctx context.Context,
-	topo *frameworkruntime.Topology,
-	client *httpx.Client,
-	collection string,
-	res cleanup.Resource,
-) error {
-	base, err := topo.URL("platform-gateway", "rest")
-	if err != nil {
-		return err
-	}
-	version, err := topo.ComponentVersion("platform-gateway")
-	if err != nil {
-		return err
-	}
-	resp, err := client.Do(ctx, httpx.Request{
-		Method: http.MethodDelete,
-		URL:    base + platformgateway.ManagementBasePathForVersion(version) + collection + "/" + res.ID,
-		Headers: map[string]string{
-			"Authorization": steps.BasicAuthHeader(topo.Admin.Username, topo.Admin.Password),
-		},
-	}, 1, 0)
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode == http.StatusNotFound || resp.Succeeded() {
-		return nil
-	}
-	return &deleteError{resp: resp}
-}
-
-type deleteError struct{ resp *httpx.Response }
-
-func (e *deleteError) Error() string { return e.resp.Describe() }
