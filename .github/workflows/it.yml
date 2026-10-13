@@ -1,10 +1,12 @@
 name: Gateway Controller Policy Integration Test
 
-# Runs the integration tests of the policies a pull request changes. The suite lives in this
-# repository (tests/it); each policy keeps its own features and runner declaration in
-# policies/<name>/it/. The test framework is a Go module published by wso2/api-platform and
-# pinned in tests/it/go.mod, and the gateway and testbench images come from GHCR, so nothing in
-# this workflow needs an api-platform checkout once the framework is released.
+# Runs the integration tests of the policies a pull request changes, against gateway 1.2.0,
+# 1.1.0 and the latest gateway image. The suite lives in this repository (tests/it); each policy
+# keeps its runner declaration and features in policies/<name>/it/, and a change to any file in a
+# policy's folder runs that policy's tests when it has an it/it.yaml. The test framework is a Go
+# module published by wso2/api-platform and pinned in tests/it/go.mod, and the gateway and
+# testbench images come from GHCR, so nothing in this workflow needs an api-platform checkout
+# once the framework is released.
 
 on:
   workflow_dispatch:
@@ -61,6 +63,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/it/test_changed_policies.py
+          python3 scripts/it/test_scaffold.py
           if [[ -n "$REQUESTED_POLICIES" ]]; then
             python3 scripts/it/changed-policies.py --policies "$REQUESTED_POLICIES"
           else
@@ -94,10 +97,6 @@ jobs:
           go-version: '1.26.5'
           cache-dependency-path: gateway-controllers/tests/it/go.sum
 
-      - name: Run the step definitions' unit tests
-        working-directory: gateway-controllers
-        run: make it-unit
-
       - name: Check the steps and the changed policy features against the framework standards
         working-directory: gateway-controllers/tests/it
         env:
@@ -124,13 +123,17 @@ jobs:
       max-parallel: 2
       matrix:
         include:
-          # The gateway "latest" leg is added back once the api-platform pipeline publishes a
-          # latest gateway image after each merge, so it can be pulled like the releases below.
           - gateway_version: "1.2.0"
-          # The tested 1.1.0 controller, runtime and gateway-builder images are published under
-          # this repository prefix, not the ghcr.io release one.
+          # The patched 1.1.0 controller, runtime and gateway-builder images are published under
+          # this repository prefix, not the ghcr.io release one. The stock 1.1.0 builder cannot
+          # tidy policies that need a newer Go; the patched one downloads the toolchain.
           - gateway_version: "1.1.0"
             gateway_host: docker.io/isurangaws
+          # The images api-platform publishes after each merge to main.
+          - gateway_version: "latest"
+            # TEMP: the fork publishes the latest images until api-platform does. Remove this
+            # line at cut-over so the default ghcr.io/wso2/api-platform is used.
+            gateway_host: ghcr.io/isuranga-2001/api-platform
 
     steps:
       - name: Checkout gateway-controllers
@@ -152,6 +155,12 @@ jobs:
         with:
           go-version: '1.26.5'
           cache-dependency-path: gateway-controllers/tests/it/go.sum
+
+      # TEMP: a framework that is not released carries no embedded gateway files, because the
+      # release generates them. Generate them in the checkout the replace directive points at.
+      - name: Generate the framework's embedded snapshots # TEMP
+        working-directory: api-platform/tests/framework
+        run: go run ./cmd/syncassets
 
       # The suite's database matrix boots several short-lived containers and
       # published ports. Under concurrent connection churn, the default

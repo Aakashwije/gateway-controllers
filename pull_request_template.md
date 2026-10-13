@@ -30,7 +30,7 @@
    > Code coverage information
  - Integration tests
    > Details about the test cases and coverage
-   > When a policy's behavior changes, update its `policies/<name>/it/` features and `it.yaml`; the Policy Integration Test workflow runs the policies a PR changes.
+   > When a policy's behavior changes, update its `policies/<name>/it/` features and `it.yaml`. The Policy Integration Test workflow runs the tests of every policy whose folder a PR changes, on gateway 1.2.0, 1.1.0 and latest. To add tests to a policy that has none, run `make it-scaffold POLICY=<name>`; see `tests/it/CLAUDE.md`.
 
 ## Security checks
  - Followed secure coding standards in http://wso2.com/technical-reports/wso2-secure-engineering-guidelines? yes/no

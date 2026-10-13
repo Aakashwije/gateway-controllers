@@ -33,6 +33,10 @@ The `ap` CLI lets you build a custom gateway image that includes any combination
 
 See [Customizing Gateway Policies](https://github.com/wso2/api-platform/blob/main/docs/cli/customizing-gateway-policies.md) in the API Platform documentation for full instructions.
 
+## Integration Tests
+
+Each policy can ship integration tests in `policies/<name>/it/`, run against gateway 1.2.0, 1.1.0 and the latest gateway image on every pull request that changes the policy. See [tests/it/CLAUDE.md](tests/it/CLAUDE.md) for how to add and run them.
+
 ## Policy Catalog
 
 See [docs/README.md](./docs/README.md) for the full list of available policies organized by category, with descriptions and links to the latest documentation for each.
