@@ -264,6 +264,8 @@ func TestSplitIndices(t *testing.T) {
 	}{
 		{"name", "name", nil},
 		{"3", "", []int{3}},
+		{"-1", "-1", nil},
+		{"items[0][-1]", "items[0][-1]", nil},
 		{"items[0]", "items", []int{0}},
 		{"items[0][12]", "items", []int{0, 12}},
 		{"[2]", "", []int{2}},

@@ -24,12 +24,13 @@ import (
 )
 
 // SplitIndices separates a JSON path segment such as "policies[0][1]" into its name and its array
-// indices. A segment that is only an integer is an index with no name. A segment that is not a
+// indices. A segment that is only a non-negative integer is an index with no name; "-1" is a field
+// name, like any other text. A segment that is not a
 // name followed by well-formed, non-negative indices, for example "items[0]x", "items[-1]" or
 // "items[0", comes back whole with no indices, so the caller reports a missing key instead of
 // resolving a different field than the one written.
 func SplitIndices(segment string) (string, []int) {
-	if n, err := strconv.Atoi(segment); err == nil {
+	if n, err := strconv.Atoi(segment); err == nil && n >= 0 {
 		return "", []int{n}
 	}
 	open := strings.Index(segment, "[")

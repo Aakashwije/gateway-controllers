@@ -81,7 +81,9 @@ const (
 
 var (
 	frameworkRequire = regexp.MustCompile(`(?m)^\s*(?:require\s+)?` + frameworkModule + `\s+v(\d+\.\d+\.\d+)\s*$`)
-	frameworkReplace = regexp.MustCompile(`(?m)^\s*replace\s+` + frameworkModule + `\s*=>`)
+	// Matches the framework replaced inside a replace block, or on a replace line, with or
+	// without the version on the left of the arrow.
+	frameworkReplace = regexp.MustCompile(`(?m)^\s*(?:replace\s+)?` + frameworkModule + `(?:\s+v\S+)?\s*=>`)
 )
 
 // pinTestbenchImage points the framework at the testbench image published with the framework

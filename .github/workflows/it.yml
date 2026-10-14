@@ -1,13 +1,5 @@
 name: Gateway Controller Policy Integration Test
 
-# Runs the integration suites of the policies a pull request changes, against gateway 1.2.0,
-# 1.1.0 and the latest gateway image. Each policy owns its suite in policies/<name>/it (a suite
-# file, features, its own steps and a Go module) on the shared steps in tests/it/common. A change
-# to any file in a policy's folder selects that policy when it has an it/it-suite.yaml, and every
-# selected policy's suite runs in the same workflow run. The test framework is a Go module
-# published by wso2/api-platform and pinned in each suite's go.mod, and the gateway and testbench
-# images come from GHCR, so nothing in this workflow needs an api-platform checkout.
-
 on:
   workflow_dispatch:
     inputs:
@@ -94,7 +86,7 @@ jobs:
     needs: detect
     if: needs.detect.outputs.has_tests == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -104,9 +96,6 @@ jobs:
           - gateway_version: "1.1.0"
             gateway_host: docker.io/isurangaws
           - gateway_version: "latest"
-            # TEMP: the fork publishes the latest images until api-platform does. Remove this
-            # line so the default ghcr.io/wso2/api-platform is used.
-            gateway_host: ghcr.io/isuranga-2001/api-platform
 
     steps:
       - name: Checkout gateway-controllers
