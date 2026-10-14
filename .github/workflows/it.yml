@@ -2,11 +2,19 @@ name: Gateway Controller Policy Integration Test
 
 on:
   workflow_dispatch:
+    inputs:
+      policies:
+        description: "Comma-separated policies to test, or 'all' for every policy with integration tests"
+        required: true
+        default: all
   pull_request:
     branches:
       - main
     paths:
       - 'policies/**'
+      - 'tests/it/**'
+      - 'scripts/it/**'
+      - 'Makefile'
       - '.github/workflows/it.yml'
 
 permissions:
@@ -17,20 +25,46 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  gateway-controller-tests:
-    name: Gateway Controller unit tests
+  detect:
+    name: Select policies
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    env:
-      CGO_ENABLED: "1"
-
+    timeout-minutes: 5
+    outputs:
+      policies: ${{ steps.select.outputs.policies }}
+      has_tests: ${{ steps.select.outputs.has_tests }}
     steps:
-      - name: Checkout api-platform
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803b # v6
+      - name: Checkout gateway-controllers
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          repository: wso2/api-platform
-          ref: main
-          path: api-platform
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Select the policies to test
+        id: select
+        env:
+          REQUESTED_POLICIES: ${{ inputs.policies }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/it/test_changed_policies.py
+          python3 scripts/it/test_scaffold.py
+          if [[ -n "$REQUESTED_POLICIES" ]]; then
+            python3 scripts/it/changed-policies.py --policies "$REQUESTED_POLICIES"
+          else
+            python3 scripts/it/changed-policies.py --base "$BASE_SHA"
+          fi
+
+  standards:
+    name: Step and feature standards
+    needs: detect
+    if: needs.detect.outputs.has_tests == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout gateway-controllers
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          path: gateway-controllers
           persist-credentials: false
 
       - name: Set up Go
@@ -38,41 +72,36 @@ jobs:
         with:
           go-version: '1.26.5'
           cache-dependency-path: |
-            api-platform/go.work.sum
-            api-platform/gateway/gateway-controller/go.sum
+            gateway-controllers/tests/it/go.sum
+            gateway-controllers/policies/*/it/go.sum
 
-      - name: Ensure C compiler is available
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential
-
-      - name: Gateway-controller unit tests
-        working-directory: api-platform
-        run: make -C gateway/gateway-controller test
+      - name: Check the shared steps and the changed policies' suites against the framework standards
+        working-directory: gateway-controllers
+        env:
+          POLICIES: ${{ needs.detect.outputs.policies }}
+        run: make it-standards POLICIES="$POLICIES"
 
   integration-test:
     name: Gateway Integration (${{ matrix.gateway_version }})
+    needs: detect
+    if: needs.detect.outputs.has_tests == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
       max-parallel: 2
       matrix:
-        gateway_version: [latest, "1.2.0"]
+        include:
+          - gateway_version: "1.2.0"
+          - gateway_version: "1.1.0"
+            gateway_host: docker.io/isurangaws
+          - gateway_version: "latest"
 
     steps:
       - name: Checkout gateway-controllers
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803b # v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           path: gateway-controllers
-          persist-credentials: false
-
-      - name: Checkout api-platform
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803b # v6
-        with:
-          repository: wso2/api-platform
-          ref: main
-          path: api-platform
           persist-credentials: false
 
       - name: Set up Go
@@ -80,8 +109,8 @@ jobs:
         with:
           go-version: '1.26.5'
           cache-dependency-path: |
-            api-platform/go.work.sum
-            api-platform/tests/framework/go.sum
+            gateway-controllers/tests/it/go.sum
+            gateway-controllers/policies/*/it/go.sum
 
       # The suite's database matrix boots several short-lived containers and
       # published ports. Under concurrent connection churn, the default
@@ -92,31 +121,43 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
-      - name: Build framework testbench image
-        run: make -C api-platform/tests/framework testbench
+      # One run per gateway version executes the suite of every selected policy in turn and fails
+      # if any of them fails.
+      # The suites run on the testbench image published with the pinned framework release. Pull it
+      # when this repository can, and otherwise build the same image from the pinned module's
+      # source, which is what the release publishes.
+      - name: Provide the testbench image
+        working-directory: gateway-controllers/tests/it
+        run: |
+          set -euo pipefail
+          module=github.com/wso2/api-platform/tests/framework
+          go mod download "$module"
+          version="$(go list -m -f '{{.Version}}' "$module")"
+          image="ghcr.io/wso2/api-platform/testbench:${version#v}"
+          if docker pull "$image"; then
+            exit 0
+          fi
+          dir="$(go list -m -f '{{.Dir}}' "$module")"
+          docker build -f "$dir/testbench/Dockerfile" -t "$image" "$dir"
 
-      - name: Run gateway-controller policy suite block
-        working-directory: api-platform/tests/framework
+      - name: Run the integration suites of the selected policies
+        working-directory: gateway-controllers
         shell: bash
         env:
           GATEWAY_VERSION: ${{ matrix.gateway_version }}
+          GATEWAY_HOST: ${{ matrix.gateway_host }}
+          POLICIES: ${{ needs.detect.outputs.policies }}
         run: |
           set -euo pipefail
+          make it POLICIES="$POLICIES" GATEWAY_VERSION="$GATEWAY_VERSION" GATEWAY_HOST="$GATEWAY_HOST" \
+            2>&1 | tee "$GITHUB_WORKSPACE/policy-it-$GATEWAY_VERSION.log"
 
-          suite_args=(-blocks=gateway-controller-policies)
-          if [[ "$GATEWAY_VERSION" != "latest" ]]; then
-            suite_args+=("-gateway-version=$GATEWAY_VERSION")
-          fi
-
-          go test ./suites/it -count=1 -timeout=25m -v \
-            -args "${suite_args[@]}" 2>&1 | tee "$GITHUB_WORKSPACE/framework-it-$GATEWAY_VERSION.log"
-
-      - name: Upload framework test output
+      - name: Upload the test output
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: gateway-controller-policy-test-output-${{ matrix.gateway_version }}
-          path: framework-it-${{ matrix.gateway_version }}.log
+          path: policy-it-${{ matrix.gateway_version }}.log
           if-no-files-found: ignore
           retention-days: 7
 

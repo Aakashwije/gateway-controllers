@@ -16,10 +16,52 @@
 # under the License.
 # --------------------------------------------------------------------
 
-.PHONY: generate-catalog validate-catalog
+.PHONY: generate-catalog validate-catalog it it-unit it-standards it-scaffold
 
 generate-catalog: ## Generate docs/README.md policy catalog from metadata.json files
 	python3 scripts/generate-policy-catalog.py
 
 validate-catalog: ## Verify docs/README.md is up to date (used in CI)
 	python3 scripts/generate-policy-catalog.py --validate
+
+# Policy integration tests. Each policy owns a suite in policies/<name>/it, a Go module of its own,
+# and the targets below run those suites. They need Docker and run against a released gateway image:
+#   make it POLICIES=time-based-model-routing GATEWAY_VERSION=1.2.0
+# POLICIES is a comma-separated list and defaults to every policy that has a suite. DB limits the run
+# to one database (sqlite, postgres or sqlserver); GATEWAY_HOST replaces the image repository prefix.
+GATEWAY_VERSION ?= 1.2.0
+comma := ,
+space := $(subst ,, )
+IT_POLICIES = $(if $(POLICIES),$(subst $(comma),$(space),$(POLICIES)),$(patsubst policies/%/it/it-suite.yaml,%,$(wildcard policies/*/it/it-suite.yaml)))
+IT_STANDARDS_IMPORTS = github.com/wso2/gateway-controllers/tests/it/
+
+it: ## Run the integration suites of the selected policies against a released gateway
+	@test -n "$(IT_POLICIES)" || { echo "no policy has an integration suite"; exit 2; }
+	@failed=""; \
+	for policy in $(IT_POLICIES); do \
+		echo "=== Integration suite of $$policy on gateway $(GATEWAY_VERSION) ==="; \
+		(cd policies/$$policy/it && go test . -count=1 -timeout=40m -v -run TestIntegrationSuite -args \
+			$(if $(DB),-blocks=$$policy/$(DB)) \
+			-gateway-version=$(GATEWAY_VERSION) \
+			$(if $(GATEWAY_HOST),-host=$(GATEWAY_HOST))) || failed="$$failed $$policy"; \
+	done; \
+	test -z "$$failed" || { echo "Failed integration suites:$$failed"; exit 1; }
+
+it-unit: ## Run the unit tests of the shared steps and of the selected policies' own steps
+	cd tests/it && go test ./... -count=1
+	@for policy in $(IT_POLICIES); do \
+		(cd policies/$$policy/it && go test ./steps/... -count=1) || exit 1; \
+	done
+
+it-standards: ## Check the shared steps and the selected policies' suites against the framework standards
+	cd tests/it && go tool standards -root common -unit-root common -steps common/steps \
+		-scripts "" -suites "" -docs "" -approved-imports $(IT_STANDARDS_IMPORTS)
+	@for policy in $(IT_POLICIES); do \
+		(cd tests/it && go tool standards -root "" -unit-root "" -steps ../../policies/$$policy/it/steps \
+			-features ../../policies/$$policy/it/features -suites ../../policies/$$policy/it/it-suite.yaml \
+			-scripts "" -docs "" -approved-imports $(IT_STANDARDS_IMPORTS)) || exit 1; \
+	done
+
+it-scaffold: ## Create the integration suite skeleton for POLICY (policies/<POLICY>/it)
+	@test -n "$(POLICY)" || { echo "usage: make it-scaffold POLICY=<policy name>"; exit 2; }
+	python3 scripts/it/scaffold.py $(POLICY)
