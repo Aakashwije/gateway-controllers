@@ -22,10 +22,11 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/wso2/api-platform/tests/framework/core/util/tcontext"
+
+	stepscommon "github.com/wso2/gateway-controllers/tests/it/common/steps/common"
 )
 
 const keyAuthHeader = "authHeader"
@@ -60,7 +61,7 @@ func traverseJSON(doc any, path string) (any, bool) {
 		if segment == "" {
 			continue
 		}
-		name, indices := splitIndices(segment)
+		name, indices := stepscommon.SplitIndices(segment)
 		if name != "" {
 			asMap, ok := current.(map[string]any)
 			if !ok {
@@ -79,33 +80,4 @@ func traverseJSON(doc any, path string) (any, bool) {
 		}
 	}
 	return current, true
-}
-
-func splitIndices(segment string) (string, []int) {
-	if n, err := strconv.Atoi(segment); err == nil {
-		return "", []int{n}
-	}
-	open := strings.Index(segment, "[")
-	if open < 0 {
-		return segment, nil
-	}
-	name := segment[:open]
-	var indices []int
-	rest := segment[open:]
-	for strings.HasPrefix(rest, "[") {
-		end := strings.Index(rest, "]")
-		if end < 0 {
-			return segment, nil
-		}
-		index, err := strconv.Atoi(rest[1:end])
-		if err != nil || index < 0 {
-			return segment, nil
-		}
-		indices = append(indices, index)
-		rest = rest[end+1:]
-	}
-	if rest == "" {
-		return name, indices
-	}
-	return segment, nil
 }

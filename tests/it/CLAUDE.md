@@ -160,15 +160,20 @@ manual run takes `policies` (comma-separated, or `all`).
 - Every suite's `go.mod` pins the framework version, and `tests/it/go.mod` pins it for the shared
   steps. Update them together: `go get github.com/wso2/api-platform/tests/framework@vX.Y.Z` and
   `go mod tidy` in `tests/it` and in each `policies/<name>/it`, then run the suites. The testbench
-  image follows the pinned version.
-- Until the framework is released, each of those `go.mod` files has a `replace` to a sibling
-  api-platform checkout, and the workflow checks one out; both are marked `TEMP`. For a local run,
-  build the testbench image from that checkout once: `make -C ../api-platform/tests/framework
-  testbench`, and generate the embedded gateway files, which only a release carries: `make -C
-  ../api-platform/tests/framework snapshots`.
+  image, `ghcr.io/wso2/api-platform/testbench:<version>`, follows the version the suite's `go.mod`
+  pins: `tests/it/common/suite` sets it, and it is pulled on the first run. When the image cannot
+  be pulled, build it from the pinned module's source, as the workflow's "Provide the testbench
+  image" step does:
+  `dir=$(cd tests/it && go list -m -f '{{.Dir}}' github.com/wso2/api-platform/tests/framework)`
+  then `docker build -f "$dir/testbench/Dockerfile" -t ghcr.io/wso2/api-platform/testbench:<version> "$dir"`.
+  Set `APIP_IT_IMAGE_TESTBENCH` to use any other image.
 
 ## Troubleshooting
 
+- `testbench/manifests/...: unauthorized` when a suite boots, followed by "executed NO scenarios":
+  the testbench image could not be pulled, so no block booted. Build it as described under "The
+  framework dependency", and check the tag in the message against the framework version in
+  `go.mod`.
 - `failed to connect to the docker API` or `rootless Docker not found`: Docker is not running, or
   `DOCKER_HOST` and `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` are not set for Rancher Desktop or
   Colima.

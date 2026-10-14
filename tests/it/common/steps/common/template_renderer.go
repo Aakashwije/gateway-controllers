@@ -27,6 +27,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -76,11 +77,15 @@ func renderCanonicalTemplate(ctx context.Context, content []byte, table *godog.T
 	if err := replaceCanonicalPlaceholders(ctx, document.Content[0], values, used); err != nil {
 		return "", err
 	}
-	for key, value := range values {
-		if used[key] {
-			continue
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		if !used[key] {
+			keys = append(keys, key)
 		}
-		if err := setCanonicalField(ctx, document.Content[0], key, value); err != nil {
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if err := setCanonicalField(ctx, document.Content[0], key, values[key]); err != nil {
 			return "", err
 		}
 	}

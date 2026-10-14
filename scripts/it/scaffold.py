@@ -108,10 +108,6 @@ require (
 )
 
 replace github.com/wso2/gateway-controllers/tests/it => ../../../tests/it
-
-// TEMP: the framework is not released yet, so it is resolved from a sibling api-platform
-// checkout. Remove this line once tests/framework/v0.1.0 is tagged.
-replace github.com/wso2/api-platform/tests/framework => ../../../../api-platform/tests/framework
 """
 
 SUITE_TEST = """\

@@ -12,7 +12,7 @@ canonical resource templates and the code that runs a suite. They began as copie
 [test framework's](https://github.com/wso2/api-platform/tree/main/tests/framework) Platform Gateway
 steps and are owned here, so a policy's tests never need api-platform's step code. The framework
 itself, a Go module published by api-platform, supplies the engine that boots the containers and is
-pinned in each suite's `go.mod`.
+pinned in each suite's `go.mod`; its testbench image is pulled from GHCR on the first run.
 
 **[CLAUDE.md](CLAUDE.md) is the guide**: how to run the tests, how to add tests to a policy that
 has none, how to write scenarios and steps, and what a pull request runs.
@@ -44,16 +44,3 @@ make it-unit                                                      # unit tests o
 ```
 
 Docker is required; see CLAUDE.md for the Rancher Desktop and Colima settings.
-
-## Until the framework is released
-
-Each suite's `go.mod`, and this module's, resolves the framework through a `replace` directive that
-points at a sibling api-platform checkout, and the workflow checks one out, generates its embedded
-gateway files and builds the testbench image from it. All are marked `TEMP`. For a local run,
-clone api-platform next to this repository, then build the testbench image and generate the
-embedded files once:
-
-```bash
-make -C ../api-platform/tests/framework testbench
-make -C ../api-platform/tests/framework snapshots   # the embedded gateway files only a release carries
-```

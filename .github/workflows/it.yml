@@ -6,8 +6,7 @@ name: Gateway Controller Policy Integration Test
 # to any file in a policy's folder selects that policy when it has an it/it-suite.yaml, and every
 # selected policy's suite runs in the same workflow run. The test framework is a Go module
 # published by wso2/api-platform and pinned in each suite's go.mod, and the gateway and testbench
-# images come from GHCR, so nothing in this workflow needs an api-platform checkout once the
-# framework is released.
+# images come from GHCR, so nothing in this workflow needs an api-platform checkout.
 
 on:
   workflow_dispatch:
@@ -32,13 +31,6 @@ permissions:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
-
-# TEMP: the framework is not released yet, so the jobs below check it out from a fork branch and
-# tests/it/go.mod resolves it through a replace directive. Remove this block, the TEMP steps and
-# the replace directive once tests/framework/v0.1.0 is tagged.
-env:
-  API_PLATFORM_REPOSITORY: Isuranga-2001/api-platform # TEMP
-  API_PLATFORM_REF: feat/framework-module # TEMP
 
 jobs:
   detect:
@@ -83,14 +75,6 @@ jobs:
           path: gateway-controllers
           persist-credentials: false
 
-      - name: Checkout api-platform # TEMP
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          repository: ${{ env.API_PLATFORM_REPOSITORY }}
-          ref: ${{ env.API_PLATFORM_REF }}
-          path: api-platform
-          persist-credentials: false
-
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
@@ -121,7 +105,7 @@ jobs:
             gateway_host: docker.io/isurangaws
           - gateway_version: "latest"
             # TEMP: the fork publishes the latest images until api-platform does. Remove this
-            # line at cut-over so the default ghcr.io/wso2/api-platform is used.
+            # line so the default ghcr.io/wso2/api-platform is used.
             gateway_host: ghcr.io/isuranga-2001/api-platform
 
     steps:
@@ -129,14 +113,6 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           path: gateway-controllers
-          persist-credentials: false
-
-      - name: Checkout api-platform # TEMP
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          repository: ${{ env.API_PLATFORM_REPOSITORY }}
-          ref: ${{ env.API_PLATFORM_REF }}
-          path: api-platform
           persist-credentials: false
 
       - name: Set up Go
@@ -147,12 +123,6 @@ jobs:
             gateway-controllers/tests/it/go.sum
             gateway-controllers/policies/*/it/go.sum
 
-      # TEMP: a framework that is not released carries no embedded gateway files, because the
-      # release generates them. Generate them in the checkout the replace directive points at.
-      - name: Generate the framework's embedded snapshots # TEMP
-        working-directory: api-platform/tests/framework
-        run: go run ./cmd/syncassets
-
       # The suite's database matrix boots several short-lived containers and
       # published ports. Under concurrent connection churn, the default
       # conntrack table can fill and cause intermittent connection failures.
@@ -162,13 +132,25 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
-      # TEMP: an unreleased framework has no published testbench image, so build the one that
-      # matches the checkout. A released framework pulls ghcr.io/wso2/api-platform/testbench:<version>.
-      - name: Build the testbench image # TEMP
-        run: make -C api-platform/tests/framework testbench
-
       # One run per gateway version executes the suite of every selected policy in turn and fails
       # if any of them fails.
+      # The suites run on the testbench image published with the pinned framework release. Pull it
+      # when this repository can, and otherwise build the same image from the pinned module's
+      # source, which is what the release publishes.
+      - name: Provide the testbench image
+        working-directory: gateway-controllers/tests/it
+        run: |
+          set -euo pipefail
+          module=github.com/wso2/api-platform/tests/framework
+          go mod download "$module"
+          version="$(go list -m -f '{{.Version}}' "$module")"
+          image="ghcr.io/wso2/api-platform/testbench:${version#v}"
+          if docker pull "$image"; then
+            exit 0
+          fi
+          dir="$(go list -m -f '{{.Dir}}' "$module")"
+          docker build -f "$dir/testbench/Dockerfile" -t "$image" "$dir"
+
       - name: Run the integration suites of the selected policies
         working-directory: gateway-controllers
         shell: bash

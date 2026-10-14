@@ -25,17 +25,23 @@
 package suite
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/cucumber/godog"
 
+	"github.com/wso2/api-platform/tests/framework/core/catalog"
+	"github.com/wso2/api-platform/tests/framework/core/catalog/testbench"
 	frameworkruntime "github.com/wso2/api-platform/tests/framework/core/runtime"
 	"github.com/wso2/api-platform/tests/framework/core/suiterun"
+	"github.com/wso2/api-platform/tests/framework/core/topology"
 
 	"github.com/wso2/gateway-controllers/tests/it/common/steps"
 	"github.com/wso2/gateway-controllers/tests/it/common/steps/platformgateway"
@@ -64,7 +70,49 @@ type Config struct {
 
 // Main parses the suite flags and runs the tests. Call it from TestMain.
 func Main(m *testing.M, cfg Config) {
+	pinTestbenchImage()
 	suiterun.Main(m, options(cfg))
+}
+
+const (
+	testbenchRepository = "ghcr.io/wso2/api-platform/testbench"
+	frameworkModule     = `github\.com/wso2/api-platform/tests/framework`
+)
+
+var (
+	frameworkRequire = regexp.MustCompile(`(?m)^\s*(?:require\s+)?` + frameworkModule + `\s+v(\d+\.\d+\.\d+)\s*$`)
+	frameworkReplace = regexp.MustCompile(`(?m)^\s*replace\s+` + frameworkModule + `\s*=>`)
+)
+
+// pinTestbenchImage points the framework at the testbench image published with the framework
+// release that the suite's go.mod pins, unless the environment already names one. The framework
+// chooses that image from the module versions embedded in the running binary, and a binary built
+// by `go test` embeds none, so left alone it asks for an image that only a local build creates.
+func pinTestbenchImage() {
+	if os.Getenv(testbench.EnvImageTestbench) != "" {
+		return
+	}
+	goMod, err := os.ReadFile("go.mod")
+	if err != nil {
+		return
+	}
+	if image, ok := pinnedTestbenchImage(goMod); ok {
+		os.Setenv(testbench.EnvImageTestbench, image)
+	}
+}
+
+// pinnedTestbenchImage returns the testbench image of the released framework a go.mod requires.
+// A go.mod that replaces the framework with a local checkout, or requires an untagged revision,
+// has none: the framework then uses the image that checkout builds.
+func pinnedTestbenchImage(goMod []byte) (string, bool) {
+	if frameworkReplace.Match(goMod) {
+		return "", false
+	}
+	match := frameworkRequire.FindSubmatch(goMod)
+	if match == nil {
+		return "", false
+	}
+	return testbenchRepository + ":" + string(match[1]), true
 }
 
 // Run executes the suite declared in it-suite.yaml in the working directory, which `go test` sets
@@ -81,10 +129,36 @@ func Run(t *testing.T, cfg Config) {
 	if err := StagePolicy(dir, workspace, append(slices.Clone(ControllerPolicies), cfg.Companions...)...); err != nil {
 		t.Fatalf("staging the policy: %v", err)
 	}
+	if reason := excludedEverywhere(suiterun.Selection(), filepath.Join(dir, suiterun.DefaultSuiteFile)); reason != nil {
+		t.Skipf("nothing to run: %v", reason)
+	}
 	opts := options(cfg)
 	opts.Dir = dir
 	opts.WorkspaceRoot = workspace
 	suiterun.Run(t, opts)
+}
+
+// excludedEverywhere returns why the selected gateway version leaves the suite nothing to run,
+// or nil when something runs or the suite cannot be judged here. A policy that needs a newer
+// gateway gates its runners with gateway-version tags, and a run against an older gateway
+// should skip it. The framework reports that as ErrNothingToRun only for a selection by policy
+// name, which a suite of declared runners never uses; otherwise it returns a plain error.
+func excludedEverywhere(selection topology.Selection, suiteFile string) error {
+	registry, err := catalog.Registry()
+	if err != nil {
+		return nil
+	}
+	resolved, err := topology.LoadFile(suiteFile, registry)
+	if err != nil {
+		return nil
+	}
+	_, err = selection.Apply(resolved)
+	if errors.Is(err, topology.ErrNothingToRun) ||
+		err != nil && (strings.Contains(err.Error(), "the selection has no compatible blocks") ||
+			strings.Contains(err.Error(), "the selection has no compatible runners")) {
+		return err
+	}
+	return nil
 }
 
 // StagePolicy copies the policy that owns suiteDir, and each named companion policy from the

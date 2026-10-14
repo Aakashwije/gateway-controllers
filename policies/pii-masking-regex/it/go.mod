@@ -87,7 +87,7 @@ require (
 	github.com/mitchellh/hashstructure/v2 v2.0.2 // indirect
 	github.com/moby/buildkit v0.33.0 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
-	github.com/moby/go-archive v0.2.0 // indirect
+	github.com/moby/go-archive v0.3.3 // indirect
 	github.com/moby/locker v1.0.1 // indirect
 	github.com/moby/moby/api v1.56.0 // indirect
 	github.com/moby/moby/client v0.6.0 // indirect
@@ -173,7 +173,3 @@ require (
 )
 
 replace github.com/wso2/gateway-controllers/tests/it => ../../../tests/it
-
-// TEMP: the framework is not released yet, so it is resolved from a sibling api-platform
-// checkout. Remove this line once tests/framework/v0.1.0 is tagged.
-replace github.com/wso2/api-platform/tests/framework => ../../../../api-platform/tests/framework

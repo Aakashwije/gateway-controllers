@@ -232,6 +232,57 @@ func TestRenderCanonicalTemplateSupportsOptionalTypedFields(t *testing.T) {
 	require.Equal(t, "6s", resilience["timeout"])
 }
 
+func TestRenderCanonicalTemplateAppliesParentOverridesBeforeChildren(t *testing.T) {
+	table := templateTable(
+		"apiVersion", "gateway.api-platform.wso2.com/v1",
+		"name", "proxy",
+		"displayName", "Proxy",
+		"version", "v1.0",
+		"context", "/proxy",
+		"provider.id", "provider",
+		"spec.resilience.timeout", "6s",
+		"spec.resilience", `{"timeout":"3s","retries":2}`,
+	)
+	// Map iteration order is random, so a single render could pass by chance.
+	for i := 0; i < 50; i++ {
+		definition, err := renderCanonicalTemplate(context.Background(), []byte(canonicalProxyTemplate), table)
+		require.NoError(t, err)
+
+		var document map[string]any
+		require.NoError(t, yaml.Unmarshal([]byte(definition), &document))
+		resilience := document["spec"].(map[string]any)["resilience"].(map[string]any)
+		require.Equal(t, "6s", resilience["timeout"], "the child override wins over its parent, render %d", i)
+		require.EqualValues(t, 2, resilience["retries"], "the parent's other fields survive, render %d", i)
+	}
+}
+
+func TestSplitIndices(t *testing.T) {
+	tests := []struct {
+		segment     string
+		wantName    string
+		wantIndices []int
+	}{
+		{"name", "name", nil},
+		{"3", "", []int{3}},
+		{"items[0]", "items", []int{0}},
+		{"items[0][12]", "items", []int{0, 12}},
+		{"[2]", "", []int{2}},
+		{"items[0]x", "items[0]x", nil},
+		{"items[0][1]tail", "items[0][1]tail", nil},
+		{"items[-1]", "items[-1]", nil},
+		{"items[a]", "items[a]", nil},
+		{"items[0", "items[0", nil},
+		{"items[]", "items[]", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.segment, func(t *testing.T) {
+			name, indices := SplitIndices(tt.segment)
+			require.Equal(t, tt.wantName, name)
+			require.Equal(t, tt.wantIndices, indices)
+		})
+	}
+}
+
 func TestRenderCanonicalTemplateOmitsUnspecifiedOptionalFields(t *testing.T) {
 	table := templateTable(
 		"apiVersion", "gateway.api-platform.wso2.com/v1",

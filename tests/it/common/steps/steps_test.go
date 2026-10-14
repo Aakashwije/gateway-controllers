@@ -100,6 +100,35 @@ func TestGatewayListenerTLSConfig(t *testing.T) {
 	})
 }
 
+func TestJSONFieldGreaterThanComparesFractionalValues(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      string
+		threshold int
+		wantErr   bool
+	}{
+		{name: "fraction above the threshold", body: `{"n":5.5}`, threshold: 5},
+		{name: "whole number above the threshold", body: `{"n":6}`, threshold: 5},
+		{name: "equal to the threshold", body: `{"n":5}`, threshold: 5, wantErr: true},
+		{name: "fraction below the threshold", body: `{"n":4.9}`, threshold: 5, wantErr: true},
+		{name: "not a number", body: `{"n":"6"}`, threshold: 5, wantErr: true},
+		{name: "missing field", body: `{"m":6}`, threshold: 5, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := tcontext.WithLocal(context.Background(), tcontext.NewLocal("runner"))
+			require.NoError(t, tcontext.Set(ctx, httpx.ResponseKey, &httpx.Response{Body: []byte(tt.body)}))
+
+			err := (&Base{}).jsonFieldGreaterThan(ctx, "n", tt.threshold)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestSendRequestOnListenerRejectsUnknownContextValue(t *testing.T) {
 	ctx := tcontext.WithLocal(context.Background(), tcontext.NewLocal("runner"))
 	base := &Base{}

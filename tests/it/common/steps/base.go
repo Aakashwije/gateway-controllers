@@ -1150,7 +1150,7 @@ func (b *Base) jsonFieldGreaterThan(ctx context.Context, path string, threshold 
 	if !ok {
 		return fmt.Errorf("field %q is %v, which is not a number", path, got)
 	}
-	if int(num) <= threshold {
+	if num <= float64(threshold) {
 		return fmt.Errorf("expected %q to be greater than %d, got %v", path, threshold, num)
 	}
 	return nil
@@ -1773,7 +1773,7 @@ func traverseJSON(doc any, path string) (any, bool) {
 		if segment == "" {
 			continue
 		}
-		name, indices := splitIndices(segment)
+		name, indices := stepscommon.SplitIndices(segment)
 		if name != "" {
 			asMap, ok := current.(map[string]any)
 			if !ok {
@@ -1792,32 +1792,4 @@ func traverseJSON(doc any, path string) (any, bool) {
 		}
 	}
 	return current, true
-}
-
-// splitIndices separates "policies[0][1]" into its name and its indices.
-func splitIndices(segment string) (string, []int) {
-	if n, err := strconv.Atoi(segment); err == nil {
-		return "", []int{n}
-	}
-	open := strings.Index(segment, "[")
-	if open < 0 {
-		return segment, nil
-	}
-	name := segment[:open]
-	var indices []int
-	for rest := segment[open:]; strings.HasPrefix(rest, "["); {
-		end := strings.Index(rest, "]")
-		if end < 0 {
-			// Unbalanced: treat the whole segment as a key so the caller reports a missing
-			// path rather than silently dropping the malformed part.
-			return segment, nil
-		}
-		n, err := strconv.Atoi(rest[1:end])
-		if err != nil {
-			return segment, nil
-		}
-		indices = append(indices, n)
-		rest = rest[end+1:]
-	}
-	return name, indices
 }
