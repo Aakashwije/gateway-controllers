@@ -196,41 +196,48 @@ func subjectTokenHashMatches(shared *policy.SharedContext, currentToken string) 
 	return stored == hashSubjectToken(currentToken)
 }
 
-// metadataKeySelfOverwriteTokenHash stores a SHA-256 hash of the exchanged
-// token the header phase itself wrote into the subject-token field, for the
-// one configuration where that is possible: subjectTokenSource names the
-// same header as cfg.header (the common default — both "Authorization"), so
-// OnRequestHeaders' own HeadersToSet overwrites the very field OnRequestBody
-// later reads back via extractSubjectToken to check for staleness. Without
-// this, that self-overwrite looks identical to "a later policy replaced the
-// credential" and OnRequestBody re-exchanges on every request — the
-// exchanged token read back from the live header is run through the token
-// endpoint a second time as if it were a fresh subject token.
-const metadataKeySelfOverwriteTokenHash = "oauthTokenExchange.selfOverwriteTokenHash"
+// metadataKeyOutputHeaderHash stores a SHA-256 hash of the full cfg.header
+// value (cfg.headerPrefix + exchanged token) the header phase wrote upstream.
+// OnRequestBody only trusts the header-phase result while the live cfg.header
+// still hashes to this value: an earlier-in-chain body-phase policy (e.g.
+// mcp-auth delegating to jwt-auth) may have removed or rewritten it since,
+// and skipping in that case would forward the request without the exchanged
+// credential. It also covers the configuration where subjectTokenSource names
+// the same header as cfg.header (the common default — both "Authorization"),
+// whether or not forwardToken is set: the header phase's own HeadersToSet
+// overwrites the very field OnRequestBody would otherwise read back as the
+// subject token. Comparing the whole written value, rather than re-extracting
+// it with subjectTokenSource.prefix, keeps that check correct when the source
+// and output prefixes differ (e.g. "Token " in, "Bearer " out).
+const metadataKeyOutputHeaderHash = "oauthTokenExchange.outputHeaderHash"
 
-func storeSelfOverwriteTokenHash(shared *policy.SharedContext, token string) {
+func storeOutputHeaderHash(shared *policy.SharedContext, headerValue string) {
 	if shared == nil {
 		return
 	}
 	if shared.Metadata == nil {
 		shared.Metadata = map[string]interface{}{}
 	}
-	shared.Metadata[metadataKeySelfOverwriteTokenHash] = hashSubjectToken(token)
+	shared.Metadata[metadataKeyOutputHeaderHash] = hashSubjectToken(headerValue)
 }
 
-// selfOverwriteTokenHashMatches reports whether currentToken hashes to the
-// token storeSelfOverwriteTokenHash recorded — i.e. the live field still
-// holds exactly what this policy's own header phase put there, untouched by
-// anything else since.
-func selfOverwriteTokenHashMatches(shared *policy.SharedContext, currentToken string) bool {
+// outputHeaderIntact reports whether the live cfg.header still holds exactly
+// the value storeOutputHeaderHash recorded — i.e. nothing has removed or
+// replaced the exchanged credential since the header phase wrote it. A
+// missing stored hash or a missing header is treated as not intact.
+func outputHeaderIntact(shared *policy.SharedContext, headers *policy.Headers, header string) bool {
 	if shared == nil || shared.Metadata == nil {
 		return false
 	}
-	stored, _ := shared.Metadata[metadataKeySelfOverwriteTokenHash].(string)
+	stored, _ := shared.Metadata[metadataKeyOutputHeaderHash].(string)
 	if stored == "" {
 		return false
 	}
-	return stored == hashSubjectToken(currentToken)
+	vals := getHeaderCaseInsensitive(headers, header)
+	if len(vals) == 0 {
+		return false
+	}
+	return stored == hashSubjectToken(vals[0])
 }
 
 // metadataKeySelfRemovedSubjectField records that the header phase's own
@@ -547,24 +554,21 @@ func (p *OAuthTokenExchangePolicy) OnRequestHeaders(ctx context.Context, reqCtx 
 
 	markHeaderPhaseOutcome(reqCtx.SharedContext, headerPhaseOutcomeSucceeded)
 	storeSubjectTokenHash(reqCtx.SharedContext, subjectToken)
-	headersToSet := map[string]string{cfg.header: cfg.headerPrefix + token}
+	outputValue := cfg.headerPrefix + token
+	storeOutputHeaderHash(reqCtx.SharedContext, outputValue)
+	headersToSet := map[string]string{cfg.header: outputValue}
 	headersToRemove, queryParamsToRemove, cookieOverride := subjectTokenRemovalMods(cfg, reqCtx.Headers)
 	maps.Copy(headersToSet, cookieOverride)
 
-	// Record what this call itself is about to do to the subjectTokenSource
-	// field, so OnRequestBody can tell its own effect apart from a later
-	// policy's — see metadataKeySelfOverwriteTokenHash and
+	// Record when this call itself strips the subjectTokenSource field, so
+	// OnRequestBody can tell its own effect apart from a later policy's — see
 	// metadataKeySelfRemovedSubjectField. Mirrors subjectTokenRemovalMods'
 	// own kind/forwardToken/same-name branching; queryParameter is left
 	// unmarked, matching that this header phase never actually strips a
-	// query-parameter subject source from reqCtx.Path.
-	switch {
-	case cfg.subjectSource.forwardToken:
-		// Untouched — the existing subjectTokenHashMatches path already
-		// covers this (the field still holds the original subject token).
-	case cfg.subjectSource.kind == "header" && http.CanonicalHeaderKey(cfg.subjectSource.name) == http.CanonicalHeaderKey(cfg.header):
-		storeSelfOverwriteTokenHash(reqCtx.SharedContext, token)
-	case cfg.subjectSource.kind == "header", cfg.subjectSource.kind == "cookie":
+	// query-parameter subject source from reqCtx.Path. The same-name header
+	// case (overwritten, not removed) is covered by metadataKeyOutputHeaderHash.
+	if !cfg.subjectSource.forwardToken && !subjectSourceIsOutputHeader(cfg) &&
+		(cfg.subjectSource.kind == "header" || cfg.subjectSource.kind == "cookie") {
 		markSelfRemovedSubjectField(reqCtx.SharedContext)
 	}
 
@@ -598,16 +602,17 @@ func (p *OAuthTokenExchangePolicy) OnRequestBody(ctx context.Context, reqCtx *po
 		return internalError()
 	}
 
-	if headerPhaseSucceeded(reqCtx.SharedContext) {
+	if headerPhaseSucceeded(reqCtx.SharedContext) && outputHeaderIntact(reqCtx.SharedContext, reqCtx.Headers, cfg.header) {
+		if subjectSourceIsOutputHeader(cfg) {
+			// The subject field is cfg.header itself, and it still holds
+			// exactly what this policy's own header phase wrote there —
+			// nothing else has touched it since.
+			return policy.UpstreamRequestModifications{}
+		}
 		currentToken, ok := extractSubjectToken(reqCtx.Headers, reqCtx.Path, cfg.subjectSource)
 		switch {
 		case ok && subjectTokenHashMatches(reqCtx.SharedContext, currentToken):
 			// Still exactly the subject token the header phase exchanged.
-			return policy.UpstreamRequestModifications{}
-		case ok && selfOverwriteTokenHashMatches(reqCtx.SharedContext, currentToken):
-			// The field holds exactly what this policy's own header phase
-			// wrote there (subjectTokenSource and cfg.header share a name) —
-			// nothing else has touched it since.
 			return policy.UpstreamRequestModifications{}
 		case !ok && selfRemovedSubjectField(reqCtx.SharedContext):
 			// This policy's own header phase stripped the field as part of
@@ -615,7 +620,9 @@ func (p *OAuthTokenExchangePolicy) OnRequestBody(ctx context.Context, reqCtx *po
 			// absence now is expected, not a sign anything changed.
 			return policy.UpstreamRequestModifications{}
 		}
-		slog.Debug("OAuth token exchange: subject token changed since header phase, re-exchanging",
+	}
+	if headerPhaseSucceeded(reqCtx.SharedContext) {
+		slog.Debug("OAuth token exchange: subject token or exchanged header changed since header phase, re-exchanging",
 			"api", reqCtx.APIName,
 			"source", cfg.subjectSource.kind,
 			"name", cfg.subjectSource.name,
@@ -724,6 +731,14 @@ func upstreamAction(cfg *exchangeConfig, token string, headers *policy.Headers) 
 		HeadersToRemove:         headersToRemove,
 		QueryParametersToRemove: queryParamsToRemove,
 	}
+}
+
+// subjectSourceIsOutputHeader reports whether subjectTokenSource names the
+// same header the exchanged token is written to, so writing the output
+// overwrites the subject field instead of leaving it alongside.
+func subjectSourceIsOutputHeader(cfg *exchangeConfig) bool {
+	return cfg.subjectSource.kind == "header" &&
+		http.CanonicalHeaderKey(cfg.subjectSource.name) == http.CanonicalHeaderKey(cfg.header)
 }
 
 // extractSubjectToken reads the caller's credential from the live,

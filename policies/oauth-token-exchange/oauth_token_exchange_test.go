@@ -898,6 +898,138 @@ func TestOnRequestBody_SkipsExchangeWhenHeaderPhaseSucceeded_CustomSubjectHeader
 	}
 }
 
+// runHeaderThenBody drives OnRequestHeaders, applies its mutations plus
+// any extra body-phase mutation, then runs OnRequestBody on the result. It
+// returns the body-phase action and the total token endpoint call count.
+func runHeaderThenBody(t *testing.T, headers map[string][]string, configure func(map[string]interface{}), between func(map[string][]string) map[string][]string) (policy.RequestAction, int32) {
+	t.Helper()
+	var hits int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"access_token": "exchanged-token", "expires_in": 300})
+	}))
+	t.Cleanup(server.Close)
+	utils.SetSharedHTTPClient(server.Client())
+	t.Cleanup(func() { utils.SetSharedHTTPClient(nil) })
+
+	p := newTestPolicy()
+	shared := newSharedContext()
+	params := baseParams(server.URL)
+	configure(params)
+
+	headerResult, ok := p.OnRequestHeaders(context.Background(), newRequestHeaderContext(shared, headers, "/pets"), params).(policy.UpstreamRequestHeaderModifications)
+	if !ok {
+		t.Fatal("expected the header phase to succeed")
+	}
+	mutated := applyHeaderModifications(headers, headerResult)
+	if between != nil {
+		mutated = between(mutated)
+	}
+	result := p.OnRequestBody(context.Background(), newRequestContextSharing(shared, mutated, "/pets"), params)
+	return result, atomic.LoadInt32(&hits)
+}
+
+// Same header in and out with forwardToken enabled: the header phase still
+// overwrites the field, so the body phase must recognize its own write
+// instead of exchanging the exchanged token again.
+func TestOnRequestBody_SkipsExchange_SameHeaderWithForwardToken(t *testing.T) {
+	result, hits := runHeaderThenBody(t,
+		map[string][]string{"Authorization": {"Bearer original-client-token"}},
+		func(params map[string]interface{}) {
+			params["subjectTokenSource"] = map[string]interface{}{"type": "header", "name": "Authorization", "forwardToken": true}
+		}, nil)
+
+	action, ok := result.(policy.UpstreamRequestModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestModifications, got %T: %+v", result, result)
+	}
+	if len(action.HeadersToSet) != 0 {
+		t.Errorf("expected no body-phase headers, got %+v", action.HeadersToSet)
+	}
+	if hits != 1 {
+		t.Errorf("expected exactly 1 token endpoint call, got %d", hits)
+	}
+}
+
+// Same header in and out with different source/output prefixes: the body
+// phase cannot re-extract the written value with the source prefix, so it
+// must compare the whole written value instead of failing with 401.
+func TestOnRequestBody_SkipsExchange_SameHeaderDifferentPrefixes(t *testing.T) {
+	result, hits := runHeaderThenBody(t,
+		map[string][]string{"Authorization": {"Token original-client-token"}},
+		func(params map[string]interface{}) {
+			params["subjectTokenSource"] = map[string]interface{}{"type": "header", "name": "Authorization", "prefix": "Token "}
+		}, nil)
+
+	action, ok := result.(policy.UpstreamRequestModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestModifications, got %T: %+v", result, result)
+	}
+	if len(action.HeadersToSet) != 0 {
+		t.Errorf("expected no body-phase headers, got %+v", action.HeadersToSet)
+	}
+	if hits != 1 {
+		t.Errorf("expected exactly 1 token endpoint call, got %d", hits)
+	}
+}
+
+// A body-phase policy earlier in the chain removed the exchanged output
+// header after the header phase stripped the subject field. The body phase
+// must not skip and forward the request without a credential; with the
+// subject gone it fails closed.
+func TestOnRequestBody_FailsClosed_WhenOutputHeaderRemovedAfterHeaderPhase(t *testing.T) {
+	result, hits := runHeaderThenBody(t,
+		map[string][]string{"X-Forwarded-Authorization": {"Bearer original-client-token"}},
+		func(params map[string]interface{}) {
+			params["subjectTokenSource"] = map[string]interface{}{"type": "header", "name": "X-Forwarded-Authorization"}
+		},
+		func(h map[string][]string) map[string][]string {
+			for k := range h {
+				if http.CanonicalHeaderKey(k) == "Authorization" {
+					delete(h, k)
+				}
+			}
+			return h
+		})
+
+	resp, ok := result.(policy.ImmediateResponse)
+	if !ok {
+		t.Fatalf("expected ImmediateResponse, got %T: %+v", result, result)
+	}
+	if resp.StatusCode != 401 {
+		t.Errorf("status = %d, want 401", resp.StatusCode)
+	}
+	if hits != 1 {
+		t.Errorf("expected no additional token endpoint call, got %d total", hits)
+	}
+}
+
+// The exchanged output header was removed, but the subject token is still
+// present (forwardToken): the body phase re-exchanges and re-sets it.
+func TestOnRequestBody_ReSetsOutputHeader_WhenRemovedAndSubjectStillPresent(t *testing.T) {
+	result, _ := runHeaderThenBody(t,
+		map[string][]string{"X-Forwarded-Authorization": {"Bearer original-client-token"}},
+		func(params map[string]interface{}) {
+			params["subjectTokenSource"] = map[string]interface{}{"type": "header", "name": "X-Forwarded-Authorization", "forwardToken": true}
+		},
+		func(h map[string][]string) map[string][]string {
+			for k := range h {
+				if http.CanonicalHeaderKey(k) == "Authorization" {
+					delete(h, k)
+				}
+			}
+			return h
+		})
+
+	action, ok := result.(policy.UpstreamRequestModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestModifications, got %T: %+v", result, result)
+	}
+	if got := action.HeadersToSet["Authorization"]; got != "Bearer exchanged-token" {
+		t.Errorf("Authorization = %q, want %q", got, "Bearer exchanged-token")
+	}
+}
+
 // TestOnRequestBody_ReExchangesWhenSubjectTokenChangedSinceHeaderPhase covers
 // the staleness scenario storeSubjectTokenHash/subjectTokenHashMatches exist
 // to close: an earlier-in-chain body-phase policy rewrites the same header
