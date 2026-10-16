@@ -51,6 +51,11 @@ import (
 // framework leaves it out of the policy it builds into the gateway, and so does staging.
 const policyIntegrationDir = "it"
 
+// overlaysDir is the folder inside a policy's it folder that holds the gateway configuration
+// overlays its suite file names. Staging copies it to the workspace root, so a component's
+// `overlay: overlays/<file>.toml` reads relative to the it folder, like its feature paths.
+const overlaysDir = "overlays"
+
 // ControllerPolicies are the policies the gateway controller requires to create LLM providers, LLM
 // proxies and their authentication: it attaches them to the resources it generates and rejects a
 // resource when one is missing from the gateway. Every suite's gateway is built with them.
@@ -120,7 +125,7 @@ func pinnedTestbenchImage(goMod []byte) (string, bool) {
 // Run executes the suite declared in it-suite.yaml in the working directory, which `go test` sets
 // to the policy's it folder. The gateway is built from the policy, ControllerPolicies and
 // cfg.Companions: their folders are staged as the policy tree of a temporary workspace that the
-// suite file's addPoliciesFrom names.
+// suite file's addPoliciesFrom names. The suite's overlays folder is staged beside that tree.
 func Run(t *testing.T, cfg Config) {
 	t.Helper()
 	dir, err := os.Getwd()
@@ -130,6 +135,9 @@ func Run(t *testing.T, cfg Config) {
 	workspace := t.TempDir()
 	if err := StagePolicy(dir, workspace, append(slices.Clone(ControllerPolicies), cfg.Companions...)...); err != nil {
 		t.Fatalf("staging the policy: %v", err)
+	}
+	if err := StageOverlays(dir, workspace); err != nil {
+		t.Fatalf("staging the overlays: %v", err)
 	}
 	if reason := excludedEverywhere(suiterun.Selection(), filepath.Join(dir, suiterun.DefaultSuiteFile)); reason != nil {
 		t.Skipf("nothing to run: %v", reason)
@@ -190,10 +198,33 @@ func StagePolicy(suiteDir, workspace string, companions ...string) error {
 	return nil
 }
 
+// StageOverlays copies the overlays folder of suiteDir, when it has one, to
+// <workspace>/overlays. The framework resolves a component's overlay path against the workspace,
+// which holds only the staged policy tree and leaves every it folder out.
+func StageOverlays(suiteDir, workspace string) error {
+	source := filepath.Join(suiteDir, overlaysDir)
+	info, err := os.Stat(source)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%q is not a folder", source)
+	}
+	return copyTree(source, filepath.Join(workspace, overlaysDir))
+}
+
 func stageOne(source, destination string) error {
 	if _, err := os.Stat(filepath.Join(source, "policy-definition.yaml")); err != nil {
 		return fmt.Errorf("%q is not a policy folder: %w", source, err)
 	}
+	return copyTree(source, destination)
+}
+
+// copyTree copies source to destination, leaving out a top-level it folder and refusing symlinks.
+func copyTree(source, destination string) error {
 	return filepath.WalkDir(source, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err

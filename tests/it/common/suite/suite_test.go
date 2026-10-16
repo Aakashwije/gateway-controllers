@@ -84,6 +84,22 @@ func TestStagePolicyAddsTheCompanionPolicies(t *testing.T) {
 	require.ErrorContains(t, err, "not a policy folder")
 }
 
+func TestStageOverlaysCopiesTheSuiteOverlaysToTheWorkspaceRoot(t *testing.T) {
+	suiteDir := filepath.Join(t.TempDir(), "policies", "sample-policy", "it")
+	writeFile(t, filepath.Join(suiteDir, "overlays", "gateway.toml"), "[a]\nb = true\n")
+	workspace := t.TempDir()
+
+	require.NoError(t, StageOverlays(suiteDir, workspace))
+	content, err := os.ReadFile(filepath.Join(workspace, "overlays", "gateway.toml"))
+	require.NoError(t, err)
+	require.Equal(t, "[a]\nb = true\n", string(content))
+
+	// A suite without overlays stages nothing.
+	empty := t.TempDir()
+	require.NoError(t, StageOverlays(t.TempDir(), empty))
+	require.NoDirExists(t, filepath.Join(empty, "overlays"))
+}
+
 const gatedSuite = `
 suite: gated
 defaults:
