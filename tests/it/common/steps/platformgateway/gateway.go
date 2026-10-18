@@ -154,6 +154,89 @@ func gatewayVersion(topo *frameworkruntime.Topology) string {
 	return version
 }
 
+// requireGatewayVersion skips the scenario when the gateway under test does not satisfy the
+// constraint, so one feature file can hold a scenario that needs a newer gateway than the
+// rest of its runner. A runner tag gates a whole runner; this gates one scenario.
+func (g *Gateway) requireGatewayVersion(_ context.Context, operator, version string) error {
+	ok, err := gatewaySatisfies(g.topo, operator, version)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return godog.ErrSkip
+	}
+	return nil
+}
+
+// gatewaySatisfies reports whether the gateway in topo satisfies "<operator><version>", with
+// the same rules as a runner's gateway-version tag: a release compares on major.minor.patch,
+// and the latest or a source-built gateway is newer than every release, so it satisfies only
+// ">" and ">=".
+func gatewaySatisfies(topo *frameworkruntime.Topology, operator, version string) (bool, error) {
+	want, err := parseReleaseVersion(version)
+	if err != nil {
+		return false, err
+	}
+	if topo == nil || topo.Block == nil {
+		return false, errors.New("gateway version: the topology has no block")
+	}
+	for _, component := range topo.Block.Components {
+		if component.Def == nil || component.Def.Name != "platform-gateway" {
+			continue
+		}
+		if component.BuildFromSource || strings.EqualFold(strings.TrimSpace(component.Version), "latest") {
+			return operator == ">" || operator == ">=", nil
+		}
+		have, err := parseReleaseVersion(component.Version)
+		if err != nil {
+			return false, fmt.Errorf("gateway version: %w", err)
+		}
+		cmp := 0
+		for i := range have {
+			if have[i] != want[i] {
+				cmp = 1
+				if have[i] < want[i] {
+					cmp = -1
+				}
+				break
+			}
+		}
+		switch operator {
+		case ">":
+			return cmp > 0, nil
+		case ">=":
+			return cmp >= 0, nil
+		case "<":
+			return cmp < 0, nil
+		case "<=":
+			return cmp <= 0, nil
+		case "=", "==":
+			return cmp == 0, nil
+		default:
+			return false, fmt.Errorf("gateway version: unsupported operator %q", operator)
+		}
+	}
+	return false, errors.New("gateway version: the block declares no platform-gateway")
+}
+
+// parseReleaseVersion parses major.minor.patch, or a four-part released tag such as 1.2.0.6,
+// which compares on its first three parts.
+func parseReleaseVersion(raw string) ([3]uint64, error) {
+	var out [3]uint64
+	parts := strings.Split(strings.TrimPrefix(strings.TrimSpace(raw), "v"), ".")
+	if len(parts) != 3 && len(parts) != 4 {
+		return out, fmt.Errorf("%q is not a release version (major.minor.patch)", raw)
+	}
+	for i, part := range parts[:3] {
+		value, err := strconv.ParseUint(part, 10, 64)
+		if err != nil {
+			return out, fmt.Errorf("%q is not a release version (major.minor.patch)", raw)
+		}
+		out[i] = value
+	}
+	return out, nil
+}
+
 func gatewayAdminBasePath(topo *frameworkruntime.Topology) string {
 	return adminBasePathForVersion(gatewayVersion(topo))
 }
@@ -1108,6 +1191,7 @@ type resourceMetadata struct {
 
 // register wires gateway, health, and timeout steps.
 func (g *Gateway) register(sc *godog.ScenarioContext) {
+	sc.Step(`^the gateway version satisfies "(>=|>|<=|<|==|=)([0-9.]+)"$`, g.requireGatewayVersion)
 	g.registerRawHTTPSteps(sc)
 	g.registerA2AClientSteps(sc)
 	g.registerAgentSteps(sc)

@@ -45,6 +45,7 @@ import (
 	"github.com/wso2/api-platform/tests/framework/core/cleanup"
 	"github.com/wso2/api-platform/tests/framework/core/components"
 	frameworkruntime "github.com/wso2/api-platform/tests/framework/core/runtime"
+	"github.com/wso2/api-platform/tests/framework/core/topology"
 	"github.com/wso2/api-platform/tests/framework/core/util/a2ax"
 	"github.com/wso2/api-platform/tests/framework/core/util/httpx"
 	"github.com/wso2/api-platform/tests/framework/core/util/tcontext"
@@ -1381,4 +1382,53 @@ func TestManagementEndpointDeleteWaitsForTheControllerOnReleasesWithTheRace(t *t
 
 	require.NoError(t, endpoint.delete(t.Context(), httpx.NewClient(httpx.Options{MaxRetries: 1}), "/rest-apis", "api-1"))
 	require.GreaterOrEqual(t, dumps.Load(), int32(2), "the sweep returned before the controller applied the deletion")
+}
+
+// TestGatewaySatisfies holds the scenario-level version guard to the runner tag's rules: a
+// release compares on major.minor.patch, and the latest or a source-built gateway is newer
+// than every release, so it satisfies only ">" and ">=".
+func TestGatewaySatisfies(t *testing.T) {
+	topoFor := func(version string, fromSource bool) *frameworkruntime.Topology {
+		return &frameworkruntime.Topology{Block: &topology.ResolvedBlock{Components: []topology.ResolvedComponent{
+			{Def: &components.Definition{Name: "testbench"}},
+			{Def: &components.Definition{Name: "platform-gateway"}, Version: version, BuildFromSource: fromSource},
+		}}}
+	}
+	cases := []struct {
+		name       string
+		version    string
+		fromSource bool
+		operator   string
+		want       string
+		ok         bool
+	}{
+		{"older release", "1.1.0", false, ">=", "1.2.0", false},
+		{"equal release", "1.2.0", false, ">=", "1.2.0", true},
+		{"newer release", "1.2.0", false, ">", "1.1.0", true},
+		{"four-part tag", "1.2.0.6", false, "==", "1.2.0", true},
+		{"less than", "1.1.0", false, "<", "1.2.0", true},
+		{"latest is newer", "latest", false, ">", "1.2.0", true},
+		{"latest fails a less-than", "latest", false, "<=", "1.2.0", false},
+		{"source build is newer", "", true, ">=", "1.2.0", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ok, err := gatewaySatisfies(topoFor(c.version, c.fromSource), c.operator, c.want)
+			require.NoError(t, err)
+			require.Equal(t, c.ok, ok)
+		})
+	}
+
+	_, err := gatewaySatisfies(topoFor("main-abc123", false), ">=", "1.2.0")
+	require.Error(t, err, "an unparseable gateway version is an error, never a guess")
+	_, err = gatewaySatisfies(topoFor("1.2.0", false), ">=", "1.2")
+	require.Error(t, err, "the constraint needs major.minor.patch")
+	_, err = gatewaySatisfies(nil, ">=", "1.2.0")
+	require.Error(t, err)
+	_, err = gatewaySatisfies(&frameworkruntime.Topology{Block: &topology.ResolvedBlock{}}, ">=", "1.2.0")
+	require.Error(t, err, "a block without a gateway has no version to check")
+
+	g := &Gateway{topo: topoFor("1.1.0", false)}
+	require.ErrorIs(t, g.requireGatewayVersion(context.Background(), ">=", "1.2.0"), godog.ErrSkip)
+	require.NoError(t, g.requireGatewayVersion(context.Background(), ">=", "1.1.0"))
 }
