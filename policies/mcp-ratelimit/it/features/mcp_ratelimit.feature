@@ -56,7 +56,8 @@ Feature: Mcp ratelimit policy
       """
       {"jsonrpc":"2.0","id":41,"method":"tools/call","params":{"name":"add","arguments":{"a":40,"b":60}}}
       """
-    And I send a "POST" request to "${CTX:mcpContext}/mcp" with body:
+    Then the response status code should be 200
+    When I send a "POST" request to "${CTX:mcpContext}/mcp" with body:
       """
       {"jsonrpc":"2.0","id":42,"method":"tools/call","params":{"name":"add","arguments":{"a":40,"b":60}}}
       """
