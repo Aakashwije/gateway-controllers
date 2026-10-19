@@ -127,6 +127,18 @@ A policy without `it/it-suite.yaml` has no integration tests, and the pull reque
 - Add scenarios to the policy's existing feature before creating another file.
 - The mock backends are the testbench services (for example `http://testbench:3000`,
   `http://testbench:3008/openai/v1`). Do not start containers of your own.
+- When one scenario needs a newer gateway than the rest of its runner, start it with
+  `Given the gateway version satisfies ">=1.2.0"` (operators `>`, `>=`, `<`, `<=`, `=`). It skips
+  the scenario on any other gateway, with the same rules as a runner tag: `latest` is newer than
+  every release. Gate the runner instead when every scenario in it needs the newer gateway.
+- Hold a policy's error response to a recorded one with `the response should match the expected
+  error response "<id>"`. It compares the status, the contract headers and the body, with UUIDs,
+  timestamps and generated names masked, against
+  `policies/<name>/it/resources/expected-error-responses/<id>.json`, one file for every gateway
+  version. A gateway version whose response genuinely differs gets its own
+  `expected-error-responses/<version>/<id>.json`. Record a missing file by running with
+  `IT_RECORD_EXPECTED_ERRORS=1` against the policy as it was before the change; record an intended
+  difference beside it, as `<id>.accepted.json`, with `IT_ACCEPT_ERROR_CHANGES=1`.
 
 ## Steps and resources
 
