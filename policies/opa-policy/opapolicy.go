@@ -128,6 +128,9 @@ func GetPolicy(_ policy.PolicyMetadata, params map[string]interface{}) (policy.P
 		client: &http.Client{
 			Timeout:   time.Duration(timeoutSecs) * time.Second,
 			Transport: transport,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 		},
 	}, nil
 }
@@ -278,6 +281,9 @@ func (p *OPAPolicy) handleResponse(body []byte) (bool, error) {
 	result, ok := resp[resultKey]
 	if !ok {
 		return false, fmt.Errorf("empty result received for the OPA policy %q for rule %q", p.policyName, p.rule)
+	}
+	if string(result) == "null" {
+		return false, fmt.Errorf("the field %q is null: invalid decision for the OPA policy %q for rule %q", resultKey, p.policyName, p.rule)
 	}
 
 	var allowed bool

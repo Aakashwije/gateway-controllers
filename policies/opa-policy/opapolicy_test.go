@@ -208,6 +208,7 @@ func TestOnRequestHeaders_Errors(t *testing.T) {
 		body   string
 	}{
 		"undefined decision": {200, `{}`},
+		"null decision":      {200, `{"result": null}`},
 		"non boolean":        {200, `{"result": "yes"}`},
 		"invalid json":       {200, `not-json`},
 		"server error":       {503, `{"result": true}`},
@@ -252,6 +253,24 @@ func TestOnRequestHeaders_Timeout(t *testing.T) {
 	}
 }
 
+func TestOnRequestHeaders_RedirectNotFollowed(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("redirect target must not be reached")
+	}))
+	t.Cleanup(target.Close)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Redirect(w, &http.Request{}, target.URL+"/elsewhere", http.StatusFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	p := newPolicy(t, map[string]interface{}{"serverUrl": srv.URL, "policy": "authz", "accessKey": "secret"})
+	resp, ok := p.OnRequestHeaders(context.Background(), newReqCtx(), nil).(policy.ImmediateResponse)
+	if !ok || resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected 500 on non-200 redirect response, got %#v", resp)
+	}
+}
+
 func TestHandleResponse(t *testing.T) {
 	p := newPolicy(t, map[string]interface{}{"serverUrl": "http://opa", "policy": "authz"})
 
@@ -260,6 +279,9 @@ func TestHandleResponse(t *testing.T) {
 	}
 	if allowed, err := p.handleResponse([]byte(`{"result": false}`)); err != nil || allowed {
 		t.Fatalf("expected deny, got %v %v", allowed, err)
+	}
+	if _, err := p.handleResponse([]byte(`{"result": null}`)); err == nil {
+		t.Fatalf("null result must be an error")
 	}
 	// An object result means the rule is not a boolean rule: reject it.
 	if _, err := p.handleResponse([]byte(`{"result": {"allow": true}}`)); err == nil {
