@@ -114,7 +114,10 @@ func (p *TranslatorPolicy) OnRequestBody(
 	slog.Debug(PolicyName+": translating request",
 		"providerId", p.params.ProviderID, "model", model, "streaming", streaming, "path", path)
 
-	mods := translateRequest(payload)
+	mods, err := translateRequest(payload)
+	if err != nil {
+		return errResponse(400, err.Error())
+	}
 	mods.Path = &path
 	if p.params.ProviderID != "" && mods.UpstreamName == nil {
 		upstream := p.params.ProviderID
