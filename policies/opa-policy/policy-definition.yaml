@@ -36,9 +36,8 @@ parameters:
     rule:
       type: string
       x-wso2-policy-advanced-param: false
-      description: >-
-        Rule of the policy that yields the boolean decision. If set to an empty string,
-        the default `allow` rule of the policy document is read from the response.
+      description: Rule of the policy that yields the boolean decision (e.g. `allow`).
+      minLength: 1
       default: allow
     sendAccessToken:
       type: boolean
@@ -73,6 +72,7 @@ parameters:
   required:
     - serverUrl
     - policy
+    - rule
 
 systemParameters:
   type: object

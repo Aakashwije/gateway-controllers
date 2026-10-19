@@ -60,6 +60,9 @@ func newReqCtx() *policy.RequestHeaderContext {
 
 func newPolicy(t *testing.T, params map[string]interface{}) *OPAPolicy {
 	t.Helper()
+	if _, ok := params["rule"]; !ok {
+		params["rule"] = "allow"
+	}
 	p, err := GetPolicy(policy.PolicyMetadata{}, params)
 	if err != nil {
 		t.Fatalf("GetPolicy: %v", err)
@@ -85,13 +88,15 @@ func opaServer(t *testing.T, status int, response string, onReq func(r *http.Req
 
 func TestGetPolicy_Validation(t *testing.T) {
 	cases := map[string]map[string]interface{}{
-		"missing serverUrl":   {"policy": "authz"},
-		"missing policy":      {"serverUrl": "http://opa:8181/v1/data"},
-		"bad scheme":          {"serverUrl": "ftp://opa", "policy": "authz"},
+		"missing serverUrl":   {"policy": "authz", "rule": "allow"},
+		"missing policy":      {"serverUrl": "http://opa:8181/v1/data", "rule": "allow"},
+		"missing rule":        {"serverUrl": "http://opa", "policy": "authz"},
+		"empty rule":          {"serverUrl": "http://opa", "policy": "authz", "rule": "  "},
+		"bad scheme":          {"serverUrl": "ftp://opa", "policy": "authz", "rule": "allow"},
 		"bad rule type":       {"serverUrl": "http://opa", "policy": "authz", "rule": 5},
-		"bad timeout":         {"serverUrl": "http://opa", "policy": "authz", "connectionTimeout": 0},
-		"bad max connections": {"serverUrl": "http://opa", "policy": "authz", "maxOpenConnections": 1000},
-		"bad additional":      {"serverUrl": "http://opa", "policy": "authz", "additionalProperties": []interface{}{1}},
+		"bad timeout":         {"serverUrl": "http://opa", "policy": "authz", "rule": "allow", "connectionTimeout": 0},
+		"bad max connections": {"serverUrl": "http://opa", "policy": "authz", "rule": "allow", "maxOpenConnections": 1000},
+		"bad additional":      {"serverUrl": "http://opa", "policy": "authz", "rule": "allow", "additionalProperties": []interface{}{1}},
 	}
 	for name, params := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -104,9 +109,6 @@ func TestGetPolicy_Validation(t *testing.T) {
 
 func TestBuildRequestURL(t *testing.T) {
 	if got := buildRequestURL("http://opa:8181/v1/data/", "authz/policy", "allow"); got != "http://opa:8181/v1/data/authz/policy/allow" {
-		t.Fatalf("unexpected url %s", got)
-	}
-	if got := buildRequestURL("http://opa:8181/v1/data", "authz", ""); got != "http://opa:8181/v1/data/authz" {
 		t.Fatalf("unexpected url %s", got)
 	}
 }
@@ -250,25 +252,18 @@ func TestOnRequestHeaders_Timeout(t *testing.T) {
 	}
 }
 
-func TestHandleResponse_NoRuleUsesDefaultAllow(t *testing.T) {
-	var gotPath string
-	srv := opaServer(t, 200, `{"result": {"allow": true, "other": 1}}`, func(r *http.Request, _ map[string]interface{}) {
-		gotPath = r.URL.Path
-	})
-	p := newPolicy(t, map[string]interface{}{"serverUrl": srv.URL + "/v1/data", "policy": "authz", "rule": ""})
+func TestHandleResponse(t *testing.T) {
+	p := newPolicy(t, map[string]interface{}{"serverUrl": "http://opa", "policy": "authz"})
 
-	if _, ok := p.OnRequestHeaders(context.Background(), newReqCtx(), nil).(policy.UpstreamRequestHeaderModifications); !ok {
-		t.Fatalf("expected allow")
+	if allowed, err := p.handleResponse([]byte(`{"result": true}`)); err != nil || !allowed {
+		t.Fatalf("expected allow, got %v %v", allowed, err)
 	}
-	if gotPath != "/v1/data/authz" {
-		t.Fatalf("path %s", gotPath)
-	}
-
-	if _, err := p.handleResponse([]byte(`{"result": {"other": true}}`)); err == nil {
-		t.Fatalf("missing allow rule must be an error")
-	}
-	if allowed, err := p.handleResponse([]byte(`{"result": {"allow": false}}`)); err != nil || allowed {
+	if allowed, err := p.handleResponse([]byte(`{"result": false}`)); err != nil || allowed {
 		t.Fatalf("expected deny, got %v %v", allowed, err)
+	}
+	// An object result means the rule is not a boolean rule: reject it.
+	if _, err := p.handleResponse([]byte(`{"result": {"allow": true}}`)); err == nil {
+		t.Fatalf("object result must be an error")
 	}
 }
 

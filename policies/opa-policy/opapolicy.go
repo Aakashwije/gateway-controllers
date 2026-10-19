@@ -36,13 +36,11 @@ import (
 )
 
 const (
-	defaultRule               = "allow"
 	defaultMaxOpenConnections = 500
 	defaultConnectionTimeout  = 30 // seconds
 	maxOPAResponseSize        = 1024 * 1024
 
-	// Keys of the OPA input document. They match the APIM OPA request generator
-	// so that Rego policies written for APIM keep working.
+	// Keys of the OPA input document.
 	inputKey                = "input"
 	requestOriginKey        = "requestOrigin"
 	requestMethodKey        = "requestMethod"
@@ -85,13 +83,9 @@ func GetPolicy(_ policy.PolicyMetadata, params map[string]interface{}) (policy.P
 		return nil, err
 	}
 
-	rule := defaultRule
-	if raw, ok := params["rule"]; ok {
-		s, ok := raw.(string)
-		if !ok {
-			return nil, fmt.Errorf("'rule' must be a string")
-		}
-		rule = strings.TrimSpace(s)
+	rule, err := requiredString(params, "rule")
+	if err != nil {
+		return nil, err
 	}
 
 	accessKey, err := optionalString(params, "accessKey")
@@ -273,12 +267,9 @@ func (p *OPAPolicy) callOPA(ctx context.Context, payload []byte) ([]byte, error)
 	return body, nil
 }
 
-// handleResponse extracts the boolean decision from the OPA response.
-//
-// With a rule configured, OPA returns {"result": <bool>}. Without a rule, the
-// whole policy document is evaluated and the default `allow` rule is read from
-// {"result": {"allow": <bool>}}. An undefined decision ({}) is an error, like
-// in the APIM implementation.
+// handleResponse extracts the boolean decision from the OPA response, which
+// is {"result": <bool>} for the configured rule. An undefined decision ({}) is
+// an error
 func (p *OPAPolicy) handleResponse(body []byte) (bool, error) {
 	var resp map[string]json.RawMessage
 	if err := json.Unmarshal(body, &resp); err != nil {
@@ -289,35 +280,15 @@ func (p *OPAPolicy) handleResponse(body []byte) (bool, error) {
 		return false, fmt.Errorf("empty result received for the OPA policy %q for rule %q", p.policyName, p.rule)
 	}
 
-	if p.rule != "" {
-		var allowed bool
-		if err := json.Unmarshal(result, &allowed); err != nil {
-			return false, fmt.Errorf("the field %q is not a boolean: %w", resultKey, err)
-		}
-		return allowed, nil
-	}
-
-	var doc map[string]json.RawMessage
-	if err := json.Unmarshal(result, &doc); err != nil {
-		return false, fmt.Errorf("the field %q is not an object: %w", resultKey, err)
-	}
-	rawAllow, ok := doc[defaultRule]
-	if !ok {
-		return false, fmt.Errorf("the default %q rule was not found in the OPA result", defaultRule)
-	}
 	var allowed bool
-	if err := json.Unmarshal(rawAllow, &allowed); err != nil {
-		return false, fmt.Errorf("the default %q rule is not a boolean: %w", defaultRule, err)
+	if err := json.Unmarshal(result, &allowed); err != nil {
+		return false, fmt.Errorf("the field %q is not a boolean: %w", resultKey, err)
 	}
 	return allowed, nil
 }
 
 func buildRequestURL(serverURL, policyName, rule string) string {
-	u := strings.TrimRight(serverURL, "/") + "/" + strings.Trim(policyName, "/")
-	if rule != "" {
-		u += "/" + strings.Trim(rule, "/")
-	}
-	return u
+	return strings.TrimRight(serverURL, "/") + "/" + strings.Trim(policyName, "/") + "/" + strings.Trim(rule, "/")
 }
 
 func flattenHeaders(h *policy.Headers) map[string]string {
