@@ -21,11 +21,13 @@ parameters:
       pattern: '^https?://[^\s]+$'
     accessKey:
       type: string
+      format: password
       x-wso2-policy-advanced-param: false
       description: >-
         Access key for the validation request. Required only if token authentication is
-        enabled at the OPA server. Sent as a Bearer token in the Authorization header of
-        the OPA request.
+        enabled at the OPA server. Sent as a Bearer token in the Authorization header 
+        of the OPA request. Can be a plain string or a secret reference
+        such as '{{ secret "my-secret-id" }}'.
     policy:
       type: string
       x-wso2-policy-advanced-param: false
