@@ -9,8 +9,6 @@ The Validate Request with OPA policy delegates the allow/deny decision for an AP
 
 When the gateway receives a request, the policy extracts a predefined set of request metadata (HTTP method, path, headers, client IP, the matched operation and authentication details), sends it to OPA over HTTP or HTTPS as the `input` document, and evaluates the boolean rule you configured. A decision of `true` lets the request continue to the upstream service; anything else blocks it. The policy fails closed: if OPA cannot be reached or does not return a usable decision, the request is rejected.
 
-The policy runs in the **request flow** only and does not read or buffer the request body. It is the API Platform counterpart of the *Validate Request with OPA* policy of WSO2 API Manager, and it sends an input document with the same top-level keys so that existing Rego policies can be reused with minor changes (see [Migrating from WSO2 API Manager](#migrating-from-wso2-api-manager)).
-
 > **Before you apply the policy:** make sure the OPA server is running, reachable from the gateway runtime, and has the Rego policy you reference loaded. If you use HTTPS, the OPA server certificate must be trusted by the gateway runtime.
 
 ## Features
