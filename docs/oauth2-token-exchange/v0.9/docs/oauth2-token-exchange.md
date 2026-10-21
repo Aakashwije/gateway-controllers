@@ -1,4 +1,4 @@
-# OAuth Token Exchange
+# OAuth2 Token Exchange
 
 Exchanges your API caller's inbound credential (e.g. an access token or JWT) for a different token issued by your backend's own OAuth2 authorization server, then attaches the exchanged token to the request before it reaches your backend. Implements [RFC 8693 Token Exchange](https://www.rfc-editor.org/rfc/rfc8693) (default) and [RFC 7523 JWT Bearer](https://www.rfc-editor.org/rfc/rfc7523).
 
@@ -52,7 +52,8 @@ When `tokenCaching` is enabled (the default), exchanged tokens are cached in mem
 
 ```yaml
 policies:
-  - name: oauth-token-exchange
+  - name: oauth2-token-exchange
+    version: v0
     parameters:
       tokenEndpoint: https://auth.backend.example.com/oauth2/token
       grantType: TokenExchange

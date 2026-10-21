@@ -15,7 +15,7 @@
  *
  */
 
-// Package oauthtokenexchange implements RFC 8693 (Token Exchange) and RFC 7523
+// Package oauth2tokenexchange implements RFC 8693 (Token Exchange) and RFC 7523
 // (JWT Bearer) so a gateway can swap the caller's own credential for a
 // backend-specific token minted by an external OAuth2 authorization server,
 // before the request is forwarded upstream. Unlike backend-jwt (which mints a
@@ -53,7 +53,7 @@
 // attached to regardless of whether the header-phase attempt succeeds — the
 // body-phase retry has to be available as the final word before the request
 // can be allowed to fail.
-package oauthtokenexchange
+package oauth2tokenexchange
 
 import (
 	"bytes"
@@ -122,7 +122,7 @@ type cachedToken struct {
 // whole chain: the kernel never buffers the body or runs OnRequestBody (or
 // any later policy) for that request at all.
 const (
-	metadataKeyHeaderPhaseOutcome = "oauthTokenExchange.headerPhaseOutcome"
+	metadataKeyHeaderPhaseOutcome = "oauth2TokenExchange.headerPhaseOutcome"
 
 	// headerPhaseOutcomeSucceeded means the header phase already resolved and
 	// attached the exchanged token upstream. OnRequestBody treats this as a
@@ -168,7 +168,7 @@ func headerPhaseSucceeded(shared *policy.SharedContext) bool {
 // changed and the exchange already attached upstream is still correct; a
 // mismatch (or the subject token disappearing entirely) means it is not,
 // and OnRequestBody repeats the exchange against the current value instead.
-const metadataKeySubjectTokenHash = "oauthTokenExchange.subjectTokenHash"
+const metadataKeySubjectTokenHash = "oauth2TokenExchange.subjectTokenHash"
 
 func storeSubjectTokenHash(shared *policy.SharedContext, subjectToken string) {
 	if shared == nil {
@@ -209,7 +209,7 @@ func subjectTokenHashMatches(shared *policy.SharedContext, currentToken string) 
 // subject token. Comparing the whole written value, rather than re-extracting
 // it with subjectTokenSource.prefix, keeps that check correct when the source
 // and output prefixes differ (e.g. "Token " in, "Bearer " out).
-const metadataKeyOutputHeaderHash = "oauthTokenExchange.outputHeaderHash"
+const metadataKeyOutputHeaderHash = "oauth2TokenExchange.outputHeaderHash"
 
 func storeOutputHeaderHash(shared *policy.SharedContext, headerValue string) {
 	if shared == nil {
@@ -251,7 +251,7 @@ func outputHeaderIntact(shared *policy.SharedContext, headers *policy.Headers, h
 // indistinguishable from the credential genuinely vanishing, and
 // OnRequestBody fails the request closed on every request instead of
 // trusting the already-correct header-phase result.
-const metadataKeySelfRemovedSubjectField = "oauthTokenExchange.selfRemovedSubjectField"
+const metadataKeySelfRemovedSubjectField = "oauth2TokenExchange.selfRemovedSubjectField"
 
 func markSelfRemovedSubjectField(shared *policy.SharedContext) {
 	if shared == nil {
@@ -280,13 +280,13 @@ func hashSubjectToken(subjectToken string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// OAuthTokenExchangePolicy exchanges the caller's inbound credential for a
+// OAuth2TokenExchangePolicy exchanges the caller's inbound credential for a
 // backend-specific token at an external OAuth2 authorization server and
 // attaches it to the upstream request. It never forwards the original
 // subject token upstream, and it never forwards it to the client — on any
 // exchange failure the request is rejected rather than falling back to the
 // original credential.
-type OAuthTokenExchangePolicy struct {
+type OAuth2TokenExchangePolicy struct {
 	// cacheMu guards the tokenCache pointer and currentMaxSize, following the
 	// same swap-on-resize pattern as backend-jwt's token cache: the SDK cache
 	// fixes its size at construction, so a changed cacheMaxSize is applied by
@@ -297,10 +297,10 @@ type OAuthTokenExchangePolicy struct {
 }
 
 func newTokenCache(maxSize int) *cache.InMemoryCache[cachedToken] {
-	return cache.NewInMemoryCache[cachedToken]("oauth-token-exchange-tokens", maxSize, 0, cache.LRUEvictionPolicy, slog.Default())
+	return cache.NewInMemoryCache[cachedToken]("oauth2-token-exchange-tokens", maxSize, 0, cache.LRUEvictionPolicy, slog.Default())
 }
 
-var ins = &OAuthTokenExchangePolicy{
+var ins = &OAuth2TokenExchangePolicy{
 	tokenCache:     newTokenCache(defaultCacheMaxSize),
 	currentMaxSize: defaultCacheMaxSize,
 }
@@ -316,7 +316,7 @@ func GetPolicy(_ policy.PolicyMetadata, params map[string]interface{}) (policy.P
 	return ins, nil
 }
 
-func (p *OAuthTokenExchangePolicy) ensureTokenCache(maxSize int) {
+func (p *OAuth2TokenExchangePolicy) ensureTokenCache(maxSize int) {
 	p.cacheMu.RLock()
 	if p.tokenCache != nil && p.currentMaxSize == maxSize {
 		p.cacheMu.RUnlock()
@@ -333,13 +333,13 @@ func (p *OAuthTokenExchangePolicy) ensureTokenCache(maxSize int) {
 	p.currentMaxSize = maxSize
 }
 
-func (p *OAuthTokenExchangePolicy) currentTokenCache() *cache.InMemoryCache[cachedToken] {
+func (p *OAuth2TokenExchangePolicy) currentTokenCache() *cache.InMemoryCache[cachedToken] {
 	p.cacheMu.RLock()
 	defer p.cacheMu.RUnlock()
 	return p.tokenCache
 }
 
-func (p *OAuthTokenExchangePolicy) Mode() policy.ProcessingMode {
+func (p *OAuth2TokenExchangePolicy) Mode() policy.ProcessingMode {
 	return policy.ProcessingMode{
 		RequestHeaderMode:  policy.HeaderModeProcess,
 		RequestBodyMode:    policy.BodyModeBuffer,
@@ -351,7 +351,7 @@ func (p *OAuthTokenExchangePolicy) Mode() policy.ProcessingMode {
 // Validate performs eager config checks (same convention as backend-jwt's own
 // Validate). It is not invoked by the kernel today, so OnRequestBody always
 // re-validates via parseConfig on every request rather than assuming this ran.
-func (p *OAuthTokenExchangePolicy) Validate(params map[string]interface{}) error {
+func (p *OAuth2TokenExchangePolicy) Validate(params map[string]interface{}) error {
 	_, err := parseConfig(params)
 	return err
 }
@@ -508,10 +508,10 @@ func parseConfig(params map[string]interface{}) (*exchangeConfig, error) {
 // differently on a second attempt with the same inputs, and returning
 // ImmediateResponse here short-circuits the whole chain — the kernel never
 // buffers the body or runs OnRequestBody for this request at all.
-func (p *OAuthTokenExchangePolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.RequestHeaderContext, params map[string]interface{}) policy.RequestHeaderAction {
+func (p *OAuth2TokenExchangePolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.RequestHeaderContext, params map[string]interface{}) policy.RequestHeaderAction {
 	cfg, err := parseConfig(params)
 	if err != nil {
-		slog.Error("OAuth token exchange: invalid policy configuration", "phase", "header", "error", err)
+		slog.Error("OAuth2 token exchange: invalid policy configuration", "phase", "header", "error", err)
 		return internalError()
 	}
 
@@ -525,7 +525,7 @@ func (p *OAuthTokenExchangePolicy) OnRequestHeaders(ctx context.Context, reqCtx 
 		// Expected whenever the subject token is only supplied by a
 		// body-phase policy earlier in the chain (e.g. mcp-auth) that has
 		// not run yet — routine deferral, not a failure of this phase.
-		slog.Debug("OAuth token exchange: subject token not yet available at header phase, deferring to body phase",
+		slog.Debug("OAuth2 token exchange: subject token not yet available at header phase, deferring to body phase",
 			"api", apiName,
 			"source", cfg.subjectSource.kind,
 			"name", cfg.subjectSource.name,
@@ -541,7 +541,7 @@ func (p *OAuthTokenExchangePolicy) OnRequestHeaders(ctx context.Context, reqCtx 
 		// same way every time), so this is rejected here and now rather than
 		// deferred — the kernel short-circuits the rest of the chain.
 		trackingID := newTrackingID()
-		slog.Error("OAuth token exchange: exchange failed",
+		slog.Error("OAuth2 token exchange: exchange failed",
 			"phase", "header",
 			"trackingId", trackingID,
 			"tokenEndpointHost", cfg.tokenEndpoint.Host,
@@ -595,10 +595,10 @@ func (p *OAuthTokenExchangePolicy) OnRequestHeaders(ctx context.Context, reqCtx 
 // request: the original subject token is never forwarded upstream, and no
 // internal detail (upstream error body, resolved host, stack trace) reaches
 // the client.
-func (p *OAuthTokenExchangePolicy) OnRequestBody(ctx context.Context, reqCtx *policy.RequestContext, params map[string]interface{}) policy.RequestAction {
+func (p *OAuth2TokenExchangePolicy) OnRequestBody(ctx context.Context, reqCtx *policy.RequestContext, params map[string]interface{}) policy.RequestAction {
 	cfg, err := parseConfig(params)
 	if err != nil {
-		slog.Error("OAuth token exchange: invalid policy configuration", "phase", "body", "error", err)
+		slog.Error("OAuth2 token exchange: invalid policy configuration", "phase", "body", "error", err)
 		return internalError()
 	}
 
@@ -622,7 +622,7 @@ func (p *OAuthTokenExchangePolicy) OnRequestBody(ctx context.Context, reqCtx *po
 		}
 	}
 	if headerPhaseSucceeded(reqCtx.SharedContext) {
-		slog.Debug("OAuth token exchange: subject token or exchanged header changed since header phase, re-exchanging",
+		slog.Debug("OAuth2 token exchange: subject token or exchanged header changed since header phase, re-exchanging",
 			"api", reqCtx.APIName,
 			"source", cfg.subjectSource.kind,
 			"name", cfg.subjectSource.name,
@@ -631,7 +631,7 @@ func (p *OAuthTokenExchangePolicy) OnRequestBody(ctx context.Context, reqCtx *po
 
 	token, subjectToken, subjectMissing, exchangeErr := p.resolveSubjectAndToken(ctx, "body", reqCtx.APIName, cfg, reqCtx.Headers, reqCtx.Path)
 	if subjectMissing {
-		slog.Warn("OAuth token exchange: subject token missing or empty",
+		slog.Warn("OAuth2 token exchange: subject token missing or empty",
 			"api", reqCtx.APIName,
 			"source", cfg.subjectSource.kind,
 			"name", cfg.subjectSource.name,
@@ -647,7 +647,7 @@ func (p *OAuthTokenExchangePolicy) OnRequestBody(ctx context.Context, reqCtx *po
 	}
 	if exchangeErr != nil {
 		trackingID := newTrackingID()
-		slog.Error("OAuth token exchange: exchange failed",
+		slog.Error("OAuth2 token exchange: exchange failed",
 			"phase", "body",
 			"trackingId", trackingID,
 			"tokenEndpointHost", cfg.tokenEndpoint.Host,
@@ -658,7 +658,7 @@ func (p *OAuthTokenExchangePolicy) OnRequestBody(ctx context.Context, reqCtx *po
 		return badGatewayResponse(trackingID)
 	}
 
-	slog.Debug("OAuth token exchange: exchange succeeded", "phase", "body", "api", reqCtx.APIName, "grantType", cfg.grantType)
+	slog.Debug("OAuth2 token exchange: exchange succeeded", "phase", "body", "api", reqCtx.APIName, "grantType", cfg.grantType)
 	return upstreamAction(cfg, token, reqCtx.Headers)
 }
 
@@ -685,12 +685,12 @@ func badGatewayResponse(trackingID string) policy.ImmediateResponse {
 // request at all. exchangeErr is non-nil only when a credential was found
 // but the call to the token endpoint did not succeed. Exactly one of
 // (subjectMissing, exchangeErr != nil, token != "") holds.
-func (p *OAuthTokenExchangePolicy) resolveSubjectAndToken(ctx context.Context, phase, apiName string, cfg *exchangeConfig, headers *policy.Headers, path string) (token, subjectToken string, subjectMissing bool, exchangeErr error) {
+func (p *OAuth2TokenExchangePolicy) resolveSubjectAndToken(ctx context.Context, phase, apiName string, cfg *exchangeConfig, headers *policy.Headers, path string) (token, subjectToken string, subjectMissing bool, exchangeErr error) {
 	subjectToken, ok := extractSubjectToken(headers, path, cfg.subjectSource)
 	if !ok {
 		return "", "", true, nil
 	}
-	slog.Debug("OAuth token exchange: subject token extracted",
+	slog.Debug("OAuth2 token exchange: subject token extracted",
 		"phase", phase,
 		"api", apiName,
 		"source", cfg.subjectSource.kind,
@@ -700,12 +700,12 @@ func (p *OAuthTokenExchangePolicy) resolveSubjectAndToken(ctx context.Context, p
 	cacheKey := buildCacheKey(apiName, cfg, subjectToken)
 	if cfg.tokenCaching {
 		if tok, ok := p.getCachedToken(ctx, cacheKey); ok {
-			slog.Debug("OAuth token exchange: cache hit", "phase", phase, "api", apiName, "grantType", cfg.grantType)
+			slog.Debug("OAuth2 token exchange: cache hit", "phase", phase, "api", apiName, "grantType", cfg.grantType)
 			return tok, subjectToken, false, nil
 		}
 	}
 
-	slog.Debug("OAuth token exchange: calling token endpoint",
+	slog.Debug("OAuth2 token exchange: calling token endpoint",
 		"phase", phase,
 		"api", apiName,
 		"tokenEndpointHost", cfg.tokenEndpoint.Host,
@@ -766,7 +766,7 @@ func extractSubjectToken(headers *policy.Headers, path string, src subjectTokenS
 		// length are logged, never the raw value. That's enough to tell
 		// whether a "Bearer " prefix is actually present, or the value is
 		// something unexpected (empty, truncated, wrong claim altogether).
-		slog.Debug("OAuth token exchange: header value found",
+		slog.Debug("OAuth2 token exchange: header value found",
 			"name", src.name,
 			"valuePreview", maskToken(v),
 			"valueLength", len(v),
@@ -782,7 +782,7 @@ func extractSubjectToken(headers *policy.Headers, path string, src subjectTokenS
 				// Logging the configured prefix (a static config string,
 				// never the credential itself) makes that distinction
 				// visible without exposing v.
-				slog.Warn("OAuth token exchange: header present but does not start with the configured prefix",
+				slog.Warn("OAuth2 token exchange: header present but does not start with the configured prefix",
 					"name", src.name,
 					"configuredPrefix", src.prefix,
 					"valuePreview", maskToken(v),
@@ -983,7 +983,7 @@ func redirectGuardedClient(client *http.Client) *http.Client {
 func performTokenExchange(ctx context.Context, cfg *exchangeConfig, subjectToken string) (string, time.Duration, error) {
 	client := utils.SharedHTTPClient()
 	if client == nil {
-		slog.Warn("OAuth token exchange: shared HTTP client not configured, using fallback client")
+		slog.Warn("OAuth2 token exchange: shared HTTP client not configured, using fallback client")
 		client = fallbackHTTPClient()
 	} else {
 		client = redirectGuardedClient(client)
@@ -1150,7 +1150,7 @@ func sortedCopy(s []string) []string {
 // getCachedToken returns a previously exchanged token if present and not yet
 // expired. Because the SDK cache never expires entries on its own (ttl=0),
 // expiry is enforced here against the stored expiresAt.
-func (p *OAuthTokenExchangePolicy) getCachedToken(ctx context.Context, key string) (string, bool) {
+func (p *OAuth2TokenExchangePolicy) getCachedToken(ctx context.Context, key string) (string, bool) {
 	tc := p.currentTokenCache()
 	if tc == nil {
 		return "", false
@@ -1171,7 +1171,7 @@ func (p *OAuthTokenExchangePolicy) getCachedToken(ctx context.Context, key strin
 // lifetime, floored at minCacheTTL only when that floor still fits strictly
 // inside the token's real lifetime — the cache TTL must never reach or
 // exceed expiresIn, or the cache could serve a token that has already expired.
-func (p *OAuthTokenExchangePolicy) putCachedToken(ctx context.Context, key, token string, expiresIn time.Duration) {
+func (p *OAuth2TokenExchangePolicy) putCachedToken(ctx context.Context, key, token string, expiresIn time.Duration) {
 	tc := p.currentTokenCache()
 	if tc == nil {
 		return

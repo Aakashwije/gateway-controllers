@@ -16,7 +16,7 @@
  * under the License.
  */
 
-// Package it_test runs the integration tests of the oauth-token-exchange policy.
+// Package it_test runs the integration tests of the oauth2-token-exchange policy.
 package it_test
 
 import (
@@ -24,7 +24,7 @@ import (
 
 	"github.com/wso2/gateway-controllers/tests/it/common/suite"
 
-	"github.com/wso2/gateway-controllers/policies/oauth-token-exchange/it/steps"
+	"github.com/wso2/gateway-controllers/policies/oauth2-token-exchange/it/steps"
 )
 
 // The chain scenarios attach jwt-auth and mcp-auth in front of the policy.

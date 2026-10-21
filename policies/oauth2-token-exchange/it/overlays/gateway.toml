@@ -16,12 +16,12 @@
 # under the License.
 # --------------------------------------------------------------------
 
-# The gateway configuration overlay of the oauth-token-exchange suite (it-suite.yaml names it).
+# The gateway configuration overlay of the oauth2-token-exchange suite (it-suite.yaml names it).
 
 # tokenEndpoint must be https:// unless this system parameter opts in to plain http. The
 # testbench "oauth2" service, the authorization server these scenarios exchange tokens with, is
 # plain HTTP like every other testbench service.
-[policy_configurations.oauthtokenexchange_v1]
+[policy_configurations.oauth2tokenexchange_v0]
 allowinsecuretokenendpoint = true
 
 # The jwt-auth and mcp-auth chain scenarios need "mock-jwks" to resolve as a key manager: their
