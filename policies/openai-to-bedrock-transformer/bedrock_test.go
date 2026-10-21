@@ -350,7 +350,10 @@ func TestTranslateRequest_ConverseShape(t *testing.T) {
 		"max_tokens":  100,
 		"temperature": 0.5,
 	}
-	mods := translateRequest(payload)
+	mods, err := translateRequest(payload)
+	if err != nil {
+		t.Fatalf("translateRequest failed: %v", err)
+	}
 
 	var body map[string]interface{}
 	if err := json.Unmarshal(mods.Body, &body); err != nil {
@@ -378,7 +381,10 @@ func TestTranslateRequest_OmitsMaxTokensWhenNotSupplied(t *testing.T) {
 			map[string]interface{}{"role": "user", "content": "hi"},
 		},
 	}
-	mods := translateRequest(payload)
+	mods, err := translateRequest(payload)
+	if err != nil {
+		t.Fatalf("translateRequest failed: %v", err)
+	}
 
 	var body map[string]interface{}
 	if err := json.Unmarshal(mods.Body, &body); err != nil {
@@ -415,7 +421,10 @@ func TestTranslateRequest_ToolsImagesAndResults(t *testing.T) {
 			"type": "function", "function": map[string]interface{}{"name": "weather"},
 		},
 	}
-	mods := translateRequest(payload)
+	mods, err := translateRequest(payload)
+	if err != nil {
+		t.Fatalf("translateRequest failed: %v", err)
+	}
 	var body map[string]interface{}
 	if err := json.Unmarshal(mods.Body, &body); err != nil {
 		t.Fatalf("translated body is invalid: %v", err)
@@ -430,6 +439,229 @@ func TestTranslateRequest_ToolsImagesAndResults(t *testing.T) {
 	}
 }
 
+func filePart(file map[string]interface{}) map[string]interface{} {
+	return map[string]interface{}{"type": "file", "file": file}
+}
+
+func userMessageContent(t *testing.T, parts ...interface{}) []interface{} {
+	t.Helper()
+	parts = append([]interface{}{map[string]interface{}{"type": "text", "text": "read this"}}, parts...)
+	mods, err := translateRequest(map[string]interface{}{
+		"messages": []interface{}{map[string]interface{}{"role": "user", "content": parts}},
+	})
+	if err != nil {
+		t.Fatalf("translateRequest failed: %v", err)
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(mods.Body, &body); err != nil {
+		t.Fatalf("translated body is invalid: %v", err)
+	}
+	messages, _ := body["messages"].([]interface{})
+	if len(messages) != 1 {
+		t.Fatalf("expected one user message, got %v", body["messages"])
+	}
+	content, _ := messages[0].(map[string]interface{})["content"].([]interface{})
+	if len(content) == 0 || content[0].(map[string]interface{})["text"] != "read this" {
+		t.Fatalf("expected the leading text block, got %v", content)
+	}
+	return content[1:]
+}
+
+func documentBlock(t *testing.T, block interface{}) map[string]interface{} {
+	t.Helper()
+	document, _ := block.(map[string]interface{})["document"].(map[string]interface{})
+	if document == nil {
+		t.Fatalf("expected a document block, got %v", block)
+	}
+	return document
+}
+
+func TestTranslateRequest_FilePartsBecomeDocuments(t *testing.T) {
+	tests := []struct {
+		name       string
+		file       map[string]interface{}
+		wantFormat string
+		wantName   string
+	}{
+		{"pdf", map[string]interface{}{"filename": "report.pdf", "file_data": "data:application/pdf;base64,JVBERi0="}, "pdf", "report"},
+		{"docx", map[string]interface{}{"filename": "notes.docx", "file_data": "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,UEsDBA=="}, "docx", "notes"},
+		{"media type parameters and case", map[string]interface{}{"filename": "a.txt", "file_data": "data:Text/Plain;charset=utf-8;base64,aGk="}, "txt", "a"},
+		{"extension fallback", map[string]interface{}{"filename": "data.CSV", "file_data": "data:application/octet-stream;base64,YSxi"}, "csv", "data"},
+		{"name sanitised", map[string]interface{}{"filename": "Q3_report  (final)!.v2.pdf", "file_data": "data:application/pdf;base64,JVBERi0="}, "pdf", "Q3 report (final) v2"},
+		{"no filename", map[string]interface{}{"file_data": "data:application/pdf;base64,JVBERi0="}, "pdf", "document"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := userMessageContent(t, filePart(tt.file))
+			if len(content) != 1 {
+				t.Fatalf("expected one content block, got %v", content)
+			}
+			document := documentBlock(t, content[0])
+			if document["format"] != tt.wantFormat || document["name"] != tt.wantName {
+				t.Errorf("got format %v name %v, want %s %s", document["format"], document["name"], tt.wantFormat, tt.wantName)
+			}
+			source, _ := document["source"].(map[string]interface{})
+			wantBytes := strings.SplitN(tt.file["file_data"].(string), ",", 2)[1]
+			if source["bytes"] != wantBytes {
+				t.Errorf("got bytes %v, want %s", source["bytes"], wantBytes)
+			}
+		})
+	}
+}
+
+func TestTranslateRequest_FilePartsKeepOrderAndUniqueNames(t *testing.T) {
+	pdf := map[string]interface{}{"filename": "report.pdf", "file_data": "data:application/pdf;base64,JVBERi0="}
+	content := userMessageContent(t,
+		map[string]interface{}{"type": "text", "text": "compare these"},
+		filePart(pdf),
+		map[string]interface{}{"type": "image_url", "image_url": map[string]interface{}{"url": "data:image/png;base64,aGVsbG8="}},
+		filePart(pdf),
+	)
+	if len(content) != 4 {
+		t.Fatalf("expected text, document, image, document blocks, got %v", content)
+	}
+	if content[0].(map[string]interface{})["text"] != "compare these" {
+		t.Errorf("expected the text block first, got %v", content[0])
+	}
+	if content[2].(map[string]interface{})["image"] == nil {
+		t.Errorf("expected the image block third, got %v", content[2])
+	}
+	if first, second := documentBlock(t, content[1])["name"], documentBlock(t, content[3])["name"]; first != "report" || second != "report-2" {
+		t.Errorf("expected unique names report and report-2, got %v and %v", first, second)
+	}
+}
+
+func TestTranslateRequest_DocumentNamesUniqueAcrossMessages(t *testing.T) {
+	text := map[string]interface{}{"type": "text", "text": "read this"}
+	pdf := map[string]interface{}{"type": "file", "file": map[string]interface{}{"filename": "report.pdf", "file_data": "data:application/pdf;base64,JVBERi0="}}
+	mods, err := translateRequest(map[string]interface{}{"messages": []interface{}{
+		map[string]interface{}{"role": "user", "content": []interface{}{text, pdf}},
+		map[string]interface{}{"role": "assistant", "content": "ok"},
+		map[string]interface{}{"role": "user", "content": []interface{}{text, pdf}},
+	}})
+	if err != nil {
+		t.Fatalf("translateRequest failed: %v", err)
+	}
+	if !strings.Contains(string(mods.Body), `"name":"report-2"`) {
+		t.Errorf("expected the second document to be renamed report-2, got %s", mods.Body)
+	}
+}
+
+func TestTranslateRequest_RejectsUnsupportedFiles(t *testing.T) {
+	tests := []struct {
+		name    string
+		file    interface{}
+		wantErr string
+	}{
+		{"file_id", map[string]interface{}{"file_id": "file-abc123"}, "file_id is not supported"},
+		{"no file object", "report.pdf", "missing its file object"},
+		{"no file_data", map[string]interface{}{"filename": "report.pdf"}, "requires file_data"},
+		{"not a data uri", map[string]interface{}{"file_data": "JVBERi0="}, "base64 data URI"},
+		{"remote url", map[string]interface{}{"file_data": "https://example.com/report.pdf"}, "base64 data URI"},
+		{"not base64", map[string]interface{}{"file_data": "data:text/plain,hello"}, "base64 encoded"},
+		{"empty data", map[string]interface{}{"file_data": "data:application/pdf;base64,"}, "contains no data"},
+		{"invalid base64 characters", map[string]interface{}{"file_data": "data:application/pdf;base64,JVBER!0="}, "not valid base64"},
+		{"truncated base64", map[string]interface{}{"file_data": "data:application/pdf;base64,JVBERi0"}, "not valid base64"},
+		{"url-safe base64", map[string]interface{}{"file_data": "data:application/pdf;base64,__8="}, "not valid base64"},
+		{"line breaks", map[string]interface{}{"file_data": "data:application/pdf;base64,JVBE\nRi0="}, "without whitespace"},
+		{"unsupported type", map[string]interface{}{"filename": "a.zip", "file_data": "data:application/zip;base64,UEsDBA=="}, `unsupported file type "application/zip"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := translateRequest(map[string]interface{}{"messages": []interface{}{
+				map[string]interface{}{"role": "user", "content": []interface{}{
+					map[string]interface{}{"type": "text", "text": "read this"},
+					map[string]interface{}{"type": "file", "file": tt.file},
+				}},
+			}})
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("expected an error containing %q, got %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestTranslateRequest_RequiresTextWithDocuments(t *testing.T) {
+	pdf := map[string]interface{}{"type": "file", "file": map[string]interface{}{"filename": "report.pdf", "file_data": "data:application/pdf;base64,JVBERi0="}}
+	for name, content := range map[string][]interface{}{
+		"file only":       {pdf},
+		"empty text":      {map[string]interface{}{"type": "text", "text": ""}, pdf},
+		"whitespace text": {map[string]interface{}{"type": "text", "text": " \n\t"}, pdf},
+		"text elsewhere":  {pdf},
+	} {
+		t.Run(name, func(t *testing.T) {
+			messages := []interface{}{map[string]interface{}{"role": "user", "content": content}}
+			if name == "text elsewhere" {
+				// Text in another message does not satisfy the requirement.
+				messages = append([]interface{}{map[string]interface{}{"role": "user", "content": "hello"}}, messages...)
+			}
+			_, err := translateRequest(map[string]interface{}{"messages": messages})
+			if err == nil || !strings.Contains(err.Error(), "non-empty text part") {
+				t.Errorf("expected a missing-text error, got %v", err)
+			}
+		})
+	}
+
+	// Text after the file in the same message is enough.
+	if _, err := translateRequest(map[string]interface{}{"messages": []interface{}{
+		map[string]interface{}{"role": "user", "content": []interface{}{pdf, map[string]interface{}{"type": "text", "text": "summarise"}}},
+	}}); err != nil {
+		t.Errorf("expected text after the file to be accepted, got %v", err)
+	}
+}
+
+func TestDocumentNames_LengthLimits(t *testing.T) {
+	long := strings.Repeat("a", 250)
+	names := documentNames{}
+	first, second, third := names.unique(long), names.unique(long), names.unique(long)
+	if len(first) != maxDocumentNameLength || first != strings.Repeat("a", 200) {
+		t.Errorf("expected the first name truncated to 200 characters, got %d", len(first))
+	}
+	if len(second) != maxDocumentNameLength || !strings.HasSuffix(second, "-2") {
+		t.Errorf("expected a 200-character name ending -2, got %q (%d)", second, len(second))
+	}
+	if len(third) != maxDocumentNameLength || !strings.HasSuffix(third, "-3") || third == second {
+		t.Errorf("expected a distinct 200-character name ending -3, got %q (%d)", third, len(third))
+	}
+
+	// Truncating must not leave a trailing space before the suffix.
+	spaced := strings.Repeat("a", 197) + " bcd"
+	names = documentNames{}
+	names.unique(spaced)
+	if got := names.unique(spaced); got != strings.Repeat("a", 197)+"-2" {
+		t.Errorf("expected the trailing space trimmed before the suffix, got %q", got)
+	}
+
+	// A name that truncates to only spaces, or is empty, falls back safely.
+	if got := (documentNames{}).unique(""); got != "document" {
+		t.Errorf("expected document for an empty name, got %q", got)
+	}
+	if got := truncateDocumentName("   x", 2); got != "document" {
+		t.Errorf("expected document when truncation leaves only spaces, got %q", got)
+	}
+
+	// Long filenames are sanitised and truncated end to end.
+	content := userMessageContent(t, filePart(map[string]interface{}{
+		"filename": strings.Repeat("r_", 150) + ".pdf", "file_data": "data:application/pdf;base64,JVBERi0=",
+	}))
+	if name, _ := documentBlock(t, content[0])["name"].(string); len(name) < 1 || len(name) > maxDocumentNameLength || strings.HasSuffix(name, " ") {
+		t.Errorf("expected a 1-200 character name without a trailing space, got %q (%d)", name, len(name))
+	}
+}
+
+func TestOnRequestBody_RejectsFileIDWith400(t *testing.T) {
+	p := &TranslatorPolicy{params: PolicyParams{Model: "nova"}}
+	action := p.OnRequestBody(context.Background(), &policy.RequestContext{
+		SharedContext: &policy.SharedContext{Metadata: map[string]interface{}{}},
+		Body: &policy.Body{Present: true, Content: []byte(`{"messages":[{"role":"user","content":[` +
+			`{"type":"text","text":"read this"},{"type":"file","file":{"file_id":"file-abc123"}}]}]}`)},
+	}, nil)
+	resp, ok := action.(policy.ImmediateResponse)
+	if !ok || resp.StatusCode != 400 || !strings.Contains(string(resp.Body), "file_id is not supported") {
+		t.Errorf("expected a 400 naming file_id, got %#v", action)
+	}
+}
+
 func TestTranslateRequest_ToolChoiceNoneDropsTools(t *testing.T) {
 	payload := map[string]interface{}{
 		"tools": []interface{}{map[string]interface{}{
@@ -437,7 +669,10 @@ func TestTranslateRequest_ToolChoiceNoneDropsTools(t *testing.T) {
 		}},
 		"tool_choice": "none",
 	}
-	mods := translateRequest(payload)
+	mods, err := translateRequest(payload)
+	if err != nil {
+		t.Fatalf("translateRequest failed: %v", err)
+	}
 	var body map[string]interface{}
 	if err := json.Unmarshal(mods.Body, &body); err != nil {
 		t.Fatal(err)
