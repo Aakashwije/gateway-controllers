@@ -62,7 +62,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 
 ```yaml
 - name: opa-policy
-  gomodule: github.com/wso2/gateway-controllers/policies/opa-policy@v1
+  gomodule: github.com/wso2/gateway-controllers/policies/opa-policy@v0
 ```
 
 ### How the OPA URL is built

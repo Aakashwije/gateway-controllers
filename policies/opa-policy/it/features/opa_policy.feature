@@ -35,7 +35,7 @@ Feature: Validate Request with OPA policy
       | spec.version           | ${CTX:apiVersion}          |
       | spec.context           | ${CTX:apiContext}/$version |
       | spec.upstream.main.url | http://testbench:3000        |
-      | spec.operations        | [{"method":"GET","path":"/orders","policies":[{"name":"opa-policy","version":"v1","params":{"serverUrl":"http://testbench:3018/v1/data","policy":"authz/policy","rule":"allow"}}]},{"method":"POST","path":"/orders","policies":[{"name":"opa-policy","version":"v1","params":{"serverUrl":"http://testbench:3018/v1/data","policy":"authz/policy","rule":"allow"}}]}] |
+      | spec.operations        | [{"method":"GET","path":"/orders","policies":[{"name":"opa-policy","version":"v0","params":{"serverUrl":"http://testbench:3018/v1/data","policy":"authz/policy","rule":"allow"}}]},{"method":"POST","path":"/orders","policies":[{"name":"opa-policy","version":"v0","params":{"serverUrl":"http://testbench:3018/v1/data","policy":"authz/policy","rule":"allow"}}]}] |
     Then the resource creation response should indicate successful deployment
     And I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/orders" until status 200
     When I send a "POST" request to "${CTX:apiContext}/${CTX:apiVersion}/orders" with body:
@@ -81,7 +81,7 @@ Feature: Validate Request with OPA policy
       | spec.version           | ${CTX:apiVersion}          |
       | spec.context           | ${CTX:apiContext}/$version |
       | spec.upstream.main.url | http://testbench:3000        |
-      | spec.operations        | [{"method":"GET","path":"/orders","policies":[{"name":"opa-policy","version":"v1","params":{"serverUrl":"http://testbench:3018/v1/data","policy":"authz/policy","rule":"allow"}}]},{"method":"GET","path":"/unreachable","policies":[{"name":"opa-policy","version":"v1","params":{"serverUrl":"http://testbench:3999/v1/data","policy":"authz/policy","rule":"allow"}}]},{"method":"GET","path":"/unknown-rule","policies":[{"name":"opa-policy","version":"v1","params":{"serverUrl":"http://testbench:3018/v1/data","policy":"authz/policy","rule":"missing"}}]}] |
+      | spec.operations        | [{"method":"GET","path":"/orders","policies":[{"name":"opa-policy","version":"v0","params":{"serverUrl":"http://testbench:3018/v1/data","policy":"authz/policy","rule":"allow"}}]},{"method":"GET","path":"/unreachable","policies":[{"name":"opa-policy","version":"v0","params":{"serverUrl":"http://testbench:3999/v1/data","policy":"authz/policy","rule":"allow"}}]},{"method":"GET","path":"/unknown-rule","policies":[{"name":"opa-policy","version":"v0","params":{"serverUrl":"http://testbench:3018/v1/data","policy":"authz/policy","rule":"missing"}}]}] |
     Then the resource creation response should indicate successful deployment
     And I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/orders" until status 200
     And I clear all headers
@@ -121,7 +121,7 @@ Feature: Validate Request with OPA policy
       | spec.version           | ${CTX:apiVersion}          |
       | spec.context           | ${CTX:apiContext}/$version |
       | spec.upstream.main.url | http://testbench:3000        |
-      | spec.operations        | [{"method":"GET","path":"/orders","policies":[{"name":"opa-policy","version":"v1","params":{"serverUrl":"http://testbench:3018/v1/data","policy":"authz/context","rule":"allow"}}]},{"method":"POST","path":"/orders","policies":[{"name":"opa-policy","version":"v1","params":{"serverUrl":"http://testbench:3018/v1/data","policy":"authz/context","rule":"allow"}}]}] |
+      | spec.operations        | [{"method":"GET","path":"/orders","policies":[{"name":"opa-policy","version":"v0","params":{"serverUrl":"http://testbench:3018/v1/data","policy":"authz/context","rule":"allow"}}]},{"method":"POST","path":"/orders","policies":[{"name":"opa-policy","version":"v0","params":{"serverUrl":"http://testbench:3018/v1/data","policy":"authz/context","rule":"allow"}}]}] |
     Then the resource creation response should indicate successful deployment
     And I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/orders" until status 200
     When I send a "POST" request to "${CTX:apiContext}/${CTX:apiVersion}/orders" with body:
@@ -147,7 +147,7 @@ Feature: Validate Request with OPA policy
       | spec.version           | ${CTX:apiVersion}          |
       | spec.context           | ${CTX:apiContext}/$version |
       | spec.upstream.main.url | http://testbench:3000        |
-      | spec.operations        | [{"method":"GET","path":"/with-token","policies":[{"name":"opa-policy","version":"v1","params":{"serverUrl":"http://testbench:3018/v1/data","policy":"authz/token","rule":"allow","sendAccessToken":true}}]},{"method":"GET","path":"/without-token","policies":[{"name":"opa-policy","version":"v1","params":{"serverUrl":"http://testbench:3018/v1/data","policy":"authz/notoken","rule":"allow"}}]}] |
+      | spec.operations        | [{"method":"GET","path":"/with-token","policies":[{"name":"opa-policy","version":"v0","params":{"serverUrl":"http://testbench:3018/v1/data","policy":"authz/token","rule":"allow","sendAccessToken":true}}]},{"method":"GET","path":"/without-token","policies":[{"name":"opa-policy","version":"v0","params":{"serverUrl":"http://testbench:3018/v1/data","policy":"authz/notoken","rule":"allow"}}]}] |
     Then the resource creation response should indicate successful deployment
     And I clear all headers
     And I set header "Authorization" to "Bearer test-access-token"
@@ -175,7 +175,7 @@ Feature: Validate Request with OPA policy
       | spec.version           | ${CTX:apiVersion}          |
       | spec.context           | ${CTX:apiContext}/$version |
       | spec.upstream.main.url | http://testbench:3000        |
-      | spec.operations        | [{"method":"GET","path":"/secured","policies":[{"name":"opa-policy","version":"v1","params":{"serverUrl":"http://testbench:3018/v1/data","policy":"authz/secured","rule":"allow","accessKey":"opa-test-key"}}]},{"method":"GET","path":"/wrong-key","policies":[{"name":"opa-policy","version":"v1","params":{"serverUrl":"http://testbench:3018/v1/data","policy":"authz/secured","rule":"allow","accessKey":"not-the-key"}}]},{"method":"GET","path":"/no-key","policies":[{"name":"opa-policy","version":"v1","params":{"serverUrl":"http://testbench:3018/v1/data","policy":"authz/secured","rule":"allow"}}]}] |
+      | spec.operations        | [{"method":"GET","path":"/secured","policies":[{"name":"opa-policy","version":"v0","params":{"serverUrl":"http://testbench:3018/v1/data","policy":"authz/secured","rule":"allow","accessKey":"opa-test-key"}}]},{"method":"GET","path":"/wrong-key","policies":[{"name":"opa-policy","version":"v0","params":{"serverUrl":"http://testbench:3018/v1/data","policy":"authz/secured","rule":"allow","accessKey":"not-the-key"}}]},{"method":"GET","path":"/no-key","policies":[{"name":"opa-policy","version":"v0","params":{"serverUrl":"http://testbench:3018/v1/data","policy":"authz/secured","rule":"allow"}}]}] |
     Then the resource creation response should indicate successful deployment
     And I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/secured" until status 200
     When I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/wrong-key"
@@ -200,7 +200,7 @@ Feature: Validate Request with OPA policy
       | spec.version           | ${CTX:apiVersion}          |
       | spec.context           | ${CTX:apiContext}/$version |
       | spec.upstream.main.url | http://testbench:3000        |
-      | spec.operations        | [{"method":"GET","path":"/slow-ok","policies":[{"name":"opa-policy","version":"v1","params":{"serverUrl":"http://testbench:3018/v1/data","policy":"authz/slow","rule":"allow","connectionTimeout":10}}]},{"method":"GET","path":"/slow-timeout","policies":[{"name":"opa-policy","version":"v1","params":{"serverUrl":"http://testbench:3018/v1/data","policy":"authz/slow","rule":"allow","connectionTimeout":1}}]}] |
+      | spec.operations        | [{"method":"GET","path":"/slow-ok","policies":[{"name":"opa-policy","version":"v0","params":{"serverUrl":"http://testbench:3018/v1/data","policy":"authz/slow","rule":"allow","connectionTimeout":10}}]},{"method":"GET","path":"/slow-timeout","policies":[{"name":"opa-policy","version":"v0","params":{"serverUrl":"http://testbench:3018/v1/data","policy":"authz/slow","rule":"allow","connectionTimeout":1}}]}] |
     Then the resource creation response should indicate successful deployment
     And I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/slow-ok" until status 200
     When I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/slow-timeout"
@@ -223,7 +223,7 @@ Feature: Validate Request with OPA policy
       | spec.version           | ${CTX:apiVersion}          |
       | spec.context           | ${CTX:apiContext}/$version |
       | spec.upstream.main.url | http://testbench:3000        |
-      | spec.operations        | [{"method":"GET","path":"/orders","policies":[{"name":"opa-policy","version":"v1","params":{"serverUrl":"http://testbench:3018/v1/data","policy":"authz/policy"}}]}] |
+      | spec.operations        | [{"method":"GET","path":"/orders","policies":[{"name":"opa-policy","version":"v0","params":{"serverUrl":"http://testbench:3018/v1/data","policy":"authz/policy"}}]}] |
     Then the response should be a client error
 
   Scenario: A policy without serverUrl is rejected at deployment
@@ -237,7 +237,7 @@ Feature: Validate Request with OPA policy
       | spec.version           | ${CTX:apiVersion}          |
       | spec.context           | ${CTX:apiContext}/$version |
       | spec.upstream.main.url | http://testbench:3000        |
-      | spec.operations        | [{"method":"GET","path":"/orders","policies":[{"name":"opa-policy","version":"v1","params":{"policy":"authz/policy","rule":"allow"}}]}] |
+      | spec.operations        | [{"method":"GET","path":"/orders","policies":[{"name":"opa-policy","version":"v0","params":{"policy":"authz/policy","rule":"allow"}}]}] |
     Then the response should be a client error
 
   Scenario: A policy without policy is rejected at deployment
@@ -251,5 +251,5 @@ Feature: Validate Request with OPA policy
       | spec.version           | ${CTX:apiVersion}          |
       | spec.context           | ${CTX:apiContext}/$version |
       | spec.upstream.main.url | http://testbench:3000        |
-      | spec.operations        | [{"method":"GET","path":"/orders","policies":[{"name":"opa-policy","version":"v1","params":{"serverUrl":"http://testbench:3018/v1/data","rule":"allow"}}]}] |
+      | spec.operations        | [{"method":"GET","path":"/orders","policies":[{"name":"opa-policy","version":"v0","params":{"serverUrl":"http://testbench:3018/v1/data","rule":"allow"}}]}] |
     Then the response should be a client error
