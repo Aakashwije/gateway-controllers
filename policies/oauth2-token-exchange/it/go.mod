@@ -1,4 +1,4 @@
-module github.com/wso2/gateway-controllers/policies/oauth-token-exchange/it
+module github.com/wso2/gateway-controllers/policies/oauth2-token-exchange/it
 
 go 1.26.5
 

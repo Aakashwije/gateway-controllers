@@ -16,12 +16,12 @@
 # under the License.
 # --------------------------------------------------------------------
 
-# The integration suite of the oauth-token-exchange policy. The gateway under test is built from this policy and
+# The integration suite of the oauth2-token-exchange policy. The gateway under test is built from this policy and
 # the policies the gateway controller requires (tests/it/common/suite), staged as the policy tree
 # that addPoliciesFrom names, with jwt-auth and mcp-auth, which the chain scenarios attach in front
 # of it (suite_test.go). Feature and overlay paths are relative to this directory.
 
-suite: oauth-token-exchange
+suite: oauth2-token-exchange
 
 defaults:
   parallel: 1
@@ -35,7 +35,7 @@ defaults:
     propagation: 60s
 
 blocks:
-  - name: oauth-token-exchange
+  - name: oauth2-token-exchange
     parallel: 1
     components:
       - name: platform-gateway
@@ -45,6 +45,6 @@ blocks:
         overlay: overlays/gateway.toml
       - name: testbench
     runners:
-      - name: oauth-token-exchange
+      - name: oauth2-token-exchange
         features:
-          - features/oauth_token_exchange.feature
+          - features/oauth2_token_exchange.feature

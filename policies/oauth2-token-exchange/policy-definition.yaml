@@ -1,5 +1,5 @@
-name: oauth-token-exchange
-version: v1.0.0
+name: oauth2-token-exchange
+version: v0.9.0
 description: |
   Exchanges the caller's inbound credential for a backend-specific token at an
   external OAuth2 authorization server, then attaches it to the upstream
@@ -203,7 +203,7 @@ systemParameters:
         the cache and flushes it.
       default: 100000
       minimum: 1
-      "wso2/defaultValue": "${config.policy_configurations.oauthtokenexchange_v1.cachemaxsize}"
+      "wso2/defaultValue": "${config.policy_configurations.oauth2tokenexchange_v0.cachemaxsize}"
 
     requestTimeout:
       type: string
@@ -211,7 +211,7 @@ systemParameters:
         Timeout for the outbound call to the token endpoint, as a Go duration
         string (e.g. "5s").
       default: "5s"
-      "wso2/defaultValue": "${config.policy_configurations.oauthtokenexchange_v1.requesttimeout}"
+      "wso2/defaultValue": "${config.policy_configurations.oauth2tokenexchange_v0.requesttimeout}"
 
     maxResponseBytes:
       type: integer
@@ -220,7 +220,7 @@ systemParameters:
         before it is rejected.
       default: 65536
       minimum: 1
-      "wso2/defaultValue": "${config.policy_configurations.oauthtokenexchange_v1.maxresponsebytes}"
+      "wso2/defaultValue": "${config.policy_configurations.oauth2tokenexchange_v0.maxresponsebytes}"
 
     allowInsecureTokenEndpoint:
       type: boolean
@@ -228,6 +228,6 @@ systemParameters:
         Off-by-default operator opt-in allowing tokenEndpoint to use http://
         instead of https://. Intended for local/dev testing only.
       default: false
-      "wso2/defaultValue": "${config.policy_configurations.oauthtokenexchange_v1.allowinsecuretokenendpoint}"
+      "wso2/defaultValue": "${config.policy_configurations.oauth2tokenexchange_v0.allowinsecuretokenendpoint}"
 
   required: []

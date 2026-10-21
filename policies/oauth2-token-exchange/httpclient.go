@@ -15,7 +15,7 @@
  *
  */
 
-package oauthtokenexchange
+package oauth2tokenexchange
 
 import (
 	"net"

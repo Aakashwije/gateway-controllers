@@ -16,7 +16,7 @@
  * under the License.
  */
 
-// Package steps holds the step definitions only the oauth-token-exchange policy's scenarios need. The shared
+// Package steps holds the step definitions only the oauth2-token-exchange policy's scenarios need. The shared
 // steps in tests/it/common/steps are bound before these, so search them first and do not repeat
 // one here.
 package steps

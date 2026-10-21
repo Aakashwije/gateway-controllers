@@ -29,7 +29,7 @@ import (
 	"github.com/wso2/api-platform/tests/framework/core/util/tcontext"
 )
 
-// policySteps holds the state the oauth-token-exchange policy's steps share within one runner.
+// policySteps holds the state the oauth2-token-exchange policy's steps share within one runner.
 type policySteps struct {
 	topo *frameworkruntime.Topology
 }

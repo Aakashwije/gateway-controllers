@@ -20,7 +20,7 @@
 # the gateway's own IdP, which is exactly the credential this policy exchanges for one the
 # backend's own authorization server, the testbench "oauth2" service, will accept.
 
-@oauth-token-exchange
+@oauth2-token-exchange
 Feature: OAuth2 token exchange
   As an API developer
   I want the gateway to exchange my caller's own credential for a backend-specific token
@@ -40,9 +40,9 @@ Feature: OAuth2 token exchange
   # scenarios elsewhere still assert on) - so the exchanged-token assertions below match a JWT's
   # three-dot-separated shape rather than a literal prefix.
   Scenario: Token-exchange grant exchanges the caller's token for a backend token
-    Given I generate a unique resource name from "oauth-token-exchange-happy" and store it as "apiName"
-    And I generate a unique API version from "oauth-token-exchange-happy" and store it as "apiVersion"
-    And I generate a unique API context from "/oauth-token-exchange-happy" and store it as "apiContext"
+    Given I generate a unique resource name from "oauth2-token-exchange-happy" and store it as "apiName"
+    And I generate a unique API version from "oauth2-token-exchange-happy" and store it as "apiVersion"
+    And I generate a unique API context from "/oauth2-token-exchange-happy" and store it as "apiContext"
     When I create API from "resources/templates/rest-api.yaml" with values:
       | apiVersion             | ${CTX:gatewaySpecVersion} |
       | name                   | ${CTX:apiName}                    |
@@ -50,7 +50,7 @@ Feature: OAuth2 token exchange
       | spec.version           | ${CTX:apiVersion}                 |
       | spec.context           | ${CTX:apiContext}/$version        |
       | spec.upstream.main.url | http://testbench:3002             |
-      | spec.operations        | [{"method":"GET","path":"/health"},{"method":"GET","path":"/data","policies":[{"name":"oauth-token-exchange","version":"v1","params":{"tokenEndpoint":"${CTX:oauthTokenEndpoint}","clientId":"test-client","clientSecret":"test-secret"}}]}] |
+      | spec.operations        | [{"method":"GET","path":"/health"},{"method":"GET","path":"/data","policies":[{"name":"oauth2-token-exchange","version":"v0","params":{"tokenEndpoint":"${CTX:oauthTokenEndpoint}","clientId":"test-client","clientSecret":"test-secret"}}]}] |
     Then the response should be successful
     And I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/health" until status 200
 
@@ -71,9 +71,9 @@ Feature: OAuth2 token exchange
     Then the response should be successful
 
   Scenario: JwtBearer grant exchanges the caller's token for a backend token
-    Given I generate a unique resource name from "oauth-token-exchange-jwtbearer" and store it as "apiName"
-    And I generate a unique API version from "oauth-token-exchange-jwtbearer" and store it as "apiVersion"
-    And I generate a unique API context from "/oauth-token-exchange-jwtbearer" and store it as "apiContext"
+    Given I generate a unique resource name from "oauth2-token-exchange-jwtbearer" and store it as "apiName"
+    And I generate a unique API version from "oauth2-token-exchange-jwtbearer" and store it as "apiVersion"
+    And I generate a unique API context from "/oauth2-token-exchange-jwtbearer" and store it as "apiContext"
     When I create API from "resources/templates/rest-api.yaml" with values:
       | apiVersion             | ${CTX:gatewaySpecVersion} |
       | name                   | ${CTX:apiName}                    |
@@ -81,7 +81,7 @@ Feature: OAuth2 token exchange
       | spec.version           | ${CTX:apiVersion}                 |
       | spec.context           | ${CTX:apiContext}/$version        |
       | spec.upstream.main.url | http://testbench:3002             |
-      | spec.operations        | [{"method":"GET","path":"/health"},{"method":"GET","path":"/data","policies":[{"name":"oauth-token-exchange","version":"v1","params":{"grantType":"JwtBearer","tokenEndpoint":"${CTX:oauthTokenEndpoint}","clientId":"test-client","clientSecret":"test-secret"}}]}] |
+      | spec.operations        | [{"method":"GET","path":"/health"},{"method":"GET","path":"/data","policies":[{"name":"oauth2-token-exchange","version":"v0","params":{"grantType":"JwtBearer","tokenEndpoint":"${CTX:oauthTokenEndpoint}","clientId":"test-client","clientSecret":"test-secret"}}]}] |
     Then the response should be successful
     And I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/health" until status 200
 
@@ -101,9 +101,9 @@ Feature: OAuth2 token exchange
     Then the response should be successful
 
   Scenario: A request without the caller's credential is rejected
-    Given I generate a unique resource name from "oauth-token-exchange-nocred" and store it as "apiName"
-    And I generate a unique API version from "oauth-token-exchange-nocred" and store it as "apiVersion"
-    And I generate a unique API context from "/oauth-token-exchange-nocred" and store it as "apiContext"
+    Given I generate a unique resource name from "oauth2-token-exchange-nocred" and store it as "apiName"
+    And I generate a unique API version from "oauth2-token-exchange-nocred" and store it as "apiVersion"
+    And I generate a unique API context from "/oauth2-token-exchange-nocred" and store it as "apiContext"
     When I create API from "resources/templates/rest-api.yaml" with values:
       | apiVersion             | ${CTX:gatewaySpecVersion} |
       | name                   | ${CTX:apiName}                    |
@@ -111,7 +111,7 @@ Feature: OAuth2 token exchange
       | spec.version           | ${CTX:apiVersion}                 |
       | spec.context           | ${CTX:apiContext}/$version        |
       | spec.upstream.main.url | http://testbench:3002             |
-      | spec.operations        | [{"method":"GET","path":"/health"},{"method":"GET","path":"/data","policies":[{"name":"oauth-token-exchange","version":"v1","params":{"tokenEndpoint":"${CTX:oauthTokenEndpoint}","clientId":"test-client","clientSecret":"test-secret"}}]}] |
+      | spec.operations        | [{"method":"GET","path":"/health"},{"method":"GET","path":"/data","policies":[{"name":"oauth2-token-exchange","version":"v0","params":{"tokenEndpoint":"${CTX:oauthTokenEndpoint}","clientId":"test-client","clientSecret":"test-secret"}}]}] |
     Then the response should be successful
     And I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/health" until status 200
 
@@ -124,9 +124,9 @@ Feature: OAuth2 token exchange
     Then the response should be successful
 
   Scenario: Invalid client credentials return Bad Gateway
-    Given I generate a unique resource name from "oauth-token-exchange-badclient" and store it as "apiName"
-    And I generate a unique API version from "oauth-token-exchange-badclient" and store it as "apiVersion"
-    And I generate a unique API context from "/oauth-token-exchange-badclient" and store it as "apiContext"
+    Given I generate a unique resource name from "oauth2-token-exchange-badclient" and store it as "apiName"
+    And I generate a unique API version from "oauth2-token-exchange-badclient" and store it as "apiVersion"
+    And I generate a unique API context from "/oauth2-token-exchange-badclient" and store it as "apiContext"
     When I create API from "resources/templates/rest-api.yaml" with values:
       | apiVersion             | ${CTX:gatewaySpecVersion} |
       | name                   | ${CTX:apiName}                    |
@@ -134,7 +134,7 @@ Feature: OAuth2 token exchange
       | spec.version           | ${CTX:apiVersion}                 |
       | spec.context           | ${CTX:apiContext}/$version        |
       | spec.upstream.main.url | http://testbench:3002             |
-      | spec.operations        | [{"method":"GET","path":"/health"},{"method":"GET","path":"/data","policies":[{"name":"oauth-token-exchange","version":"v1","params":{"tokenEndpoint":"${CTX:oauthTokenEndpoint}","clientId":"test-client","clientSecret":"definitely-the-wrong-secret"}}]}] |
+      | spec.operations        | [{"method":"GET","path":"/health"},{"method":"GET","path":"/data","policies":[{"name":"oauth2-token-exchange","version":"v0","params":{"tokenEndpoint":"${CTX:oauthTokenEndpoint}","clientId":"test-client","clientSecret":"definitely-the-wrong-secret"}}]}] |
     Then the response should be successful
     And I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/health" until status 200
 
@@ -149,9 +149,9 @@ Feature: OAuth2 token exchange
     Then the response should be successful
 
   Scenario: An unreachable token endpoint returns Bad Gateway
-    Given I generate a unique resource name from "oauth-token-exchange-unreachable" and store it as "apiName"
-    And I generate a unique API version from "oauth-token-exchange-unreachable" and store it as "apiVersion"
-    And I generate a unique API context from "/oauth-token-exchange-unreachable" and store it as "apiContext"
+    Given I generate a unique resource name from "oauth2-token-exchange-unreachable" and store it as "apiName"
+    And I generate a unique API version from "oauth2-token-exchange-unreachable" and store it as "apiVersion"
+    And I generate a unique API context from "/oauth2-token-exchange-unreachable" and store it as "apiContext"
     When I create API from "resources/templates/rest-api.yaml" with values:
       | apiVersion             | ${CTX:gatewaySpecVersion} |
       | name                   | ${CTX:apiName}                    |
@@ -159,7 +159,7 @@ Feature: OAuth2 token exchange
       | spec.version           | ${CTX:apiVersion}                 |
       | spec.context           | ${CTX:apiContext}/$version        |
       | spec.upstream.main.url | http://testbench:3002             |
-      | spec.operations        | [{"method":"GET","path":"/health"},{"method":"GET","path":"/data","policies":[{"name":"oauth-token-exchange","version":"v1","params":{"tokenEndpoint":"http://oauth2-does-not-exist:9601/oauth2/token","clientId":"test-client","clientSecret":"test-secret"}}]}] |
+      | spec.operations        | [{"method":"GET","path":"/health"},{"method":"GET","path":"/data","policies":[{"name":"oauth2-token-exchange","version":"v0","params":{"tokenEndpoint":"http://oauth2-does-not-exist:9601/oauth2/token","clientId":"test-client","clientSecret":"test-secret"}}]}] |
     Then the response should be successful
     And I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/health" until status 200
 
@@ -180,9 +180,9 @@ Feature: OAuth2 token exchange
   # same way as the others (Bad Gateway, no upstream detail leaked), without needing a real
   # malformed-signature JWT.
   Scenario: The authorization server rejecting the subject token returns Bad Gateway
-    Given I generate a unique resource name from "oauth-token-exchange-rejected" and store it as "apiName"
-    And I generate a unique API version from "oauth-token-exchange-rejected" and store it as "apiVersion"
-    And I generate a unique API context from "/oauth-token-exchange-rejected" and store it as "apiContext"
+    Given I generate a unique resource name from "oauth2-token-exchange-rejected" and store it as "apiName"
+    And I generate a unique API version from "oauth2-token-exchange-rejected" and store it as "apiVersion"
+    And I generate a unique API context from "/oauth2-token-exchange-rejected" and store it as "apiContext"
     When I create API from "resources/templates/rest-api.yaml" with values:
       | apiVersion             | ${CTX:gatewaySpecVersion} |
       | name                   | ${CTX:apiName}                    |
@@ -190,7 +190,7 @@ Feature: OAuth2 token exchange
       | spec.version           | ${CTX:apiVersion}                 |
       | spec.context           | ${CTX:apiContext}/$version        |
       | spec.upstream.main.url | http://testbench:3002             |
-      | spec.operations        | [{"method":"GET","path":"/health"},{"method":"GET","path":"/data","policies":[{"name":"oauth-token-exchange","version":"v1","params":{"tokenEndpoint":"${CTX:oauthTokenEndpoint}","clientId":"test-client","clientSecret":"test-secret"}}]}] |
+      | spec.operations        | [{"method":"GET","path":"/health"},{"method":"GET","path":"/data","policies":[{"name":"oauth2-token-exchange","version":"v0","params":{"tokenEndpoint":"${CTX:oauthTokenEndpoint}","clientId":"test-client","clientSecret":"test-secret"}}]}] |
     Then the response should be successful
     And I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/health" until status 200
 
@@ -204,9 +204,9 @@ Feature: OAuth2 token exchange
     Then the response should be successful
 
   Scenario: A backend token is cached across repeated requests
-    Given I generate a unique resource name from "oauth-token-exchange-cache" and store it as "apiName"
-    And I generate a unique API version from "oauth-token-exchange-cache" and store it as "apiVersion"
-    And I generate a unique API context from "/oauth-token-exchange-cache" and store it as "apiContext"
+    Given I generate a unique resource name from "oauth2-token-exchange-cache" and store it as "apiName"
+    And I generate a unique API version from "oauth2-token-exchange-cache" and store it as "apiVersion"
+    And I generate a unique API context from "/oauth2-token-exchange-cache" and store it as "apiContext"
     When I create API from "resources/templates/rest-api.yaml" with values:
       | apiVersion             | ${CTX:gatewaySpecVersion} |
       | name                   | ${CTX:apiName}                    |
@@ -214,7 +214,7 @@ Feature: OAuth2 token exchange
       | spec.version           | ${CTX:apiVersion}                 |
       | spec.context           | ${CTX:apiContext}/$version        |
       | spec.upstream.main.url | http://testbench:3002             |
-      | spec.operations        | [{"method":"GET","path":"/health"},{"method":"GET","path":"/data","policies":[{"name":"oauth-token-exchange","version":"v1","params":{"tokenEndpoint":"${CTX:oauthTokenEndpoint}?ttl=3600","clientId":"test-client","clientSecret":"test-secret"}}]}] |
+      | spec.operations        | [{"method":"GET","path":"/health"},{"method":"GET","path":"/data","policies":[{"name":"oauth2-token-exchange","version":"v0","params":{"tokenEndpoint":"${CTX:oauthTokenEndpoint}?ttl=3600","clientId":"test-client","clientSecret":"test-secret"}}]}] |
     Then the response should be successful
     And I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/health" until status 200
 
@@ -231,9 +231,9 @@ Feature: OAuth2 token exchange
     Then the response should be successful
 
   Scenario: Configured audiences, scopes, and resources reach the token endpoint
-    Given I generate a unique resource name from "oauth-token-exchange-params" and store it as "apiName"
-    And I generate a unique API version from "oauth-token-exchange-params" and store it as "apiVersion"
-    And I generate a unique API context from "/oauth-token-exchange-params" and store it as "apiContext"
+    Given I generate a unique resource name from "oauth2-token-exchange-params" and store it as "apiName"
+    And I generate a unique API version from "oauth2-token-exchange-params" and store it as "apiVersion"
+    And I generate a unique API context from "/oauth2-token-exchange-params" and store it as "apiContext"
     When I create API from "resources/templates/rest-api.yaml" with values:
       | apiVersion             | ${CTX:gatewaySpecVersion} |
       | name                   | ${CTX:apiName}                    |
@@ -241,7 +241,7 @@ Feature: OAuth2 token exchange
       | spec.version           | ${CTX:apiVersion}                 |
       | spec.context           | ${CTX:apiContext}/$version        |
       | spec.upstream.main.url | http://testbench:3002             |
-      | spec.operations        | [{"method":"GET","path":"/health"},{"method":"GET","path":"/data","policies":[{"name":"oauth-token-exchange","version":"v1","params":{"tokenEndpoint":"${CTX:oauthTokenEndpoint}","clientId":"test-client","clientSecret":"test-secret","audiences":["it-suite-audience"],"scopes":["it-suite-scope"],"resources":["https://backend.example.com"]}}]}] |
+      | spec.operations        | [{"method":"GET","path":"/health"},{"method":"GET","path":"/data","policies":[{"name":"oauth2-token-exchange","version":"v0","params":{"tokenEndpoint":"${CTX:oauthTokenEndpoint}","clientId":"test-client","clientSecret":"test-secret","audiences":["it-suite-audience"],"scopes":["it-suite-scope"],"resources":["https://backend.example.com"]}}]}] |
     Then the response should be successful
     And I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/health" until status 200
 
@@ -260,13 +260,13 @@ Feature: OAuth2 token exchange
     Then the response should be successful
 
   # jwt-auth validates the caller's own gateway-issued JWT and forwards it under a different
-  # header (rather than leaving it on Authorization); oauth-token-exchange must be told to read
+  # header (rather than leaving it on Authorization); oauth2-token-exchange must be told to read
   # from that same header, or it has nothing to exchange. This is the correctly-wired version of
   # the chain; the next scenario is its negative counterpart.
-  Scenario: jwt-auth forwards the caller's token for oauth-token-exchange to exchange
-    Given I generate a unique resource name from "oauth-token-exchange-chain" and store it as "apiName"
-    And I generate a unique API version from "oauth-token-exchange-chain" and store it as "apiVersion"
-    And I generate a unique API context from "/oauth-token-exchange-chain" and store it as "apiContext"
+  Scenario: jwt-auth forwards the caller's token for oauth2-token-exchange to exchange
+    Given I generate a unique resource name from "oauth2-token-exchange-chain" and store it as "apiName"
+    And I generate a unique API version from "oauth2-token-exchange-chain" and store it as "apiVersion"
+    And I generate a unique API context from "/oauth2-token-exchange-chain" and store it as "apiContext"
     When I create API from "resources/templates/rest-api.yaml" with values:
       | apiVersion             | ${CTX:gatewaySpecVersion} |
       | name                   | ${CTX:apiName}                    |
@@ -274,7 +274,7 @@ Feature: OAuth2 token exchange
       | spec.version           | ${CTX:apiVersion}                 |
       | spec.context           | ${CTX:apiContext}/$version        |
       | spec.upstream.main.url | http://testbench:3002             |
-      | spec.operations        | [{"method":"GET","path":"/health"},{"method":"GET","path":"/data","policies":[{"name":"jwt-auth","version":"v1","params":{"issuers":["mock-jwks"],"forwardToken":true,"forwardedTokenHeader":"x-forwarded-authorization"}},{"name":"oauth-token-exchange","version":"v1","params":{"tokenEndpoint":"${CTX:oauthTokenEndpoint}","clientId":"test-client","clientSecret":"test-secret","subjectTokenSource":{"type":"header","name":"x-forwarded-authorization","prefix":"Bearer "}}}]}] |
+      | spec.operations        | [{"method":"GET","path":"/health"},{"method":"GET","path":"/data","policies":[{"name":"jwt-auth","version":"v1","params":{"issuers":["mock-jwks"],"forwardToken":true,"forwardedTokenHeader":"x-forwarded-authorization"}},{"name":"oauth2-token-exchange","version":"v0","params":{"tokenEndpoint":"${CTX:oauthTokenEndpoint}","clientId":"test-client","clientSecret":"test-secret","subjectTokenSource":{"type":"header","name":"x-forwarded-authorization","prefix":"Bearer "}}}]}] |
     Then the response should be successful
     And I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/health" until status 200
 
@@ -297,17 +297,17 @@ Feature: OAuth2 token exchange
   # mcp-auth delegates its own token validation to jwt-auth internally, and the same
   # forwardToken/forwardedTokenHeader wiring applies: configured this way, it forwards the
   # caller's token under a different header instead of leaving it on Authorization, so
-  # oauth-token-exchange must be told to read from that header, same as the REST/jwt-auth chain
-  # above. This is also the scenario oauth-token-exchange's own policy-definition.yaml calls out
+  # oauth2-token-exchange must be told to read from that header, same as the REST/jwt-auth chain
+  # above. This is also the scenario oauth2-token-exchange's own policy-definition.yaml calls out
   # by name as the reason its header phase defers to the body phase on a missing subject token:
   # mcp-auth is a body-phase auth policy on routes with no operation resolver, so the caller's
-  # token can still be missing from the forwarded header when oauth-token-exchange's header phase
+  # token can still be missing from the forwarded header when oauth2-token-exchange's header phase
   # runs, and only appears once mcp-auth's own body-phase processing has forwarded it.
-  Scenario: mcp-auth forwards the caller's token for oauth-token-exchange to exchange
-    Given I generate a unique resource name from "oauth-token-exchange-mcp-chain" and store it as "mcpName"
-    And I generate a unique value from "oauth-token-exchange-mcp-chain" and store it as "mcpDisplayName"
-    And I generate a unique API version from "oauth-token-exchange-mcp-chain" and store it as "mcpVersion"
-    And I generate a unique API context from "/oauth-token-exchange-mcp-chain" and store it as "mcpContext"
+  Scenario: mcp-auth forwards the caller's token for oauth2-token-exchange to exchange
+    Given I generate a unique resource name from "oauth2-token-exchange-mcp-chain" and store it as "mcpName"
+    And I generate a unique value from "oauth2-token-exchange-mcp-chain" and store it as "mcpDisplayName"
+    And I generate a unique API version from "oauth2-token-exchange-mcp-chain" and store it as "mcpVersion"
+    And I generate a unique API context from "/oauth2-token-exchange-mcp-chain" and store it as "mcpContext"
     When I create MCP proxy from "resources/templates/mcp.yaml" with values:
       | apiVersion        | ${CTX:gatewaySpecVersion} |
       | name              | ${CTX:mcpName}                    |
@@ -316,7 +316,7 @@ Feature: OAuth2 token exchange
       | context           | ${CTX:mcpContext}                 |
       | specVersion       | 2025-06-18                         |
       | spec.upstream.url | http://testbench:3009${CTX:gatewayMCPUpstreamPath} |
-      | spec.policies     | [{"name":"mcp-auth","version":"v1","params":{"issuers":["mock-jwks"],"forwardToken":true,"forwardedTokenHeader":"x-forwarded-authorization"}},{"name":"oauth-token-exchange","version":"v1","params":{"tokenEndpoint":"${CTX:oauthTokenEndpoint}","clientId":"test-client","clientSecret":"test-secret","subjectTokenSource":{"type":"header","name":"x-forwarded-authorization","prefix":"Bearer "}}}] |
+      | spec.policies     | [{"name":"mcp-auth","version":"v1","params":{"issuers":["mock-jwks"],"forwardToken":true,"forwardedTokenHeader":"x-forwarded-authorization"}},{"name":"oauth2-token-exchange","version":"v0","params":{"tokenEndpoint":"${CTX:oauthTokenEndpoint}","clientId":"test-client","clientSecret":"test-secret","subjectTokenSource":{"type":"header","name":"x-forwarded-authorization","prefix":"Bearer "}}}] |
     Then the response should be successful
 
     And I set header "Content-Type" to "application/json"
@@ -352,15 +352,15 @@ Feature: OAuth2 token exchange
     And I delete the MCP proxy "${CTX:mcpName}"
     Then the response should be successful
 
-  # The same chain as above, but oauth-token-exchange is left at its default subjectTokenSource
+  # The same chain as above, but oauth2-token-exchange is left at its default subjectTokenSource
   # (the Authorization header) instead of being pointed at x-forwarded-authorization. jwt-auth has
   # already moved the caller's token there, so Authorization is empty by the time
-  # oauth-token-exchange runs and it has no credential to exchange - a misconfiguration that must
+  # oauth2-token-exchange runs and it has no credential to exchange - a misconfiguration that must
   # fail closed, not silently let the request through unexchanged.
-  Scenario: Leaving oauth-token-exchange at its default header misses a token jwt-auth forwarded elsewhere
-    Given I generate a unique resource name from "oauth-token-exchange-miswired" and store it as "apiName"
-    And I generate a unique API version from "oauth-token-exchange-miswired" and store it as "apiVersion"
-    And I generate a unique API context from "/oauth-token-exchange-miswired" and store it as "apiContext"
+  Scenario: Leaving oauth2-token-exchange at its default header misses a token jwt-auth forwarded elsewhere
+    Given I generate a unique resource name from "oauth2-token-exchange-miswired" and store it as "apiName"
+    And I generate a unique API version from "oauth2-token-exchange-miswired" and store it as "apiVersion"
+    And I generate a unique API context from "/oauth2-token-exchange-miswired" and store it as "apiContext"
     When I create API from "resources/templates/rest-api.yaml" with values:
       | apiVersion             | ${CTX:gatewaySpecVersion} |
       | name                   | ${CTX:apiName}                    |
@@ -368,7 +368,7 @@ Feature: OAuth2 token exchange
       | spec.version           | ${CTX:apiVersion}                 |
       | spec.context           | ${CTX:apiContext}/$version        |
       | spec.upstream.main.url | http://testbench:3002             |
-      | spec.operations        | [{"method":"GET","path":"/health"},{"method":"GET","path":"/data","policies":[{"name":"jwt-auth","version":"v1","params":{"issuers":["mock-jwks"],"forwardToken":true,"forwardedTokenHeader":"x-forwarded-authorization"}},{"name":"oauth-token-exchange","version":"v1","params":{"tokenEndpoint":"${CTX:oauthTokenEndpoint}","clientId":"test-client","clientSecret":"test-secret"}}]}] |
+      | spec.operations        | [{"method":"GET","path":"/health"},{"method":"GET","path":"/data","policies":[{"name":"jwt-auth","version":"v1","params":{"issuers":["mock-jwks"],"forwardToken":true,"forwardedTokenHeader":"x-forwarded-authorization"}},{"name":"oauth2-token-exchange","version":"v0","params":{"tokenEndpoint":"${CTX:oauthTokenEndpoint}","clientId":"test-client","clientSecret":"test-secret"}}]}] |
     Then the response should be successful
     And I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/health" until status 200
 

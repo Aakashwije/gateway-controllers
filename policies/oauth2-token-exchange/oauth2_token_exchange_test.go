@@ -15,7 +15,7 @@
  *
  */
 
-package oauthtokenexchange
+package oauth2tokenexchange
 
 import (
 	"context"
@@ -32,8 +32,8 @@ import (
 	"github.com/wso2/api-platform/sdk/core/utils"
 )
 
-func newTestPolicy() *OAuthTokenExchangePolicy {
-	return &OAuthTokenExchangePolicy{
+func newTestPolicy() *OAuth2TokenExchangePolicy {
+	return &OAuth2TokenExchangePolicy{
 		tokenCache:     newTokenCache(defaultCacheMaxSize),
 		currentMaxSize: defaultCacheMaxSize,
 	}
@@ -838,7 +838,7 @@ func TestOnRequestBody_SkipsExchangeWhenHeaderPhaseSucceeded(t *testing.T) {
 }
 
 // TestOnRequestBody_SkipsExchangeWhenHeaderPhaseSucceeded_CustomSubjectHeaderRemovedBySelf
-// covers the jwt-auth -> oauth-token-exchange chain configuration:
+// covers the jwt-auth -> oauth2-token-exchange chain configuration:
 // subjectTokenSource names a DIFFERENT header than cfg.header (e.g.
 // "X-Forwarded-Authorization" feeding "Authorization"), so the header
 // phase's own subjectTokenRemovalMods strips that field entirely rather than
